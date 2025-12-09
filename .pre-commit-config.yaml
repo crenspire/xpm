@@ -1,0 +1,65 @@
+# Pre-commit hooks for upm
+# Install: pre-commit install
+# Run manually: pre-commit run --all-files
+# https://pre-commit.com/
+
+repos:
+  # General hooks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ['--maxkb=1000']
+      - id: detect-private-key
+
+  # Go-specific hooks
+  - repo: https://github.com/dnephin/pre-commit-golang
+    rev: v0.5.1
+    hooks:
+      - id: go-fmt
+      - id: go-imports
+        args: ['-local', 'github.com/crenspire/upm']
+      - id: go-vet
+      - id: go-mod-tidy
+
+  # Local hooks
+  - repo: local
+    hooks:
+      - id: go-test
+        name: go test
+        entry: go test -v ./...
+        language: system
+        pass_filenames: false
+        types: [go]
+        stages: [push]
+
+      - id: go-build
+        name: go build
+        entry: go build -v ./...
+        language: system
+        pass_filenames: false
+        types: [go]
+
+      - id: golangci-lint
+        name: golangci-lint
+        entry: golangci-lint run --fix
+        language: system
+        pass_filenames: false
+        types: [go]
+
+# CI configuration
+ci:
+  autofix_commit_msg: |
+    [pre-commit.ci] auto fixes from pre-commit hooks
+
+  autofix_prs: true
+  autoupdate_commit_msg: '[pre-commit.ci] pre-commit autoupdate'
+  autoupdate_schedule: weekly
+  skip: [go-test, golangci-lint]  # Skip slow hooks in CI auto-fix
+  submodules: false
+

@@ -1,0 +1,88 @@
+# Binaries
+xpm
+upm
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.test.exe
+*.out
+
+# Go workspace file
+go.work
+go.work.sum
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+coverage.html
+coverage.txt
+
+# Dependency directories
+vendor/
+
+# Go module cache (optional, but can be large)
+# .go/
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+.project
+.classpath
+.settings/
+*.sublime-project
+*.sublime-workspace
+
+# User-specific runtime environment
+.xpm/
+.xpmrc.json
+
+# Lock files (if you want to ignore generated lock files)
+# xpm-lock.yaml
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+*.bak
+*.backup
+
+# OS-specific files
+Thumbs.db
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Build artifacts
+dist/
+build/
+bin/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Debug files
+debug
+__debug_bin
+
+# Profiling data
+*.prof
+cpu.prof
+mem.prof
+
+# Air (live reload tool for Go)
+tmp/
+
+# Compiled shims (these are generated)
+*.orig
+
