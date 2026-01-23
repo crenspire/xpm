@@ -735,6 +735,8 @@ func cmdWhich(args []string) int {
 
 	// Check if npm was found (yarn/pnpm/bun share the same registry)
 	_, npmFound := foundBy[pm.Npm]
+	// Check if pip was found (poetry/pipenv use the same PyPI registry)
+	_, pipFound := foundBy[pm.Pip]
 
 	for _, k := range keys {
 		id := pm.ID(k)
@@ -751,6 +753,8 @@ func cmdWhich(args []string) int {
 		switch id {
 		case pm.Npm:
 			fmt.Println("  → Also available via: yarn, pnpm, bun")
+		case pm.Pip:
+			fmt.Println("  → Also available via: poetry, pipenv")
 		case pm.Maven:
 			fmt.Println("  → Add to pom.xml as dependency.")
 		case pm.Cargo:
@@ -760,12 +764,16 @@ func cmdWhich(args []string) int {
 		}
 	}
 
-	// Collect registries where not found (excluding yarn/pnpm/bun if npm was found)
+	// Collect registries where not found (excluding yarn/pnpm/bun if npm was found, poetry/pipenv if pip was found)
 	var notFound []string
 	for _, meta := range pm.AllMetas() {
 		if _, ok := foundBy[meta.ID]; !ok {
 			// Skip yarn/pnpm/bun if npm was found (they share the same registry)
 			if npmFound && (meta.ID == pm.Yarn || meta.ID == pm.Pnpm || meta.ID == pm.Bun) {
+				continue
+			}
+			// Skip poetry/pipenv if pip was found (they use the same PyPI registry)
+			if pipFound && (meta.ID == pm.Poetry || meta.ID == pm.Pipenv) {
 				continue
 			}
 			// Only show ecosystems that were actually searched

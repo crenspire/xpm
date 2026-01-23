@@ -212,15 +212,22 @@ Output:
 Searching for "lodash"...
 
 Found in:
-- npm: lodash @4.17.21 - Lodash modular utilities
+- composer: lodash-php/lodash-php - A port of Lodash to PHP
+  → Add to composer.json or run `composer require ...`.
+- maven: org.mvnpm.at.types:lodash @4.17.16 - Maven artifact
+  → Add to pom.xml as dependency.
+- npm: lodash @4.17.21 - Lodash modular utilities.
   → Also available via: yarn, pnpm, bun
-- pip: lodash - (if exists)
+- pip: lodash @0.0.1 - python implementation for lodash
+  → Also available via: poetry, pipenv
 
 Not found in:
-- composer (PHP)
 - cargo (Rust)
-- maven (Java)
+- go modules (Go)
+- gradle (Java)
 ```
+
+Note: If a package is found in `pip`, it's also available via `poetry` and `pipenv` since they all use PyPI. Similarly, npm packages are available via `yarn`, `pnpm`, and `bun`.
 
 ### Runtime Version Management
 
