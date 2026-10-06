@@ -98,3 +98,16 @@ func TestCacheDisabledByEnv(t *testing.T) {
 		t.Fatalf("XPM_NO_CACHE=1 must disable the cache, got dir %q", dir)
 	}
 }
+
+func TestCacheDirOverride(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XPM_NO_CACHE", "")
+	t.Setenv("XPM_CACHE_DIR", dir)
+	if got, want := defaultLookupCacheDir(), filepath.Join(dir, "lookups"); got != want {
+		t.Fatalf("defaultLookupCacheDir() = %q, want %q", got, want)
+	}
+	t.Setenv("XPM_NO_CACHE", "1")
+	if got := defaultLookupCacheDir(); got != "" {
+		t.Fatalf("XPM_NO_CACHE must win over XPM_CACHE_DIR, got %q", got)
+	}
+}

@@ -14,7 +14,8 @@ import (
 
 // Exact-lookup results are memoised on disk so repeat commands
 // (`xpm which x` then `xpm install x`) skip the network entirely.
-// Set XPM_NO_CACHE=1 to bypass.
+// Set XPM_NO_CACHE=1 to bypass, or XPM_CACHE_DIR=<dir> to move the cache
+// (entries then live in <dir>/lookups).
 var (
 	lookupCacheDir = defaultLookupCacheDir()
 	positiveTTL    = time.Hour        // package found
@@ -24,6 +25,9 @@ var (
 func defaultLookupCacheDir() string {
 	if os.Getenv("XPM_NO_CACHE") != "" {
 		return ""
+	}
+	if dir := os.Getenv("XPM_CACHE_DIR"); dir != "" {
+		return filepath.Join(dir, "lookups")
 	}
 	dir, err := os.UserCacheDir()
 	if err != nil {

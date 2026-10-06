@@ -165,6 +165,7 @@ Global flags go **before** the command: `xpm -v install axios` turns on verbose 
 | Variable | Effect |
 |---|---|
 | `XPM_NO_CACHE=1` | Skip the on-disk lookup cache (results are cached for 1 h, "not found" for 15 min) |
+| `XPM_CACHE_DIR=<dir>` | Keep xpm's lookup cache in `<dir>/lookups` instead of the OS cache folder (used by `make perf`) |
 
 ## Performance
 
