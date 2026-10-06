@@ -14,6 +14,10 @@ import (
 
 // cmdList lists installed packages for the detected project.
 func cmdList(args []string) int {
+	if len(args) > 0 {
+		fmt.Fprintf(os.Stderr, "error: list takes no arguments, got: %s\n", strings.Join(args, " "))
+		return 1
+	}
 	targets := detectProjectTargets()
 	if len(targets) == 0 {
 		fmt.Println("No known dependency files found (package.json, composer.json, etc).")
@@ -95,6 +99,9 @@ func cmdList(args []string) int {
 
 // cmdUpdate updates packages in the detected project.
 func cmdUpdate(args []string) int {
+	if _, ok := atMostOneArg("update", args); !ok {
+		return 1
+	}
 	targets := detectProjectTargets()
 	if len(targets) == 0 {
 		fmt.Println("No known dependency files found (package.json, composer.json, etc).")
@@ -213,15 +220,10 @@ func cmdUpdate(args []string) int {
 
 // cmdRemove removes a package from the current project.
 func cmdRemove(args []string) int {
-	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "error: missing package name")
-		fmt.Fprintln(os.Stderr)
-		showCommandUsage("remove")
+	pkg, ok := exactlyOneArg("remove", args)
+	if !ok {
 		return 1
 	}
-
-	pkg := args[0]
-
 	targets := detectProjectTargets()
 	if len(targets) == 0 {
 		fmt.Println("No known dependency files found (package.json, composer.json, etc).")
@@ -316,15 +318,10 @@ func cmdRemove(args []string) int {
 
 // cmdInfo shows detailed information about a package.
 func cmdInfo(args []string) int {
-	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "error: missing package name")
-		fmt.Fprintln(os.Stderr)
-		showCommandUsage("info")
+	pkg, ok := exactlyOneArg("info", args)
+	if !ok {
 		return 1
 	}
-
-	pkg := args[0]
-
 	fmt.Printf("Searching for %q...\n\n", pkg)
 
 	searchOpts := search.OptionsFromConfig(cfg)

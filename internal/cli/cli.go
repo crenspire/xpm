@@ -345,14 +345,10 @@ func cmdCleanInstall(args []string) int {
 }
 
 func cmdWhich(args []string) int {
-	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "error: missing package name")
-		fmt.Fprintln(os.Stderr)
-		showCommandUsage("which")
+	pkg, ok := exactlyOneArg("which", args)
+	if !ok {
 		return 1
 	}
-	pkg := args[0]
-
 	fmt.Printf("Searching for %q...\n\n", pkg)
 
 	searchOpts := search.OptionsFromConfig(cfg)

@@ -54,3 +54,11 @@ func withSearchReport(t *testing.T, rep search.Report, err error) {
 	searchReport = func(string, search.Options) (search.Report, error) { return rep, err }
 	t.Cleanup(func() { searchReport = old })
 }
+
+// withInstallOne fakes the per-package install step of cmdInstall.
+func withInstallOne(t *testing.T, fn func(spec string, global bool) int) {
+	t.Helper()
+	old := installPkg
+	installPkg = fn
+	t.Cleanup(func() { installPkg = old })
+}

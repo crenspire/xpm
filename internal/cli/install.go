@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"flag"
 	"fmt"
 	"os"
 	"strings"
@@ -12,25 +11,35 @@ import (
 	"github.com/crenspire/xpm/internal/search"
 )
 
-// ensurePM is ensureManager; tests replace it to observe ordering.
-var ensurePM = ensureManager
+// Seams for tests: ensurePM is ensureManager, installPkg is installOne.
+var (
+	ensurePM   = ensureManager
+	installPkg = installOne
+)
 
 func cmdInstall(args []string) int {
-	fs := flag.NewFlagSet("install", flag.ContinueOnError)
-	global := fs.Bool("global", false, "install globally")
-	gShort := fs.Bool("g", false, "install globally (shorthand)")
-	fs.SetOutput(os.Stderr)
-
-	if err := fs.Parse(args); err != nil {
+	ia, err := parseInstallArgs(args)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		fmt.Fprintln(os.Stderr)
+		showCommandUsage("install")
 		return 1
 	}
-	pkgArgs := fs.Args()
-	glob := *global || *gShort
-
-	if len(pkgArgs) == 0 {
-		return autoInstallDetected(glob)
+	if len(ia.Packages) == 0 {
+		return autoInstallDetected(ia.Global)
 	}
-	return installOne(pkgArgs[0], glob)
+	for i, p := range ia.Packages {
+		if len(ia.Packages) > 1 {
+			fmt.Printf("[%d/%d] %s\n", i+1, len(ia.Packages), p)
+		}
+		if code := installPkg(p, ia.Global); code != 0 {
+			if left := len(ia.Packages) - i - 1; left > 0 {
+				fmt.Fprintf(os.Stderr, "Stopped at %s; %d remaining package(s) were not installed.\n", p, left)
+			}
+			return code
+		}
+	}
+	return 0
 }
 
 // installOne resolves one "name[@version]" argument against the registries

@@ -11,6 +11,9 @@ import (
 
 // cmdSearch handles the search command.
 func cmdSearch(args []string) int {
+	if _, ok := atMostOneArg("search", args); !ok {
+		return 1
+	}
 
 	// The TUI needs a terminal; pipes and CI get plain output.
 	if !cfg.SearchUI.Enabled || !stdoutIsTerminal() {
