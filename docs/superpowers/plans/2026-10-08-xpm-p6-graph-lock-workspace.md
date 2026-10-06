@@ -2233,6 +2233,5400 @@ git commit -m "graph: tree marks repeated subtrees, escaped DOT, SVG via dot std
 
 ---
 
+## Section A2 — Tasks 3–6: graph parsers with real-format fixtures, and ExtractAll
+
+## Review Focus
+
+1. **npm `package-lock.json` resolution (most users).** A package nested at `node_modules/send/node_modules/debug` must link to *its* `ms@2.0.0`, and a hoisted dependency (`mime`) must be found in an ancestor's `node_modules`; the same name+version at two paths is one node. Pinned by `TestParseNpmLockV3Hoisted` (13 nodes, 12 edges) and `TestParseNpmLockV1Nested` (Task 3).
+2. **pnpm keys with peer suffixes and scopes.** `react-dom@18.3.1(react@18.3.1)` and `/@types/react@18.2.79` split on the last `@` that is not the scope's, peer suffix dropped, so nodes are not duplicated per peer context and aliases (`react-is-legacy: react-is@16.13.1`) resolve to the real package. Pinned by `TestParsePnpmLockV9Snapshots`, `TestParsePnpmLockV6`, `TestPnpmSplitKey` (Task 4).
+3. **No build tool runs unless `--exec`.** A polyglot project (npm + go.mod + pom.xml + Cargo.lock) is parsed with a `Run` seam that fails the test if called; with `Exec` the tools run in the project dir in fixed order and failures fall back to file parsing with a warning, never stdout. Pinned by `TestExtractAllRunsNoToolWithoutExec`, `TestExtractAllExecRunsToolsInProjectDir`, `TestExtractAllWarnsAndKeepsStdoutClean` (Task 6).
+
+## Conventions used by Tasks 3–6
+
+- **One project root per extracted project.** Every parser adds the project's own node (`addProject`) as the root, with an edge to each direct dependency (dev/optional included) and to each workspace package. The name comes from the lockfile/manifest (package-lock root entry, package.json, berry `workspace:.` entry, pyproject, composer.json, pom.xml, `Root project '…'`), else the directory name. Exceptions: Cargo (roots are the workspace members, i.e. packages without `source`) and Go (root is the `module`). This matches the convention Task 7 consumes.
+- **Pure parsers.** Each format is a pure function over bytes (`parseNpmLock(data, manifest []byte, fallback string)`, …); the `Extractor` wrappers only read files and run tools. Parsers only call `AddNode`/`AddEdge`/`AddRoot` and never mutate an edge in place. Iteration is over sorted keys, so node/edge/root order is deterministic.
+- **Malformed input returns an error, never panics.** Each format has a malformed-input test. A lockfile that exists but does not parse is an error; there is no silent fallback to another file.
+- **Fixtures** live in `internal/graph/testdata/<ecosystem>/<case>/`, in the real formats (integrity hashes and checksums are well-formed but synthetic). `internal/graph/testdata/.gitattributes` (`* -text`) keeps them byte-exact on Windows checkouts.
+
+---
+
+### Task 3: npm `package-lock.json` v1/v2/v3 with Node's hoisted resolution
+
+**Files:**
+- Create: `internal/graph/project.go`, `internal/graph/npm.go`, `internal/graph/fixture_test.go`, `internal/graph/npm_test.go`, `internal/graph/extract_node_test.go`, `internal/graph/testdata/.gitattributes`, `internal/graph/testdata/npm/{v1-nested,v2,v3-hoisted,v3-workspaces}/…`
+- Modify: `internal/graph/extractors.go` (the `Extractor.Extract` signature), `internal/graph/extract_node.go` (`Extract` uses `parseNpmLock`; delete `extractPackageLock`, `findNodeInPackages`, `extractDependenciesRecursive`), and a one-line signature change in `extract_cargo.go`, `extract_composer.go`, `extract_python.go`, `extract_go.go`, `extract_java.go`, `extract_all.go`.
+
+**Interfaces:**
+- Consumes (Task 1): `type ExtractOptions struct { Exec bool; Run func(dir, name string, args ...string) ([]byte, error); Warn func(msg string) }` with the unexported helpers `func (o ExtractOptions) run(dir, name string, args ...string) ([]byte, error)` (calls `Run`, or real exec with `cmd.Dir = dir` when `Run` is nil) and `func (o ExtractOptions) warn(format string, args ...interface{})` (no-op when `Warn` is nil); `NodeID(eco, name, version)` = `"eco:name@version"` with the name verbatim (no `/`→`-`); `(*DepGraph).AddEdge` O(1) dedupe; `AddNode`, `AddRoot`, `GetNode`, `NewDepNode`, `NewEdge`, `NewTransitiveEdge` unchanged.
+- Produces:
+  - `type Extractor interface { Extract(dir string, opts ExtractOptions) (*DepGraph, error); Supports(file string) bool; Name() string }` (the `opts` parameter is new; every extractor gets it now so Tasks 4–6 do not touch the interface again).
+  - `func addProject(g *DepGraph, eco, name, version, fallback string) string`: adds the project node (metadata `project=true`) as a root and returns its ID.
+  - `func dirName(dir string) string`, `func readOptional(path string) ([]byte, error)` (missing file → `nil, nil`).
+  - `type npmManifest struct { Name, Version string; Dependencies, DevDependencies, OptionalDependencies, PeerDependencies map[string]string }`, `func parseNpmManifest(data []byte) (npmManifest, error)` (empty input → empty manifest).
+  - `func parseNpmLock(data, manifest []byte, fallback string) (*DepGraph, error)`.
+  - `func sortedPairs(m map[string]string) [][2]string`.
+  - Test helpers (package `graph`, `_test.go`): `fixture(t, rel) []byte`, `wantGraph(t, g, nodes, edges, roots int, wantEdges, wantRoots []string)`, `dumpGraph(g) string`, `copyFixtureDir(t, rel) string`.
+
+Rules implemented by `parseNpmLock`:
+- v2 has both `packages` and `dependencies`: `packages` wins. v1 (`dependencies` only) is flattened into v2-style paths (`node_modules/send/node_modules/debug`), its `requires` becoming `dependencies`, so one code path resolves both.
+- Package name: the entry's explicit `name` (aliases, workspace folders), else everything after the **last** `node_modules/` (keeps `@scope/name`), else the folder's base name.
+- `link: true` entries are not nodes; resolving to one follows `resolved` to the workspace folder entry.
+- Edges: from the package at path `P`, each name in `dependencies`, `optionalDependencies` and `peerDependencies` (plus `devDependencies` for workspace folders) resolves to `P/node_modules/<dep>`, then each ancestor's `node_modules/<dep>`, then `node_modules/<dep>`. Unresolvable names (an optional dependency skipped on this platform, an optional peer) are skipped.
+- Nodes are keyed by name+version: the same version at two paths is one node; different versions are distinct.
+- Root: the project (root entry `name`/`version`; v1: top-level `name`/`version`, else package.json; else `fallback`) with edges to its `dependencies`, `devDependencies`, `optionalDependencies`, `peerDependencies`, and to every workspace folder package.
+
+- [ ] **Step 1: Add the fixtures**
+
+Create `internal/graph/testdata/.gitattributes`:
+
+```text
+* -text
+```
+
+Create `internal/graph/testdata/npm/v3-hoisted/package-lock.json`:
+
+```json
+{
+  "name": "hoisted-app",
+  "version": "1.0.0",
+  "lockfileVersion": 3,
+  "requires": true,
+  "packages": {
+    "": {
+      "name": "hoisted-app",
+      "version": "1.0.0",
+      "license": "MIT",
+      "dependencies": {
+        "@babel/highlight": "^7.24.7",
+        "debug": "^4.3.4",
+        "send": "0.18.0"
+      },
+      "devDependencies": {
+        "typescript": "^5.4.5"
+      },
+      "optionalDependencies": {
+        "fsevents": "^2.3.3"
+      }
+    },
+    "node_modules/@babel/helper-validator-identifier": {
+      "version": "7.24.7",
+      "resolved": "https://registry.npmjs.org/@babel/helper-validator-identifier/-/helper-validator-identifier-7.24.7.tgz",
+      "integrity": "sha512-eByk8dVFQpt6ChteMolXrcDElMfnnxwn2CXIMyKSa9YkwuVF5cxvsacsW/wOvP80hE+mCo4753etKsPdEt5gWw==",
+      "engines": {
+        "node": ">=6.9.0"
+      }
+    },
+    "node_modules/@babel/highlight": {
+      "version": "7.24.7",
+      "resolved": "https://registry.npmjs.org/@babel/highlight/-/highlight-7.24.7.tgz",
+      "integrity": "sha512-BJqft6B8Fdnb/5PP9J9EFnedL3DySCGlnKZbA3A5NWoJs1MgOkhpHbGTBipBoFo/AhC3S/S8WRXY0Xz64NmrSA==",
+      "engines": {
+        "node": ">=6.9.0"
+      },
+      "dependencies": {
+        "@babel/helper-validator-identifier": "^7.24.7",
+        "js-tokens": "^4.0.0"
+      }
+    },
+    "node_modules/@babel/highlight/node_modules/js-tokens": {
+      "version": "4.0.0",
+      "resolved": "https://registry.npmjs.org/js-tokens/-/js-tokens-4.0.0.tgz",
+      "integrity": "sha512-hgvFIIZXEh0qKUvHJA9tb+6uMdEHBUTTBVdE5bnB0HXjEjOjXG0NsMmG74DF0EoiAWA+OCL55ZseKfL6rFqqEw=="
+    },
+    "node_modules/debug": {
+      "version": "4.3.4",
+      "resolved": "https://registry.npmjs.org/debug/-/debug-4.3.4.tgz",
+      "integrity": "sha512-BupPcoVax8AsUSFnrxsSdCRX52zZKBWKAhG0EJ+XMppgconjVGWdExLQrjTQzkKTZ23ctOrHCjl/gNb1Um162Q==",
+      "engines": {
+        "node": ">=6.0"
+      },
+      "peerDependenciesMeta": {
+        "supports-color": {
+          "optional": true
+        }
+      },
+      "dependencies": {
+        "ms": "2.1.2"
+      }
+    },
+    "node_modules/fsevents": {
+      "version": "2.3.3",
+      "resolved": "https://registry.npmjs.org/fsevents/-/fsevents-2.3.3.tgz",
+      "integrity": "sha512-ooO4QSxscGtRF5OrKsYxCmGrW7zqKYLLG8pkcSCM+hyToKaLqpfpelxLPd+cSUDhQAPRZkhhQIla2opyOj/PAA==",
+      "hasInstallScript": true,
+      "optional": true,
+      "os": [
+        "darwin"
+      ],
+      "engines": {
+        "node": "^8.16.0 || ^10.6.0 || >=11.0.0"
+      }
+    },
+    "node_modules/js-tokens": {
+      "version": "4.0.0",
+      "resolved": "https://registry.npmjs.org/js-tokens/-/js-tokens-4.0.0.tgz",
+      "integrity": "sha512-hgvFIIZXEh0qKUvHJA9tb+6uMdEHBUTTBVdE5bnB0HXjEjOjXG0NsMmG74DF0EoiAWA+OCL55ZseKfL6rFqqEw=="
+    },
+    "node_modules/mime": {
+      "version": "1.6.0",
+      "resolved": "https://registry.npmjs.org/mime/-/mime-1.6.0.tgz",
+      "integrity": "sha512-xgn8fgtXeLeaCBoueCnXUfSwXuSuM4GMQhO/UX3sCtQvbTMeMvmOj3HcBmhTNFWm7Yy0PyJNCqKCAPas/Bt6Xw==",
+      "bin": {
+        "mime": "cli.js"
+      },
+      "engines": {
+        "node": ">=4"
+      }
+    },
+    "node_modules/ms": {
+      "version": "2.1.2",
+      "resolved": "https://registry.npmjs.org/ms/-/ms-2.1.2.tgz",
+      "integrity": "sha512-sPSQ7YPIO+S7u2y1o8yW2rOmB6YPWyWWkVJaUPfj8B23hijaE2d3WPcgokr/zDI1TTMCPARp31tt1ILsYUlQAg=="
+    },
+    "node_modules/send": {
+      "version": "0.18.0",
+      "resolved": "https://registry.npmjs.org/send/-/send-0.18.0.tgz",
+      "integrity": "sha512-pTZEObEL6vF2IJ9OCPojkfom1Rtyhc1aa/3EAvJvoPDXt4Hv+P/n20+chJu+c0KrdKaS7TuTFcCgPQ6jg908cg==",
+      "engines": {
+        "node": ">= 0.8.0"
+      },
+      "dependencies": {
+        "debug": "2.6.9",
+        "mime": "1.6.0",
+        "ms": "2.1.3"
+      }
+    },
+    "node_modules/send/node_modules/debug": {
+      "version": "2.6.9",
+      "resolved": "https://registry.npmjs.org/debug/-/debug-2.6.9.tgz",
+      "integrity": "sha512-IGyVRcglbQuX9vghGUdjPizKtlC9kF6pKI4iF0VbeM2D4OcU4I7EVNu7jF1NtCnvCg2K4VRgeCD4JBcMVJvekg==",
+      "dependencies": {
+        "ms": "2.0.0"
+      }
+    },
+    "node_modules/send/node_modules/debug/node_modules/ms": {
+      "version": "2.0.0",
+      "resolved": "https://registry.npmjs.org/ms/-/ms-2.0.0.tgz",
+      "integrity": "sha512-GzDco1VK+DfxVedli4bMu6XC47vqtBmY8/ezspZotp8r4Hs/5pUXBizBu70MZuxmkTa9Zk713DWfcC47dVLcaA=="
+    },
+    "node_modules/send/node_modules/ms": {
+      "version": "2.1.3",
+      "resolved": "https://registry.npmjs.org/ms/-/ms-2.1.3.tgz",
+      "integrity": "sha512-SNPMCfwMJciLloOwk1dR7uiNbEGq+2NV3Dxrg760V/KNK+Uq4w5U2vcmL31cswWNU1Fht3QgPY4jDq3ysrp7FQ=="
+    },
+    "node_modules/typescript": {
+      "version": "5.4.5",
+      "resolved": "https://registry.npmjs.org/typescript/-/typescript-5.4.5.tgz",
+      "integrity": "sha512-Kwx5st7aMDS44ZUj1R1tGl0tBmuUyx5d6kp8KbZg9pLssdGXTBoRZOS3FDhx1X6ogQyb9geVMeSdTJtD7mWwfg==",
+      "dev": true,
+      "bin": {
+        "tsc": "bin/tsc",
+        "tsserver": "bin/tsserver"
+      },
+      "engines": {
+        "node": ">=14.17"
+      }
+    }
+  }
+}
+```
+
+Create `internal/graph/testdata/npm/v2/package-lock.json`:
+
+```json
+{
+  "name": "app2",
+  "version": "2.0.0",
+  "lockfileVersion": 2,
+  "requires": true,
+  "packages": {
+    "": {
+      "name": "app2",
+      "version": "2.0.0",
+      "dependencies": {
+        "@types/node": "^20.12.7",
+        "chalk": "^4.1.2"
+      },
+      "devDependencies": {
+        "has-flag": "^4.0.0"
+      }
+    },
+    "node_modules/@types/node": {
+      "version": "20.12.7",
+      "resolved": "https://registry.npmjs.org/@types/node/-/node-20.12.7.tgz",
+      "integrity": "sha512-npO6EqODAJOCPe7WMcyycn5OeTIMKlO2NwkFMiIkjuaoGRuAb/ZCyVIvM2+mOyUFg0JMVRBSd9krQUJr529UXg==",
+      "dependencies": {
+        "undici-types": "~5.26.4"
+      }
+    },
+    "node_modules/ansi-styles": {
+      "version": "4.3.0",
+      "resolved": "https://registry.npmjs.org/ansi-styles/-/ansi-styles-4.3.0.tgz",
+      "integrity": "sha512-P2mdWIMNinU8zsINDF1I0n0w+fl7yDveHlBeU54C+MOZLZL13xrrhxMIMl9rV2+RF+1f4Yz3iBH+D2BJFjPPug==",
+      "engines": {
+        "node": ">=8"
+      },
+      "dependencies": {
+        "color-convert": "^2.0.1"
+      }
+    },
+    "node_modules/chalk": {
+      "version": "4.1.2",
+      "resolved": "https://registry.npmjs.org/chalk/-/chalk-4.1.2.tgz",
+      "integrity": "sha512-tuZs5w21yj0mWJSFWzn/P1KbPjKDszFi8jUvyYwvFraLNC9SxaSFLxTd5j3J5sckjw1iQRUAlmZq36Sk8SCPsw==",
+      "engines": {
+        "node": ">=10"
+      },
+      "dependencies": {
+        "ansi-styles": "^4.1.0",
+        "supports-color": "^7.1.0"
+      }
+    },
+    "node_modules/color-convert": {
+      "version": "2.0.1",
+      "resolved": "https://registry.npmjs.org/color-convert/-/color-convert-2.0.1.tgz",
+      "integrity": "sha512-7N+3PBuY07IRNwppKMvnHIrKvju3AlqlSJ/swkrQ7ibVRHmtE7vDOhLDn466osFUhhs9IWhMiSShDaNRzaWF4w==",
+      "engines": {
+        "node": ">=7.0.0"
+      },
+      "dependencies": {
+        "color-name": "~1.1.4"
+      }
+    },
+    "node_modules/color-name": {
+      "version": "1.1.4",
+      "resolved": "https://registry.npmjs.org/color-name/-/color-name-1.1.4.tgz",
+      "integrity": "sha512-99TW0nCc0kEHEBO8KSBBTK2UbWv0+fIAQ+5T1GDnD/feXD0Dyu0Enye3WoVF84kAoy2+yO/T0CSt0JfKuy+Gkg=="
+    },
+    "node_modules/has-flag": {
+      "version": "4.0.0",
+      "resolved": "https://registry.npmjs.org/has-flag/-/has-flag-4.0.0.tgz",
+      "integrity": "sha512-y7ll80bOIfwFW8ZhK5+DzgKcJ8i9jZ7yBb7o3zh0dneru4lwVepVTqABbWrmEfyriI14avHl9exLALeWqjp8KQ==",
+      "engines": {
+        "node": ">=8"
+      }
+    },
+    "node_modules/supports-color": {
+      "version": "7.2.0",
+      "resolved": "https://registry.npmjs.org/supports-color/-/supports-color-7.2.0.tgz",
+      "integrity": "sha512-1p/P53vkRqrhrHX8Zc3X26mMlEy2vNfDuIbvI8nQlL8pBe2IWLvjxcDbWRrmpxzEv/0VQRnvCDJMiN0ezXF77g==",
+      "engines": {
+        "node": ">=8"
+      },
+      "dependencies": {
+        "has-flag": "^4.0.0"
+      }
+    },
+    "node_modules/undici-types": {
+      "version": "5.26.5",
+      "resolved": "https://registry.npmjs.org/undici-types/-/undici-types-5.26.5.tgz",
+      "integrity": "sha512-WWXwLkoZSYSCuj8JmBif21RWsPDq+FEg6hKUD6cOIrElvpCvrMhO31ImM277LWo9Y8bcnST/jIE6xjK02pnY9w=="
+    }
+  },
+  "dependencies": {
+    "@types/node": {
+      "version": "20.12.7",
+      "resolved": "https://registry.npmjs.org/@types/node/-/node-20.12.7.tgz",
+      "integrity": "sha512-npO6EqODAJOCPe7WMcyycn5OeTIMKlO2NwkFMiIkjuaoGRuAb/ZCyVIvM2+mOyUFg0JMVRBSd9krQUJr529UXg==",
+      "requires": {
+        "undici-types": "~5.26.4"
+      }
+    },
+    "ansi-styles": {
+      "version": "4.3.0",
+      "resolved": "https://registry.npmjs.org/ansi-styles/-/ansi-styles-4.3.0.tgz",
+      "integrity": "sha512-P2mdWIMNinU8zsINDF1I0n0w+fl7yDveHlBeU54C+MOZLZL13xrrhxMIMl9rV2+RF+1f4Yz3iBH+D2BJFjPPug==",
+      "requires": {
+        "color-convert": "^2.0.1"
+      }
+    },
+    "chalk": {
+      "version": "4.1.2",
+      "resolved": "https://registry.npmjs.org/chalk/-/chalk-4.1.2.tgz",
+      "integrity": "sha512-tuZs5w21yj0mWJSFWzn/P1KbPjKDszFi8jUvyYwvFraLNC9SxaSFLxTd5j3J5sckjw1iQRUAlmZq36Sk8SCPsw==",
+      "requires": {
+        "ansi-styles": "^4.1.0",
+        "supports-color": "^7.1.0"
+      }
+    },
+    "color-convert": {
+      "version": "2.0.1",
+      "resolved": "https://registry.npmjs.org/color-convert/-/color-convert-2.0.1.tgz",
+      "integrity": "sha512-7N+3PBuY07IRNwppKMvnHIrKvju3AlqlSJ/swkrQ7ibVRHmtE7vDOhLDn466osFUhhs9IWhMiSShDaNRzaWF4w==",
+      "requires": {
+        "color-name": "~1.1.4"
+      }
+    },
+    "color-name": {
+      "version": "1.1.4",
+      "resolved": "https://registry.npmjs.org/color-name/-/color-name-1.1.4.tgz",
+      "integrity": "sha512-99TW0nCc0kEHEBO8KSBBTK2UbWv0+fIAQ+5T1GDnD/feXD0Dyu0Enye3WoVF84kAoy2+yO/T0CSt0JfKuy+Gkg=="
+    },
+    "has-flag": {
+      "version": "4.0.0",
+      "resolved": "https://registry.npmjs.org/has-flag/-/has-flag-4.0.0.tgz",
+      "integrity": "sha512-y7ll80bOIfwFW8ZhK5+DzgKcJ8i9jZ7yBb7o3zh0dneru4lwVepVTqABbWrmEfyriI14avHl9exLALeWqjp8KQ=="
+    },
+    "supports-color": {
+      "version": "7.2.0",
+      "resolved": "https://registry.npmjs.org/supports-color/-/supports-color-7.2.0.tgz",
+      "integrity": "sha512-1p/P53vkRqrhrHX8Zc3X26mMlEy2vNfDuIbvI8nQlL8pBe2IWLvjxcDbWRrmpxzEv/0VQRnvCDJMiN0ezXF77g==",
+      "requires": {
+        "has-flag": "^4.0.0"
+      }
+    },
+    "undici-types": {
+      "version": "5.26.5",
+      "resolved": "https://registry.npmjs.org/undici-types/-/undici-types-5.26.5.tgz",
+      "integrity": "sha512-WWXwLkoZSYSCuj8JmBif21RWsPDq+FEg6hKUD6cOIrElvpCvrMhO31ImM277LWo9Y8bcnST/jIE6xjK02pnY9w=="
+    }
+  }
+}
+```
+
+Create `internal/graph/testdata/npm/v1-nested/package-lock.json`:
+
+```json
+{
+  "name": "legacy-app",
+  "version": "1.0.0",
+  "lockfileVersion": 1,
+  "requires": true,
+  "dependencies": {
+    "@types/debug": {
+      "version": "4.1.12",
+      "resolved": "https://registry.npmjs.org/@types/debug/-/debug-4.1.12.tgz",
+      "integrity": "sha512-Hiz9BduoxF/IxcSpP2BOPuZNztXL1DZnFPS4dz+uzJgB2nDng6q6EgOj771QLakOrq/vVreueNcR8ybPxyevxA==",
+      "dev": true,
+      "requires": {
+        "@types/ms": "*"
+      }
+    },
+    "@types/ms": {
+      "version": "0.7.34",
+      "resolved": "https://registry.npmjs.org/@types/ms/-/ms-0.7.34.tgz",
+      "integrity": "sha512-zmqvIicioy5hv/fF0zMI2ZDtQcp2jUhzzR7dkvs/HmV/MOBZZc31NTWqgzmSZikcZ8sNSuPwKuvPWRMU+pIwxQ==",
+      "dev": true
+    },
+    "debug": {
+      "version": "4.3.4",
+      "resolved": "https://registry.npmjs.org/debug/-/debug-4.3.4.tgz",
+      "integrity": "sha512-BupPcoVax8AsUSFnrxsSdCRX52zZKBWKAhG0EJ+XMppgconjVGWdExLQrjTQzkKTZ23ctOrHCjl/gNb1Um162Q==",
+      "requires": {
+        "ms": "2.1.2"
+      }
+    },
+    "mime": {
+      "version": "1.6.0",
+      "resolved": "https://registry.npmjs.org/mime/-/mime-1.6.0.tgz",
+      "integrity": "sha512-xgn8fgtXeLeaCBoueCnXUfSwXuSuM4GMQhO/UX3sCtQvbTMeMvmOj3HcBmhTNFWm7Yy0PyJNCqKCAPas/Bt6Xw=="
+    },
+    "ms": {
+      "version": "2.1.2",
+      "resolved": "https://registry.npmjs.org/ms/-/ms-2.1.2.tgz",
+      "integrity": "sha512-sPSQ7YPIO+S7u2y1o8yW2rOmB6YPWyWWkVJaUPfj8B23hijaE2d3WPcgokr/zDI1TTMCPARp31tt1ILsYUlQAg=="
+    },
+    "send": {
+      "version": "0.18.0",
+      "resolved": "https://registry.npmjs.org/send/-/send-0.18.0.tgz",
+      "integrity": "sha512-pTZEObEL6vF2IJ9OCPojkfom1Rtyhc1aa/3EAvJvoPDXt4Hv+P/n20+chJu+c0KrdKaS7TuTFcCgPQ6jg908cg==",
+      "requires": {
+        "debug": "2.6.9",
+        "mime": "1.6.0",
+        "ms": "2.1.3"
+      },
+      "dependencies": {
+        "debug": {
+          "version": "2.6.9",
+          "resolved": "https://registry.npmjs.org/debug/-/debug-2.6.9.tgz",
+          "integrity": "sha512-IGyVRcglbQuX9vghGUdjPizKtlC9kF6pKI4iF0VbeM2D4OcU4I7EVNu7jF1NtCnvCg2K4VRgeCD4JBcMVJvekg==",
+          "requires": {
+            "ms": "2.0.0"
+          },
+          "dependencies": {
+            "ms": {
+              "version": "2.0.0",
+              "resolved": "https://registry.npmjs.org/ms/-/ms-2.0.0.tgz",
+              "integrity": "sha512-GzDco1VK+DfxVedli4bMu6XC47vqtBmY8/ezspZotp8r4Hs/5pUXBizBu70MZuxmkTa9Zk713DWfcC47dVLcaA=="
+            }
+          }
+        },
+        "ms": {
+          "version": "2.1.3",
+          "resolved": "https://registry.npmjs.org/ms/-/ms-2.1.3.tgz",
+          "integrity": "sha512-SNPMCfwMJciLloOwk1dR7uiNbEGq+2NV3Dxrg760V/KNK+Uq4w5U2vcmL31cswWNU1Fht3QgPY4jDq3ysrp7FQ=="
+        }
+      }
+    }
+  }
+}
+```
+
+Create `internal/graph/testdata/npm/v1-nested/package.json`:
+
+```json
+{
+  "name": "legacy-app",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "debug": "^4.3.4",
+    "send": "0.18.0"
+  },
+  "devDependencies": {
+    "@types/debug": "^4.1.12"
+  }
+}
+```
+
+Create `internal/graph/testdata/npm/v3-workspaces/package-lock.json`:
+
+```json
+{
+  "name": "mono",
+  "version": "0.0.0",
+  "lockfileVersion": 3,
+  "requires": true,
+  "packages": {
+    "": {
+      "name": "mono",
+      "version": "0.0.0",
+      "workspaces": [
+        "packages/*"
+      ],
+      "devDependencies": {
+        "typescript": "^5.4.5"
+      }
+    },
+    "node_modules/@mono/cli": {
+      "resolved": "packages/cli",
+      "link": true
+    },
+    "node_modules/@mono/core": {
+      "resolved": "packages/core",
+      "link": true
+    },
+    "node_modules/kleur": {
+      "version": "4.1.5",
+      "resolved": "https://registry.npmjs.org/kleur/-/kleur-4.1.5.tgz",
+      "integrity": "sha512-fIrcmb4ZKuDOkyllNnrDFrkLohs/0HxNBXOrvrZRxBAmX89GKveZC3hgzSeZn/R3nM9qeaf3FOVUcLCvNUOtBg==",
+      "engines": {
+        "node": ">=6"
+      }
+    },
+    "node_modules/typescript": {
+      "version": "5.4.5",
+      "resolved": "https://registry.npmjs.org/typescript/-/typescript-5.4.5.tgz",
+      "integrity": "sha512-Kwx5st7aMDS44ZUj1R1tGl0tBmuUyx5d6kp8KbZg9pLssdGXTBoRZOS3FDhx1X6ogQyb9geVMeSdTJtD7mWwfg==",
+      "dev": true,
+      "bin": {
+        "tsc": "bin/tsc",
+        "tsserver": "bin/tsserver"
+      },
+      "engines": {
+        "node": ">=14.17"
+      }
+    },
+    "packages/cli": {
+      "name": "@mono/cli",
+      "version": "0.3.0",
+      "dependencies": {
+        "@mono/core": "^1.2.0",
+        "commander": "^12.0.0"
+      }
+    },
+    "packages/cli/node_modules/commander": {
+      "version": "12.0.0",
+      "resolved": "https://registry.npmjs.org/commander/-/commander-12.0.0.tgz",
+      "integrity": "sha512-x2tQBcOcEV3EHmVimH9t9nAoHmm81Fx7Z6JlikJ0h+sHKhTJ6m/JDlEmJyHd4plTKClrdgkaLB28E6HSHxGtTQ==",
+      "engines": {
+        "node": ">=18"
+      }
+    },
+    "packages/core": {
+      "name": "@mono/core",
+      "version": "1.2.0",
+      "dependencies": {
+        "kleur": "^4.1.5"
+      }
+    }
+  }
+}
+```
+
+Expected shapes (asserted below): v3-hoisted 13 nodes / 12 edges / 1 root; v2 9 / 9 / 1; v1-nested 10 / 9 / 1 (6 edges without package.json); v3-workspaces 6 / 6 / 1.
+
+- [ ] **Step 2: Write the failing tests**
+
+Create `internal/graph/fixture_test.go`:
+
+```go
+package graph
+
+import (
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"testing"
+)
+
+// fixture reads internal/graph/testdata/<rel>.
+func fixture(t *testing.T, rel string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("testdata", filepath.FromSlash(rel)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+// wantGraph asserts exact node, edge and root counts, then that every listed
+// edge ("from -> to") and root exists. On failure it prints the whole graph.
+func wantGraph(t *testing.T, g *DepGraph, nodes, edges, roots int, wantEdges []string, wantRoots []string) {
+	t.Helper()
+	if g == nil {
+		t.Fatal("graph is nil")
+	}
+	ok := len(g.Nodes) == nodes && len(g.Edges) == edges && len(g.Root) == roots
+	have := map[string]bool{}
+	for _, e := range g.Edges {
+		have[e.From+" -> "+e.To] = true
+	}
+	for _, e := range wantEdges {
+		if !have[e] {
+			ok = false
+			t.Errorf("missing edge %s", e)
+		}
+	}
+	isRoot := map[string]bool{}
+	for _, r := range g.Root {
+		isRoot[r] = true
+	}
+	for _, r := range wantRoots {
+		if !isRoot[r] {
+			ok = false
+			t.Errorf("missing root %s", r)
+		}
+	}
+	for _, e := range g.Edges {
+		if g.Nodes[e.From] == nil || g.Nodes[e.To] == nil {
+			ok = false
+			t.Errorf("edge %s -> %s references a missing node", e.From, e.To)
+		}
+	}
+	if !ok {
+		t.Errorf("got %d nodes, %d edges, %d roots; want %d, %d, %d\n%s",
+			len(g.Nodes), len(g.Edges), len(g.Root), nodes, edges, roots, dumpGraph(g))
+	}
+}
+
+func dumpGraph(g *DepGraph) string {
+	var lines []string
+	for id := range g.Nodes {
+		lines = append(lines, "node "+id)
+	}
+	sort.Strings(lines)
+	for _, e := range g.Edges {
+		lines = append(lines, "edge "+e.From+" -> "+e.To+" ("+e.Type+")")
+	}
+	for _, r := range g.Root {
+		lines = append(lines, "root "+r)
+	}
+	return strings.Join(lines, "\n")
+}
+```
+
+Create `internal/graph/npm_test.go`:
+
+```go
+package graph
+
+import "testing"
+
+func TestParseNpmLockV3Hoisted(t *testing.T) {
+	g, err := parseNpmLock(fixture(t, "npm/v3-hoisted/package-lock.json"), nil, "fallback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 12 packages + the project; 7 package edges + 5 from the project.
+	wantGraph(t, g, 13, 12, 1, []string{
+		"node:send@0.18.0 -> node:debug@2.6.9",                 // nested under send
+		"node:send@0.18.0 -> node:ms@2.1.3",                    // nested under send
+		"node:send@0.18.0 -> node:mime@1.6.0",                  // hoisted to the root
+		"node:debug@2.6.9 -> node:ms@2.0.0",                    // nested two levels deep
+		"node:debug@4.3.4 -> node:ms@2.1.2",                    // hoisted
+		"node:@babel/highlight@7.24.7 -> node:js-tokens@4.0.0", // same version at two paths: one node
+		"node:@babel/highlight@7.24.7 -> node:@babel/helper-validator-identifier@7.24.7",
+		"node:hoisted-app@1.0.0 -> node:typescript@5.4.5", // devDependencies
+		"node:hoisted-app@1.0.0 -> node:fsevents@2.3.3",   // optionalDependencies
+	}, []string{"node:hoisted-app@1.0.0"})
+	if n := g.GetNode("node:@babel/highlight@7.24.7"); n == nil || n.Name != "@babel/highlight" {
+		t.Errorf("scoped node = %+v, want name @babel/highlight", n)
+	}
+}
+
+func TestParseNpmLockV2PrefersPackages(t *testing.T) {
+	// No package.json: the project and its direct dependencies must come from
+	// the v2 "packages" root entry, which lists has-flag as a devDependency.
+	g, err := parseNpmLock(fixture(t, "npm/v2/package-lock.json"), nil, "fallback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantGraph(t, g, 9, 9, 1, []string{
+		"node:@types/node@20.12.7 -> node:undici-types@5.26.5",
+		"node:supports-color@7.2.0 -> node:has-flag@4.0.0",
+		"node:app2@2.0.0 -> node:has-flag@4.0.0",
+	}, []string{"node:app2@2.0.0"})
+}
+
+func TestParseNpmLockV1Nested(t *testing.T) {
+	g, err := parseNpmLock(fixture(t, "npm/v1-nested/package-lock.json"), fixture(t, "npm/v1-nested/package.json"), "fallback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantGraph(t, g, 10, 9, 1, []string{
+		"node:send@0.18.0 -> node:debug@2.6.9",
+		"node:send@0.18.0 -> node:ms@2.1.3",
+		"node:send@0.18.0 -> node:mime@1.6.0",
+		"node:debug@2.6.9 -> node:ms@2.0.0",
+		"node:debug@4.3.4 -> node:ms@2.1.2",
+		"node:@types/debug@4.1.12 -> node:@types/ms@0.7.34",
+		"node:legacy-app@1.0.0 -> node:send@0.18.0",
+		"node:legacy-app@1.0.0 -> node:@types/debug@4.1.12",
+	}, []string{"node:legacy-app@1.0.0"})
+}
+
+func TestParseNpmLockV1WithoutManifestHasNoDirectDeps(t *testing.T) {
+	// v1 lockfiles do not record the project's direct dependencies.
+	g, err := parseNpmLock(fixture(t, "npm/v1-nested/package-lock.json"), nil, "fallback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantGraph(t, g, 10, 6, 1, nil, []string{"node:legacy-app@1.0.0"})
+}
+
+func TestParseNpmLockV3Workspaces(t *testing.T) {
+	g, err := parseNpmLock(fixture(t, "npm/v3-workspaces/package-lock.json"), nil, "fallback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantGraph(t, g, 6, 6, 1, []string{
+		"node:@mono/cli@0.3.0 -> node:@mono/core@1.2.0", // through the node_modules link
+		"node:@mono/cli@0.3.0 -> node:commander@12.0.0", // packages/cli/node_modules
+		"node:@mono/core@1.2.0 -> node:kleur@4.1.5",     // root node_modules
+		"node:mono@0.0.0 -> node:typescript@5.4.5",
+		"node:mono@0.0.0 -> node:@mono/cli@0.3.0", // workspace packages hang off the project
+		"node:mono@0.0.0 -> node:@mono/core@1.2.0",
+	}, []string{"node:mono@0.0.0"})
+}
+
+func TestParseNpmLockMalformed(t *testing.T) {
+	for name, data := range map[string]string{
+		"truncated":      `{"lockfileVersion": 3, "packages": {"": {`,
+		"packages-array": `{"lockfileVersion": 3, "packages": []}`,
+		"version-object": `{"lockfileVersion": 3, "packages": {"node_modules/a": {"version": {}}}}`,
+		"not-json":       "<<<<<<< HEAD\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if g, err := parseNpmLock([]byte(data), nil, "fallback"); err == nil {
+				t.Fatalf("want error, got graph %v", g)
+			}
+		})
+	}
+	if _, err := parseNpmLock(fixture(t, "npm/v1-nested/package-lock.json"), []byte("{"), "fallback"); err == nil {
+		t.Fatal("malformed package.json must be an error")
+	}
+}
+
+func TestParseNpmLockProjectNameFallsBack(t *testing.T) {
+	g, err := parseNpmLock([]byte(`{"lockfileVersion": 3, "packages": {"": {}}}`), nil, "my-dir")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantGraph(t, g, 1, 0, 1, nil, []string{"node:my-dir@"})
+}
+```
+
+Create `internal/graph/extract_node_test.go`:
+
+```go
+package graph
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+// copyFixtureDir copies testdata/<rel>/* into a fresh temp dir and returns it.
+func copyFixtureDir(t *testing.T, rel string) string {
+	t.Helper()
+	dir := t.TempDir()
+	src := filepath.Join("testdata", filepath.FromSlash(rel))
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		data, err := os.ReadFile(filepath.Join(src, e.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, e.Name()), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+func TestNodeExtractorReadsPackageLockAndManifest(t *testing.T) {
+	g, err := (&NodeExtractor{}).Extract(copyFixtureDir(t, "npm/v1-nested"), ExtractOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantGraph(t, g, 10, 9, 1, []string{"node:legacy-app@1.0.0 -> node:send@0.18.0"}, []string{"node:legacy-app@1.0.0"})
+}
+
+func TestNodeExtractorMalformedPackageLockIsAnError(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "package-lock.json"), []byte("{"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&NodeExtractor{}).Extract(dir, ExtractOptions{}); err == nil {
+		t.Fatal("want error for a malformed package-lock.json")
+	}
+}
+```
+
+- [ ] **Step 3: Run the tests to verify they fail**
+
+Run: `go test ./internal/graph/`
+Expected: build failure, including `undefined: parseNpmLock`.
+
+- [ ] **Step 4: Implement**
+
+Create `internal/graph/project.go`:
+
+```go
+package graph
+
+import (
+	"errors"
+	"io/fs"
+	"os"
+	"path/filepath"
+)
+
+// addProject adds the project's own node (ecosystem:name@version) and makes
+// it a root of g; parsers then add an edge from it to every direct
+// dependency. An empty name falls back to fallback (the directory name).
+func addProject(g *DepGraph, eco, name, version, fallback string) string {
+	if name == "" {
+		name = fallback
+	}
+	n := NewDepNode(eco, name, version)
+	n.WithMetadata("project", "true")
+	if g.GetNode(n.ID) == nil {
+		g.AddNode(n)
+	}
+	g.AddRoot(n.ID)
+	return n.ID
+}
+
+// dirName is the base name of dir, made absolute first so "." names the
+// real folder.
+func dirName(dir string) string {
+	if abs, err := filepath.Abs(dir); err == nil {
+		dir = abs
+	}
+	return filepath.Base(dir)
+}
+
+// readOptional reads path; a missing file is not an error and yields nil.
+func readOptional(path string) ([]byte, error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	return data, err
+}
+```
+
+Create `internal/graph/npm.go`:
+
+```go
+package graph
+
+import (
+	"encoding/json"
+	"fmt"
+	"sort"
+	"strings"
+)
+
+// npmManifest is the subset of package.json the Node parsers need.
+type npmManifest struct {
+	Name                 string            `json:"name"`
+	Version              string            `json:"version"`
+	Dependencies         map[string]string `json:"dependencies"`
+	DevDependencies      map[string]string `json:"devDependencies"`
+	OptionalDependencies map[string]string `json:"optionalDependencies"`
+	PeerDependencies     map[string]string `json:"peerDependencies"`
+}
+
+// parseNpmManifest parses package.json bytes; nil or empty input yields an empty manifest.
+func parseNpmManifest(data []byte) (npmManifest, error) {
+	var m npmManifest
+	if len(data) == 0 {
+		return m, nil
+	}
+	if err := json.Unmarshal(data, &m); err != nil {
+		return m, fmt.Errorf("package.json: %w", err)
+	}
+	return m, nil
+}
+
+// npmLockfile covers package-lock.json / npm-shrinkwrap.json v1, v2 and v3.
+type npmLockfile struct {
+	Name            string                `json:"name"`
+	Version         string                `json:"version"`
+	LockfileVersion int                   `json:"lockfileVersion"`
+	Packages        map[string]npmPackage `json:"packages"`
+	Dependencies    map[string]npmV1Dep   `json:"dependencies"`
+}
+
+// npmPackage is one entry of the v2/v3 "packages" map.
+type npmPackage struct {
+	Name                 string            `json:"name"`
+	Version              string            `json:"version"`
+	Resolved             string            `json:"resolved"`
+	Integrity            string            `json:"integrity"`
+	Link                 bool              `json:"link"`
+	Dev                  bool              `json:"dev"`
+	Optional             bool              `json:"optional"`
+	Dependencies         map[string]string `json:"dependencies"`
+	DevDependencies      map[string]string `json:"devDependencies"`
+	OptionalDependencies map[string]string `json:"optionalDependencies"`
+	PeerDependencies     map[string]string `json:"peerDependencies"`
+}
+
+// npmV1Dep is one entry of the v1 nested "dependencies" tree.
+type npmV1Dep struct {
+	Version      string              `json:"version"`
+	Resolved     string              `json:"resolved"`
+	Integrity    string              `json:"integrity"`
+	Dev          bool                `json:"dev"`
+	Optional     bool                `json:"optional"`
+	Requires     map[string]string   `json:"requires"`
+	Dependencies map[string]npmV1Dep `json:"dependencies"`
+}
+
+// parseNpmLock builds the graph of a package-lock.json (v1, v2 or v3).
+// manifest is package.json; it is only consulted when the lockfile has no
+// root entry (v1). The single root is the project (named by the lockfile,
+// else package.json, else fallback), with edges to its direct dependencies
+// and to any workspace packages.
+func parseNpmLock(data, manifest []byte, fallback string) (*DepGraph, error) {
+	var lock npmLockfile
+	if err := json.Unmarshal(data, &lock); err != nil {
+		return nil, fmt.Errorf("package-lock.json: %w", err)
+	}
+	pkgs := lock.Packages
+	if len(pkgs) == 0 && len(lock.Dependencies) > 0 {
+		pkgs = map[string]npmPackage{}
+		flattenNpmV1(lock.Dependencies, "", pkgs)
+	}
+	if _, ok := pkgs[""]; !ok {
+		m, err := parseNpmManifest(manifest)
+		if err != nil {
+			return nil, err
+		}
+		if pkgs == nil {
+			pkgs = map[string]npmPackage{}
+		}
+		name, version := lock.Name, lock.Version
+		if name == "" {
+			name, version = m.Name, m.Version
+		}
+		pkgs[""] = npmPackage{
+			Name:                 name,
+			Version:              version,
+			Dependencies:         m.Dependencies,
+			DevDependencies:      m.DevDependencies,
+			OptionalDependencies: m.OptionalDependencies,
+			PeerDependencies:     m.PeerDependencies,
+		}
+	}
+	return buildNpmGraph(pkgs, fallback), nil
+}
+
+// flattenNpmV1 converts the v1 nested tree into v2-style node_modules paths.
+func flattenNpmV1(deps map[string]npmV1Dep, parent string, out map[string]npmPackage) {
+	for name, d := range deps {
+		p := "node_modules/" + name
+		if parent != "" {
+			p = parent + "/node_modules/" + name
+		}
+		out[p] = npmPackage{
+			Version:      d.Version,
+			Resolved:     d.Resolved,
+			Integrity:    d.Integrity,
+			Dev:          d.Dev,
+			Optional:     d.Optional,
+			Dependencies: d.Requires,
+		}
+		flattenNpmV1(d.Dependencies, p, out)
+	}
+}
+
+// npmPackageName is the package name at a "packages" path: the explicit name
+// field, else everything after the last "node_modules/" (keeps "@scope/name"),
+// else the last path element (workspace folders).
+func npmPackageName(path string, p npmPackage) string {
+	if p.Name != "" {
+		return p.Name
+	}
+	if i := strings.LastIndex(path, "node_modules/"); i >= 0 {
+		return path[i+len("node_modules/"):]
+	}
+	if i := strings.LastIndex(path, "/"); i >= 0 {
+		return path[i+1:]
+	}
+	return path
+}
+
+// npmParentPath is the folder whose node_modules Node searches next.
+func npmParentPath(path string) string {
+	if i := strings.LastIndex(path, "/node_modules/"); i >= 0 {
+		return path[:i]
+	}
+	return ""
+}
+
+// npmResolve finds the path a require of dep from the package at path loads,
+// following Node's lookup (own node_modules, then each ancestor's, then the
+// root's) and workspace links. ok is false when nothing is installed.
+func npmResolve(pkgs map[string]npmPackage, from, dep string) (string, bool) {
+	p := from
+	for {
+		cand := "node_modules/" + dep
+		if p != "" {
+			cand = p + "/node_modules/" + dep
+		}
+		if e, ok := pkgs[cand]; ok {
+			if e.Link {
+				if _, ok := pkgs[e.Resolved]; ok {
+					return e.Resolved, true
+				}
+				return "", false
+			}
+			return cand, true
+		}
+		if p == "" {
+			return "", false
+		}
+		p = npmParentPath(p)
+	}
+}
+
+func buildNpmGraph(pkgs map[string]npmPackage, fallback string) *DepGraph {
+	g := NewGraph()
+	project := addProject(g, "node", pkgs[""].Name, pkgs[""].Version, fallback)
+	paths := make([]string, 0, len(pkgs))
+	for p := range pkgs {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+
+	ids := map[string]string{} // path -> node ID
+	for _, p := range paths {
+		e := pkgs[p]
+		if p == "" || e.Link {
+			continue
+		}
+		name := npmPackageName(p, e)
+		if name == "" || (e.Version == "" && strings.Contains(p, "node_modules/")) {
+			continue
+		}
+		n := NewDepNode("node", name, e.Version)
+		if g.GetNode(n.ID) == nil {
+			if e.Resolved != "" {
+				n.WithMetadata("resolved", e.Resolved)
+			}
+			if e.Integrity != "" {
+				n.WithMetadata("integrity", e.Integrity)
+			}
+			g.AddNode(n)
+		}
+		ids[p] = n.ID
+	}
+
+	edgesFrom := func(from string, e npmPackage, includeDev bool) []string {
+		deps := map[string]string{}
+		sections := []map[string]string{e.PeerDependencies, e.Dependencies, e.OptionalDependencies}
+		if includeDev {
+			sections = append(sections, e.DevDependencies)
+		}
+		for _, sec := range sections {
+			for name, rng := range sec {
+				deps[name] = rng
+			}
+		}
+		var out []string
+		for _, kv := range sortedPairs(deps) {
+			if target, ok := npmResolve(pkgs, from, kv[0]); ok {
+				if id, ok := ids[target]; ok {
+					out = append(out, id)
+				}
+			}
+		}
+		return out
+	}
+
+	for _, to := range edgesFrom("", pkgs[""], true) {
+		g.AddEdge(NewEdge(project, to))
+	}
+	for _, p := range paths {
+		id, ok := ids[p]
+		if !ok {
+			continue
+		}
+		workspace := !strings.Contains(p, "node_modules/")
+		if workspace {
+			g.AddEdge(NewEdge(project, id))
+		}
+		for _, to := range edgesFrom(p, pkgs[p], workspace) {
+			g.AddEdge(NewEdge(id, to))
+		}
+	}
+	return g
+}
+
+// sortedPairs returns the map's entries sorted by key.
+func sortedPairs(m map[string]string) [][2]string {
+	out := make([][2]string, 0, len(m))
+	for k, v := range m {
+		out = append(out, [2]string{k, v})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i][0] < out[j][0] })
+	return out
+}
+```
+
+In `internal/graph/extractors.go` change the method in the interface:
+
+```go
+	// Extract extracts dependencies from the given directory.
+	Extract(dir string, opts ExtractOptions) (*DepGraph, error)
+```
+
+In each of `extract_cargo.go`, `extract_composer.go`, `extract_python.go`, `extract_go.go`, `extract_java.go`, change only the method signature (bodies stay until Tasks 5–6):
+
+```go
+func (e *CargoExtractor) Extract(dir string, _ ExtractOptions) (*DepGraph, error) {
+func (e *ComposerExtractor) Extract(dir string, _ ExtractOptions) (*DepGraph, error) {
+func (e *PythonExtractor) Extract(dir string, _ ExtractOptions) (*DepGraph, error) {
+func (e *GoExtractor) Extract(dir string, _ ExtractOptions) (*DepGraph, error) {
+func (e *JavaExtractor) Extract(dir string, _ ExtractOptions) (*DepGraph, error) {
+```
+
+In `extract_all.go`, in the extractor goroutine, change `graph, err := ext.Extract(dir)` to:
+
+```go
+			graph, err := ext.Extract(dir, ExtractOptions{})
+```
+
+Replace `internal/graph/extract_node.go` with the version below. Relative to the current file: `Extract` is rewritten, `extractPackageLock`, `findNodeInPackages` and `extractDependenciesRecursive` are deleted, and `errors`/`io/fs` are imported; `extractYarnLock`/`extractPnpmLock` are unchanged (Task 4 replaces them).
+
+Replace `internal/graph/extract_node.go`:
+
+```go
+package graph
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"gopkg.in/yaml.v3"
+)
+
+// NodeExtractor extracts dependencies from Node.js lockfiles.
+type NodeExtractor struct{}
+
+func (e *NodeExtractor) Name() string {
+	return "node"
+}
+
+func (e *NodeExtractor) Supports(file string) bool {
+	return file == "package-lock.json" || file == "yarn.lock" ||
+		file == "pnpm-lock.yaml" || file == "bun.lockb"
+}
+
+// Extract parses package-lock.json when present. yarn.lock and
+// pnpm-lock.yaml still go through the legacy readers below until Task 4.
+func (e *NodeExtractor) Extract(dir string, _ ExtractOptions) (*DepGraph, error) {
+	data, err := os.ReadFile(filepath.Join(dir, "package-lock.json"))
+	if err == nil {
+		manifest, err := readOptional(filepath.Join(dir, "package.json"))
+		if err != nil {
+			return nil, err
+		}
+		return parseNpmLock(data, manifest, dirName(dir))
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		return nil, err
+	}
+
+	graph := NewGraph()
+
+	// Try yarn.lock
+	if err := e.extractYarnLock(dir, graph); err == nil {
+		return graph, nil
+	}
+
+	// Try pnpm-lock.yaml
+	if err := e.extractPnpmLock(dir, graph); err == nil {
+		return graph, nil
+	}
+
+	// bun.lockb is binary, skip for now
+	return graph, fmt.Errorf("no supported Node.js lockfile found")
+}
+
+func (e *NodeExtractor) extractYarnLock(dir string, graph *DepGraph) error {
+	path := filepath.Join(dir, "yarn.lock")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+
+	// Try to read package.json to identify root dependencies
+	rootDeps := make(map[string]bool)
+	packageJSONPath := filepath.Join(dir, "package.json")
+	if pkgData, err := os.ReadFile(packageJSONPath); err == nil {
+		var pkgJSON struct {
+			Dependencies    map[string]string `json:"dependencies"`
+			DevDependencies map[string]string `json:"devDependencies"`
+		}
+		if err := json.Unmarshal(pkgData, &pkgJSON); err == nil {
+			// Collect all root dependencies
+			for dep := range pkgJSON.Dependencies {
+				rootDeps[dep] = true
+			}
+			for dep := range pkgJSON.DevDependencies {
+				rootDeps[dep] = true
+			}
+		}
+	}
+
+	// Yarn lockfile is a custom format, parse line by line
+	lines := strings.Split(string(data), "\n")
+	var currentName, currentVersion string
+	var currentDeps []string
+	allPackages := make(map[string]*DepNode) // Track all packages by name
+	dependencyOf := make(map[string]bool)    // Track which packages are dependencies
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, `"`) && strings.Contains(line, "@") {
+			// Parse package name and version
+			parts := strings.SplitN(line, `"`, 3)
+			if len(parts) >= 2 {
+				fullName := parts[1]
+				if idx := strings.LastIndex(fullName, "@"); idx > 0 {
+					currentName = fullName[:idx]
+					currentVersion = fullName[idx+1:]
+				}
+			}
+		} else if strings.HasPrefix(line, "dependencies:") {
+			// Start collecting dependencies
+			currentDeps = []string{}
+		} else if strings.HasPrefix(line, "  ") && currentDeps != nil {
+			// Dependency line
+			depLine := strings.TrimSpace(line)
+			if idx := strings.Index(depLine, " "); idx > 0 {
+				depName := depLine[:idx]
+				currentDeps = append(currentDeps, depName)
+			}
+		} else if line == "" && currentName != "" {
+			// End of package entry
+			node := NewDepNode("node", currentName, currentVersion)
+			graph.AddNode(node)
+			allPackages[currentName] = node
+
+			// Mark dependencies
+			for _, depName := range currentDeps {
+				dependencyOf[depName] = true
+				// Find dependency node
+				depNode := graph.FindNodeByName(depName)
+				if len(depNode) > 0 {
+					graph.AddEdge(NewEdge(node.ID, depNode[0].ID))
+				}
+			}
+
+			currentName = ""
+			currentVersion = ""
+			currentDeps = nil
+		}
+	}
+
+	// Identify root packages: those in package.json dependencies or not dependencies of anything
+	for name, node := range allPackages {
+		if rootDeps[name] || !dependencyOf[name] {
+			graph.AddRoot(node.ID)
+		}
+	}
+
+	return nil
+}
+
+func (e *NodeExtractor) extractPnpmLock(dir string, graph *DepGraph) error {
+	path := filepath.Join(dir, "pnpm-lock.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+
+	var lockfile struct {
+		Packages map[string]interface{} `yaml:"packages"`
+	}
+
+	if err := yaml.Unmarshal(data, &lockfile); err != nil {
+		return err
+	}
+
+	for pkgPath, pkgData := range lockfile.Packages {
+		pkgMap, ok := pkgData.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		// Extract name and version from path or data
+		parts := strings.Split(pkgPath, "/")
+		if len(parts) < 2 {
+			continue
+		}
+
+		name := parts[0]
+		version := parts[1]
+
+		node := NewDepNode("node", name, version)
+		graph.AddNode(node)
+
+		// Extract dependencies
+		if deps, ok := pkgMap["dependencies"].(map[string]interface{}); ok {
+			for depName := range deps {
+				depNode := graph.FindNodeByName(depName)
+				if len(depNode) > 0 {
+					graph.AddEdge(NewEdge(node.ID, depNode[0].ID))
+				}
+			}
+		}
+	}
+
+	return nil
+}
+```
+
+- [ ] **Step 5: Run the tests and the gate**
+
+Run: `go test ./internal/graph/ -run 'NpmLock|NodeExtractor' -v 2>&1 | grep -E '^(--- |ok|FAIL)'`
+Expected: every `--- PASS`, then `ok  	github.com/crenspire/xpm/internal/graph`.
+
+```bash
+go build ./... && go vet ./... && go test ./... && test -z "$(gofmt -l .)" && echo GREEN
+go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.5.0 run ./...
+```
+Expected: `GREEN`, then `0 issues.`
+- [ ] **Step 6: Commit**
+
+```bash
+git add internal/graph/project.go internal/graph/npm.go internal/graph/extract_node.go internal/graph/extractors.go \
+  internal/graph/extract_cargo.go internal/graph/extract_composer.go internal/graph/extract_python.go \
+  internal/graph/extract_go.go internal/graph/extract_java.go internal/graph/extract_all.go \
+  internal/graph/fixture_test.go internal/graph/npm_test.go internal/graph/extract_node_test.go \
+  internal/graph/testdata/.gitattributes internal/graph/testdata/npm
+git commit -m "graph: parse package-lock v1/v2/v3 with Node's hoisted resolution and real fixtures"
+```
+
+---
+
+### Task 4: pnpm v5/v6/v9 and yarn v1/berry
+
+**Files:**
+- Create: `internal/graph/pnpm.go`, `internal/graph/yarn.go`, `internal/graph/pnpm_yarn_test.go`, `internal/graph/testdata/pnpm/{v6,v9,v9-workspace}/…`, `internal/graph/testdata/yarn/{v1,berry}/…`
+- Replace: `internal/graph/extract_node.go` (whole file; the legacy yarn/pnpm readers go away)
+
+**Interfaces:**
+- Consumes (Task 3): `addProject`, `dirName`, `readOptional`, `parseNpmManifest`, `npmManifest`, `parseNpmLock`, `sortedPairs`, test helpers.
+- Produces:
+  - `func parsePnpmLock(data, manifest []byte, fallback string) (*DepGraph, error)`
+  - `func pnpmSplitKey(key string, v5 bool) (name, version string, ok bool)`, `func pnpmTarget(name, value string, v5 bool) (string, bool)`, `func pnpmVersion(v string, v5 bool) string`
+  - `func parseYarnLock(data, manifest []byte, fallback string) (*DepGraph, error)` (detects berry by a `__metadata:` key)
+  - `func yarnSplitSpec(spec string) (name, rng string, ok bool)`, `func yarnRealName(name, rng string) string`
+  - `func sortedKeys[V any](m map[string]V) []string`
+  - `NodeExtractor.Extract`: first of `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`; `bun.lock`/`bun.lockb` alone → error `"bun.lock is not supported yet"` (surfaces as a warning in Task 6).
+
+Rules:
+- pnpm keys: strip a leading `/`, drop the peer suffix from the first `(`, split on the **last** `@` at index > 0 (v6 `/@scope/name@1.2.3(peer@1)`, v9 `name@1.2.3(peer@1)`). v5 (`lockfileVersion` 5.x): split on the last `/`, drop a `_peer@…` suffix.
+- pnpm v9 nodes come from `packages` and `snapshots`; edges from `snapshots` (`dependencies` + `optionalDependencies`); v5/v6 edges from `packages`. Snapshot variants of one package with different peer contexts merge into one node.
+- Dependency values: a version (`18.3.1(react@18.3.1)`), an alias target (`react-is@16.13.1` in v9, `/name@ver` in v6, `/name/ver` in v5) or `link:…` (workspace).
+- pnpm project: package.json name/version, else `fallback`; it stands for importer `.` (or the top-level sections of single-project v5/v6 lockfiles). Every other importer becomes a node named by its path (`node:packages/app@`) with an edge from the project; `link:../lib` resolves to the importer at that path.
+- yarn v1: headers `"name@range", name@range2:` (split at the first `@` after a scope), 2-space fields (`version "x"`), 4-space dependency lines (`name "range"`); edges resolve by the exact `name@range` key. npm aliases (`alias@npm:real@^1`) take the real name. Project and its edges from package.json.
+- yarn berry: YAML; keys `"name@npm:^1.0.0, name@npm:^1.1.0"`; node name from `resolution`; dependency values `npm:^range` resolve by `name@npm:^range` (a bare range retries with `npm:`). The `name@workspace:.` entry is the project; other `@workspace:` entries are nodes linked from it.
+
+- [ ] **Step 1: Add the fixtures**
+
+Create `internal/graph/testdata/pnpm/v9/pnpm-lock.yaml`:
+
+```yaml
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    dependencies:
+      react:
+        specifier: ^18.3.1
+        version: 18.3.1
+      react-dom:
+        specifier: ^18.3.1
+        version: 18.3.1(react@18.3.1)
+      react-is-legacy:
+        specifier: npm:react-is@^16.13.1
+        version: react-is@16.13.1
+    devDependencies:
+      '@types/react':
+        specifier: ^18.3.3
+        version: 18.3.3
+
+packages:
+
+  '@types/prop-types@15.7.12':
+    resolution: {integrity: sha512-QZ+PIsMOh+YDyPpY9ZMmJ0sRj1OxRAVwDH/ZAjgt+qvC3h1rpThRHHehiCfW8rz7SIOoB2V4hVkBfs8dAnvr5A==}
+
+  '@types/react@18.3.3':
+    resolution: {integrity: sha512-es5tiXmJ+zQp/GayYQAegFnWuQgCeJ+xQQ4dr+2TXsyqQwOOTN0vSekh656Q1f3OBvHPOipxruQouDt0ckB2VQ==}
+
+  csstype@3.1.3:
+    resolution: {integrity: sha512-nn4YAF2akFr0tn22Q3fpTnhyh6NgJpZypPjuKSCBC5ww2dA+W2a/DtMGjS5Mv8algdoQpgyeZb48sG+3htbjjA==}
+
+  js-tokens@4.0.0:
+    resolution: {integrity: sha512-hgvFIIZXEh0qKUvHJA9tb+6uMdEHBUTTBVdE5bnB0HXjEjOjXG0NsMmG74DF0EoiAWA+OCL55ZseKfL6rFqqEw==}
+
+  loose-envify@1.4.0:
+    resolution: {integrity: sha512-p6tV/43Z8c4seu03wSajLEoUgCE8tth0qwIk9TQuGL/l4A1cGuu5pJMkpTfGeg4X8Ex5aYGsz2uKe7iYEkGBGw==}
+    hasBin: true
+
+  react-dom@18.3.1:
+    resolution: {integrity: sha512-YM2/ll2MO+woZHNGQ1mu++6D+gDT6DSE/nIPHowsudr4x5FgMaviwvJTTTHXoRF4wRyvZ2+g1blR8BY0C082KQ==}
+    peerDependencies:
+      react: ^18.3.1
+
+  react-is@16.13.1:
+    resolution: {integrity: sha512-sj7wCk+ooIaBlsMgU8GpEb6iVyxhykVG1zXhSqqfMmnf87PpkTEw+80LmzmkqUlmB5Ah/1Qq1v2J9EJ9Q/JqBg==}
+
+  react@18.3.1:
+    resolution: {integrity: sha512-2+1d312Gv/F0ka3L+WanxnvPQ93+m+j2HLOWk54rzWk/lAPxKcimaVSC+kRml1k+lqAEalcc0tQie4/Wubz/Zg==}
+    engines: {node: '>=0.10.0'}
+
+  scheduler@0.23.2:
+    resolution: {integrity: sha512-/IkGAvk7w1qsKI9IeufIMtt+45SyCsBBSlQJOED3kzK+Clxc/VtOM+qPBaim7xZgJMyqrmEibpcx32f3dRZ3GQ==}
+
+snapshots:
+
+  '@types/prop-types@15.7.12': {}
+
+  '@types/react@18.3.3':
+    dependencies:
+      '@types/prop-types': 15.7.12
+      csstype: 3.1.3
+
+  csstype@3.1.3: {}
+
+  js-tokens@4.0.0: {}
+
+  loose-envify@1.4.0:
+    dependencies:
+      js-tokens: 4.0.0
+
+  react-dom@18.3.1(react@18.3.1):
+    dependencies:
+      loose-envify: 1.4.0
+      react: 18.3.1
+      scheduler: 0.23.2
+
+  react-is@16.13.1: {}
+
+  react@18.3.1:
+    dependencies:
+      loose-envify: 1.4.0
+
+  scheduler@0.23.2:
+    dependencies:
+      loose-envify: 1.4.0
+```
+
+Create `internal/graph/testdata/pnpm/v6/pnpm-lock.yaml`:
+
+```yaml
+lockfileVersion: '6.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+dependencies:
+  react:
+    specifier: ^18.2.0
+    version: 18.2.0
+  react-dom:
+    specifier: ^18.2.0
+    version: 18.2.0(react@18.2.0)
+
+devDependencies:
+  '@types/react':
+    specifier: ^18.2.79
+    version: 18.2.79
+
+packages:
+
+  /@types/prop-types@15.7.12:
+    resolution: {integrity: sha512-QZ+PIsMOh+YDyPpY9ZMmJ0sRj1OxRAVwDH/ZAjgt+qvC3h1rpThRHHehiCfW8rz7SIOoB2V4hVkBfs8dAnvr5A==}
+    dev: true
+
+  /@types/react@18.2.79:
+    resolution: {integrity: sha512-lgSozsIhKElkmkYlrkQ4d2rq/bY6MUQZkO1fShFKaezdTpDbVZvmpUjKfgPHOdRdyCGE1VEXAZaeUDBse28Amg==}
+    dependencies:
+      '@types/prop-types': 15.7.12
+      csstype: 3.1.3
+    dev: true
+
+  /csstype@3.1.3:
+    resolution: {integrity: sha512-nn4YAF2akFr0tn22Q3fpTnhyh6NgJpZypPjuKSCBC5ww2dA+W2a/DtMGjS5Mv8algdoQpgyeZb48sG+3htbjjA==}
+    dev: true
+
+  /js-tokens@4.0.0:
+    resolution: {integrity: sha512-hgvFIIZXEh0qKUvHJA9tb+6uMdEHBUTTBVdE5bnB0HXjEjOjXG0NsMmG74DF0EoiAWA+OCL55ZseKfL6rFqqEw==}
+    dev: false
+
+  /loose-envify@1.4.0:
+    resolution: {integrity: sha512-p6tV/43Z8c4seu03wSajLEoUgCE8tth0qwIk9TQuGL/l4A1cGuu5pJMkpTfGeg4X8Ex5aYGsz2uKe7iYEkGBGw==}
+    hasBin: true
+    dependencies:
+      js-tokens: 4.0.0
+    dev: false
+
+  /react-dom@18.2.0(react@18.2.0):
+    resolution: {integrity: sha512-2JdTLMBPPGbvWv5T5ugimhp0b1RXeRTeSZOj195w7dlfVVrIinTtFC2s10Pt2zZRpEQvCcuuDwMYDEA0Bnys9Q==}
+    peerDependencies:
+      react: ^18.2.0
+    dependencies:
+      loose-envify: 1.4.0
+      react: 18.2.0
+      scheduler: 0.23.0
+    dev: false
+
+  /react@18.2.0:
+    resolution: {integrity: sha512-eemt7WyP4lp5p56A5e8Te6hpPeeAcZLyKxqn7Q9XbG1N8f90duI8MAVdbJZrtLZ89Q8Ro8yv0+rHeWHYZIWngQ==}
+    dependencies:
+      loose-envify: 1.4.0
+    dev: false
+
+  /scheduler@0.23.0:
+    resolution: {integrity: sha512-FnP1OG4BU/qIuF/hpfsK2d1904D7j+CGuXaEbiMkzcrfASWZNTX6pbIycGUttjvJM34qVZVnft2obJGlGYDaVQ==}
+    dependencies:
+      loose-envify: 1.4.0
+    dev: false
+```
+
+Create `internal/graph/testdata/pnpm/v9-workspace/package.json`:
+
+```json
+{
+  "name": "ws-root",
+  "private": true,
+  "devDependencies": {
+    "typescript": "^5.4.5"
+  }
+}
+```
+
+Create `internal/graph/testdata/pnpm/v9-workspace/pnpm-lock.yaml`:
+
+```yaml
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    devDependencies:
+      typescript:
+        specifier: ^5.4.5
+        version: 5.4.5
+
+  packages/app:
+    dependencies:
+      '@ws/lib':
+        specifier: workspace:*
+        version: link:../lib
+      kleur:
+        specifier: ^4.1.5
+        version: 4.1.5
+
+  packages/lib:
+    dependencies:
+      kleur:
+        specifier: ^4.1.5
+        version: 4.1.5
+
+packages:
+
+  kleur@4.1.5:
+    resolution: {integrity: sha512-o+NO+8WrRiQEE4/7nwRJhN1HWpVmJm511pBHUxPLtp0BUISzlBplORYSmTclCnJvQq2tKu/sgl3xVpkc7ZWuQQ==}
+    engines: {node: '>=6'}
+
+  typescript@5.4.5:
+    resolution: {integrity: sha512-vcI4UpRgg81oIRUFwR0WSIHKt11nJ7SAVlYNIu+QpqeyXP+gpQJy/Z4+F0aGxSE4MqwjyXvW/TzgkLAx2AGHwQ==}
+    engines: {node: '>=14.17'}
+    hasBin: true
+
+snapshots:
+
+  kleur@4.1.5: {}
+
+  typescript@5.4.5: {}
+```
+
+Create `internal/graph/testdata/yarn/v1/package.json`:
+
+```json
+{
+  "name": "yarn-app",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@babel/code-frame": "^7.24.2",
+    "debug": "^4.3.4",
+    "send": "0.18.0"
+  },
+  "devDependencies": {
+    "picocolors": "^1.0.1"
+  }
+}
+```
+
+Create `internal/graph/testdata/yarn/v1/yarn.lock`:
+
+```text
+# THIS IS AN AUTOGENERATED FILE. DO NOT EDIT THIS FILE DIRECTLY.
+# yarn lockfile v1
+
+
+"@babel/code-frame@^7.24.2":
+  version "7.24.7"
+  resolved "https://registry.yarnpkg.com/@babel/code-frame/-/code-frame-7.24.7.tgz#33b92489992f6d154aa50efe108563a2d8b1a3b8"
+  integrity sha512-f6rlzwf0ry/JlceDGBWQUozp9UCQh49jH+6ozCozbgqWJjndq7G+PPn/7Zf0BkpcYcjeJcKnPLDnJbKYLLdgrg==
+  dependencies:
+    "@babel/highlight" "^7.24.7"
+    picocolors "^1.0.0"
+
+"@babel/highlight@^7.24.7":
+  version "7.24.7"
+  resolved "https://registry.yarnpkg.com/@babel/highlight/-/highlight-7.24.7.tgz#d5c1df6a5b72fd7e1f33e6b202c579f7f3dcc255"
+  integrity sha512-BJqft6B8Fdnb/5PP9J9EFnedL3DySCGlnKZbA3A5NWoJs1MgOkhpHbGTBipBoFo/AhC3S/S8WRXY0Xz64NmrSA==
+  dependencies:
+    js-tokens "^4.0.0"
+    picocolors "^1.0.0"
+
+debug@2.6.9:
+  version "2.6.9"
+  resolved "https://registry.yarnpkg.com/debug/-/debug-2.6.9.tgz#3d3e1ad72dce598f27b144746101a3d8f57270e9"
+  integrity sha512-IGyVRcglbQuX9vghGUdjPizKtlC9kF6pKI4iF0VbeM2D4OcU4I7EVNu7jF1NtCnvCg2K4VRgeCD4JBcMVJvekg==
+  dependencies:
+    ms "2.0.0"
+
+debug@^4.3.4:
+  version "4.3.5"
+  resolved "https://registry.yarnpkg.com/debug/-/debug-4.3.5.tgz#72968934a34f1d58a05bda5ace22175632cdbc89"
+  integrity sha512-++oPZe3YJ32xllGm5Y6IYXgj8LEb/BDAGsNZpcS7TLUQfJedfKHOfR1TA8q1HHsDvBVueziEgC3NYQh7bea4sA==
+  dependencies:
+    ms "2.1.2"
+
+js-tokens@^4.0.0:
+  version "4.0.0"
+  resolved "https://registry.yarnpkg.com/js-tokens/-/js-tokens-4.0.0.tgz#055c87d9ddc940ccb43ce54945241cba544f567e"
+  integrity sha512-hgvFIIZXEh0qKUvHJA9tb+6uMdEHBUTTBVdE5bnB0HXjEjOjXG0NsMmG74DF0EoiAWA+OCL55ZseKfL6rFqqEw==
+
+mime@1.6.0:
+  version "1.6.0"
+  resolved "https://registry.yarnpkg.com/mime/-/mime-1.6.0.tgz#a92100f52c61ab72adabcd8315b21cf501e1aedf"
+  integrity sha512-xgn8fgtXeLeaCBoueCnXUfSwXuSuM4GMQhO/UX3sCtQvbTMeMvmOj3HcBmhTNFWm7Yy0PyJNCqKCAPas/Bt6Xw==
+
+ms@2.0.0:
+  version "2.0.0"
+  resolved "https://registry.yarnpkg.com/ms/-/ms-2.0.0.tgz#75aee418116663a660062626d8900947a801995e"
+  integrity sha512-GzDco1VK+DfxVedli4bMu6XC47vqtBmY8/ezspZotp8r4Hs/5pUXBizBu70MZuxmkTa9Zk713DWfcC47dVLcaA==
+
+ms@2.1.2:
+  version "2.1.2"
+  resolved "https://registry.yarnpkg.com/ms/-/ms-2.1.2.tgz#146888dacd63231a9585b6eb618cd915e3d43d91"
+  integrity sha512-sPSQ7YPIO+S7u2y1o8yW2rOmB6YPWyWWkVJaUPfj8B23hijaE2d3WPcgokr/zDI1TTMCPARp31tt1ILsYUlQAg==
+
+ms@2.1.3:
+  version "2.1.3"
+  resolved "https://registry.yarnpkg.com/ms/-/ms-2.1.3.tgz#8780c23502571b8e99e37259decb393275a851fc"
+  integrity sha512-SNPMCfwMJciLloOwk1dR7uiNbEGq+2NV3Dxrg760V/KNK+Uq4w5U2vcmL31cswWNU1Fht3QgPY4jDq3ysrp7FQ==
+
+picocolors@^1.0.0, picocolors@^1.0.1:
+  version "1.0.1"
+  resolved "https://registry.yarnpkg.com/picocolors/-/picocolors-1.0.1.tgz#00c4db3270d54bd6227b538dc50512f769449ed4"
+  integrity sha512-3cOnerB815zBZzBY05o81xvrK+OKDutlshGerYclMnpn/KAOlPB5k5E2K5QY24KMTQ8VKdJSxa3dXRPtzKNdjg==
+
+send@0.18.0:
+  version "0.18.0"
+  resolved "https://registry.yarnpkg.com/send/-/send-0.18.0.tgz#c51e923323528f2afadbd5974f64ecb18983b9ca"
+  integrity sha512-pTZEObEL6vF2IJ9OCPojkfom1Rtyhc1aa/3EAvJvoPDXt4Hv+P/n20+chJu+c0KrdKaS7TuTFcCgPQ6jg908cg==
+  dependencies:
+    debug "2.6.9"
+    mime "1.6.0"
+    ms "2.1.3"
+```
+
+Create `internal/graph/testdata/yarn/berry/yarn.lock`:
+
+```yaml
+# This file is generated by running "yarn install" inside your project.
+# Manual changes might be lost - proceed with caution!
+
+__metadata:
+  version: 8
+  cacheKey: 10c0
+
+"@babel/code-frame@npm:^7.24.2":
+  version: 7.24.7
+  resolution: "@babel/code-frame@npm:7.24.7"
+  dependencies:
+    "@babel/highlight": "npm:^7.24.7"
+    picocolors: "npm:^1.0.0"
+  checksum: 10c0/cd92c9de639b81dea06644dc6c021a3b24c660081f7d0aa775cc3055bd5d42af
+  languageName: node
+  linkType: hard
+
+"@babel/highlight@npm:^7.24.7":
+  version: 7.24.7
+  resolution: "@babel/highlight@npm:7.24.7"
+  dependencies:
+    js-tokens: "npm:^4.0.0"
+    picocolors: "npm:^1.0.0"
+  checksum: 10c0/63383b072266bfdb1b71a0b256e364ead6dd2a29822bf4c7e0121dc75240475f
+  languageName: node
+  linkType: hard
+
+"berry-app@workspace:.":
+  version: 0.0.0-use.local
+  resolution: "berry-app@workspace:."
+  dependencies:
+    "@babel/code-frame": "npm:^7.24.2"
+    debug: "npm:^4.3.4"
+    picocolors: "npm:^1.0.1"
+    send: "npm:0.18.0"
+  languageName: unknown
+  linkType: soft
+
+"debug@npm:2.6.9":
+  version: 2.6.9
+  resolution: "debug@npm:2.6.9"
+  dependencies:
+    ms: "npm:2.0.0"
+  checksum: 10c0/7b12e16e3fe9bf11e3b9a89bb058b30290a190b4f4c2ab413839c33d4b60fe60
+  languageName: node
+  linkType: hard
+
+"debug@npm:^4.3.4":
+  version: 4.3.5
+  resolution: "debug@npm:4.3.5"
+  dependencies:
+    ms: "npm:2.1.2"
+  peerDependenciesMeta:
+    supports-color:
+      optional: true
+  checksum: 10c0/2b79e52054a8a55f4aac431f983a65735434fdb24a338d917d98a6fa84fa5524
+  languageName: node
+  linkType: hard
+
+"js-tokens@npm:^4.0.0":
+  version: 4.0.0
+  resolution: "js-tokens@npm:4.0.0"
+  checksum: 10c0/bfc095fd1c28c4dddb8faa3b38ae76644d8a6f7b2d10d85342393f58dc33d1ec
+  languageName: node
+  linkType: hard
+
+"mime@npm:1.6.0":
+  version: 1.6.0
+  resolution: "mime@npm:1.6.0"
+  checksum: 10c0/9667e0a5f66371d921c3beeeb4002f974acffbcf7a1b0061d75856aba7bbd517
+  languageName: node
+  linkType: hard
+
+"ms@npm:2.0.0":
+  version: 2.0.0
+  resolution: "ms@npm:2.0.0"
+  checksum: 10c0/5f307df58e0e68fc5f0000ce13b53f09d0824f73335fcfb43c474716140e8911
+  languageName: node
+  linkType: hard
+
+"ms@npm:2.1.2":
+  version: 2.1.2
+  resolution: "ms@npm:2.1.2"
+  checksum: 10c0/2b2716e298237195cadea4f612c256ed2c1a9a2269983e441f959a271c1d1481
+  languageName: node
+  linkType: hard
+
+"ms@npm:2.1.3":
+  version: 2.1.3
+  resolution: "ms@npm:2.1.3"
+  checksum: 10c0/dffd4912c44db3173ed1463c4cc2c1c083dcd1ab8695608091da8d88d34bfe17
+  languageName: node
+  linkType: hard
+
+"picocolors@npm:^1.0.0, picocolors@npm:^1.0.1":
+  version: 1.0.1
+  resolution: "picocolors@npm:1.0.1"
+  checksum: 10c0/d9700774a30d35f17a71335a88e56ffc6619e2947d3fe86a1765e0f9a686d04a
+  languageName: node
+  linkType: hard
+
+"send@npm:0.18.0":
+  version: 0.18.0
+  resolution: "send@npm:0.18.0"
+  dependencies:
+    debug: "npm:2.6.9"
+    mime: "npm:1.6.0"
+    ms: "npm:2.1.3"
+  checksum: 10c0/e6d3144f208f3f365a7013b387a013db9ebf70c5e1345e7fb238997a29c0129c
+  languageName: node
+  linkType: hard
+```
+
+Expected shapes: pnpm v9 10 / 12 / 1 (no package.json: project named by the fallback); v6 9 / 11 / 1; v9-workspace 5 / 6 / 1; yarn v1 12 / 13 / 1; berry 12 / 13 / 1.
+
+- [ ] **Step 2: Write the failing tests**
+
+Create `internal/graph/pnpm_yarn_test.go`:
+
+```go
+package graph
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestParsePnpmLockV9Snapshots(t *testing.T) {
+	g, err := parsePnpmLock(fixture(t, "pnpm/v9/pnpm-lock.yaml"), nil, "pnpm-app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 9 packages + the project (no package.json: named by the fallback).
+	wantGraph(t, g, 10, 12, 1, []string{
+		"node:react-dom@18.3.1 -> node:react@18.3.1", // snapshot key carries "(react@18.3.1)"
+		"node:react-dom@18.3.1 -> node:scheduler@0.23.2",
+		"node:@types/react@18.3.3 -> node:@types/prop-types@15.7.12",
+		"node:loose-envify@1.4.0 -> node:js-tokens@4.0.0",
+		"node:pnpm-app@ -> node:react-dom@18.3.1",
+		"node:pnpm-app@ -> node:react-is@16.13.1", // npm: alias "react-is-legacy" resolves to the real package
+		"node:pnpm-app@ -> node:@types/react@18.3.3",
+	}, []string{"node:pnpm-app@"})
+}
+
+func TestParsePnpmLockV6(t *testing.T) {
+	g, err := parsePnpmLock(fixture(t, "pnpm/v6/pnpm-lock.yaml"), []byte(`{"name": "pnpm6-app", "version": "1.0.0"}`), "fallback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantGraph(t, g, 9, 11, 1, []string{
+		"node:react-dom@18.2.0 -> node:react@18.2.0",
+		"node:react-dom@18.2.0 -> node:scheduler@0.23.0",
+		"node:@types/react@18.2.79 -> node:csstype@3.1.3",
+		"node:pnpm6-app@1.0.0 -> node:react-dom@18.2.0", // top-level (pre-importers) section
+	}, []string{"node:pnpm6-app@1.0.0"})
+}
+
+func TestPnpmSplitKey(t *testing.T) {
+	cases := []struct {
+		key           string
+		v5            bool
+		name, version string
+	}{
+		{"/@babel/core@7.24.7", false, "@babel/core", "7.24.7"},
+		{"/react-dom@18.2.0(react@18.2.0)", false, "react-dom", "18.2.0"},
+		{"@testing-library/react@16.0.0(@types/react@18.3.3)(react@18.3.1)", false, "@testing-library/react", "16.0.0"},
+		{"/@babel/core/7.24.7", true, "@babel/core", "7.24.7"},
+		{"/react-dom/18.2.0_react@18.2.0", true, "react-dom", "18.2.0"},
+	}
+	for _, c := range cases {
+		name, version, ok := pnpmSplitKey(c.key, c.v5)
+		if !ok || name != c.name || version != c.version {
+			t.Errorf("pnpmSplitKey(%q, %v) = %q, %q, %v; want %q, %q", c.key, c.v5, name, version, ok, c.name, c.version)
+		}
+	}
+}
+
+func TestParsePnpmLockV5(t *testing.T) {
+	data := []byte(`lockfileVersion: 5.4
+
+specifiers:
+  react-dom: ^18.2.0
+
+dependencies:
+  react-dom: 18.2.0_react@18.2.0
+
+packages:
+
+  /react-dom/18.2.0_react@18.2.0:
+    resolution: {integrity: sha512-6IMTriUmvsjHUjNtEDudZfuDQUoWXVxKHhlEGSk81n4YFS+r/Kl99wXiwlVXtPBtJenozv2P+hxDsw9eA7Xo6g==}
+    peerDependencies:
+      react: ^18.2.0
+    dependencies:
+      react: 18.2.0
+    dev: false
+
+  /react/18.2.0:
+    resolution: {integrity: sha512-/3IjMdb2L9QbBdWiW5e3P2/npwMBaU9mHCSCUzNln0ZCYbcfTsGbTJrU/kGemdH2IWmB2ioZ+zkxtmq6g09fGQ==}
+    dev: false
+`)
+	g, err := parsePnpmLock(data, nil, "v5-app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantGraph(t, g, 3, 2, 1, []string{
+		"node:react-dom@18.2.0 -> node:react@18.2.0",
+		"node:v5-app@ -> node:react-dom@18.2.0",
+	}, []string{"node:v5-app@"})
+}
+
+func TestParsePnpmLockV9Workspace(t *testing.T) {
+	g, err := parsePnpmLock(fixture(t, "pnpm/v9-workspace/pnpm-lock.yaml"), fixture(t, "pnpm/v9-workspace/package.json"), "fallback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantGraph(t, g, 5, 6, 1, []string{
+		"node:ws-root@ -> node:typescript@5.4.5",
+		"node:ws-root@ -> node:packages/app@", // importers become nodes named by path
+		"node:ws-root@ -> node:packages/lib@",
+		"node:packages/app@ -> node:packages/lib@", // link:../lib
+		"node:packages/app@ -> node:kleur@4.1.5",
+		"node:packages/lib@ -> node:kleur@4.1.5",
+	}, []string{"node:ws-root@"})
+}
+
+func TestParsePnpmLockMalformed(t *testing.T) {
+	for name, data := range map[string]string{
+		"not-yaml":        "lockfileVersion: '9.0'\npackages: [unclosed\n",
+		"no-version":      "packages:\n  react@18.3.1: {}\n",
+		"bad-package-key": "lockfileVersion: '9.0'\npackages:\n  react: {}\n",
+		"packages-list":   "lockfileVersion: '9.0'\npackages:\n  - react\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if g, err := parsePnpmLock([]byte(data), nil, "fallback"); err == nil {
+				t.Fatalf("want error, got %s", dumpGraph(g))
+			}
+		})
+	}
+}
+
+func TestParseYarnLockV1(t *testing.T) {
+	g, err := parseYarnLock(fixture(t, "yarn/v1/yarn.lock"), fixture(t, "yarn/v1/package.json"), "fallback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantGraph(t, g, 12, 13, 1, []string{
+		"node:send@0.18.0 -> node:debug@2.6.9", // "debug@2.6.9" key, not the ^4.3.4 one
+		"node:debug@2.6.9 -> node:ms@2.0.0",
+		"node:debug@4.3.5 -> node:ms@2.1.2",
+		"node:@babel/code-frame@7.24.7 -> node:@babel/highlight@7.24.7",
+		"node:@babel/highlight@7.24.7 -> node:picocolors@1.0.1", // entry with two specs
+		"node:yarn-app@1.0.0 -> node:debug@4.3.5",
+		"node:yarn-app@1.0.0 -> node:picocolors@1.0.1", // devDependencies "^1.0.1"
+	}, []string{"node:yarn-app@1.0.0"})
+}
+
+func TestParseYarnLockBerry(t *testing.T) {
+	// The project is the "berry-app@workspace:." entry; no package.json needed.
+	g, err := parseYarnLock(fixture(t, "yarn/berry/yarn.lock"), nil, "fallback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantGraph(t, g, 12, 13, 1, []string{
+		"node:send@0.18.0 -> node:debug@2.6.9",
+		"node:debug@4.3.5 -> node:ms@2.1.2",
+		"node:@babel/highlight@7.24.7 -> node:js-tokens@4.0.0",
+		"node:berry-app@0.0.0-use.local -> node:send@0.18.0",
+		"node:berry-app@0.0.0-use.local -> node:picocolors@1.0.1",
+	}, []string{"node:berry-app@0.0.0-use.local"})
+}
+
+func TestYarnSplitSpec(t *testing.T) {
+	cases := [][3]string{
+		{"@babel/core@^7.0.0", "@babel/core", "^7.0.0"},
+		{"debug@npm:^4.3.4", "debug", "npm:^4.3.4"},
+		{"string-width-cjs@npm:string-width@^4.2.0", "string-width-cjs", "npm:string-width@^4.2.0"},
+	}
+	for _, c := range cases {
+		name, rng, ok := yarnSplitSpec(c[0])
+		if !ok || name != c[1] || rng != c[2] {
+			t.Errorf("yarnSplitSpec(%q) = %q, %q, %v", c[0], name, rng, ok)
+		}
+	}
+	if got := yarnRealName("string-width-cjs", "npm:string-width@^4.2.0"); got != "string-width" {
+		t.Errorf("yarnRealName = %q, want string-width", got)
+	}
+}
+
+func TestParseYarnLockMalformed(t *testing.T) {
+	for name, data := range map[string]string{
+		"v1-garbage":      "# yarn lockfile v1\n\nthis is not a lockfile\n",
+		"v1-no-version":   "# yarn lockfile v1\n\nms@2.1.2:\n  resolved \"https://registry.yarnpkg.com/ms/-/ms-2.1.2.tgz\"\n",
+		"v1-orphan-line":  "# yarn lockfile v1\n\n  version \"1.0.0\"\n",
+		"v1-conflict":     "# yarn lockfile v1\n\n<<<<<<< HEAD\nms@2.1.2:\n  version \"2.1.2\"\n",
+		"berry-bad-yaml":  "__metadata:\n  version: 8\n\"ms@npm:2.1.2\": [\n",
+		"berry-no-resolv": "__metadata:\n  version: 8\n\n\"ms@npm:2.1.2\":\n  version: 2.1.2\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if g, err := parseYarnLock([]byte(data), nil, "fallback"); err == nil {
+				t.Fatalf("want error, got %s", dumpGraph(g))
+			}
+		})
+	}
+}
+
+func TestNodeExtractorPicksPnpmThenYarn(t *testing.T) {
+	g, err := (&NodeExtractor{}).Extract(copyFixtureDir(t, "pnpm/v9"), ExtractOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantGraph(t, g, 10, 12, 1, nil, nil)
+
+	g, err = (&NodeExtractor{}).Extract(copyFixtureDir(t, "yarn/v1"), ExtractOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantGraph(t, g, 12, 13, 1, nil, []string{"node:yarn-app@1.0.0"})
+}
+
+func TestNodeExtractorBunIsReportedNotParsed(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "bun.lock"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&NodeExtractor{}).Extract(dir, ExtractOptions{}); err == nil {
+		t.Fatal("want a 'not supported' error for bun.lock")
+	}
+}
+```
+
+- [ ] **Step 3: Run the tests to verify they fail**
+
+Run: `go test ./internal/graph/`
+Expected: build failure, including `undefined: parsePnpmLock` and `undefined: parseYarnLock`.
+
+- [ ] **Step 4: Implement**
+
+Create `internal/graph/pnpm.go`:
+
+```go
+package graph
+
+import (
+	"fmt"
+	"path"
+	"sort"
+	"strings"
+
+	"gopkg.in/yaml.v3"
+)
+
+// pnpmImporter is one project's direct dependencies (importers["."] or, in
+// single-project v5/v6 lockfiles, the top level).
+type pnpmImporter struct {
+	Dependencies         map[string]pnpmImporterDep `yaml:"dependencies"`
+	DevDependencies      map[string]pnpmImporterDep `yaml:"devDependencies"`
+	OptionalDependencies map[string]pnpmImporterDep `yaml:"optionalDependencies"`
+}
+
+// pnpmImporterDep accepts both the v6+ {specifier, version} map and the
+// v5 plain version string.
+type pnpmImporterDep struct {
+	Version string
+}
+
+func (d *pnpmImporterDep) UnmarshalYAML(n *yaml.Node) error {
+	if n.Kind == yaml.ScalarNode {
+		d.Version = n.Value
+		return nil
+	}
+	var v struct {
+		Version string `yaml:"version"`
+	}
+	if err := n.Decode(&v); err != nil {
+		return err
+	}
+	d.Version = v.Version
+	return nil
+}
+
+type pnpmPackage struct {
+	Dependencies         map[string]string `yaml:"dependencies"`
+	OptionalDependencies map[string]string `yaml:"optionalDependencies"`
+	Resolution           struct {
+		Integrity string `yaml:"integrity"`
+		Tarball   string `yaml:"tarball"`
+	} `yaml:"resolution"`
+}
+
+type pnpmLockfile struct {
+	LockfileVersion string                  `yaml:"lockfileVersion"`
+	Importers       map[string]pnpmImporter `yaml:"importers"`
+	pnpmImporter    `yaml:",inline"`
+	Packages        map[string]pnpmPackage `yaml:"packages"`
+	Snapshots       map[string]pnpmPackage `yaml:"snapshots"`
+}
+
+// pnpmVersion strips the peer suffix from a version: "18.2.0(react@18.2.0)"
+// (v6+) or, in v5 lockfiles, "18.2.0_react@18.2.0".
+func pnpmVersion(v string, v5 bool) string {
+	if i := strings.IndexByte(v, '('); i >= 0 {
+		v = v[:i]
+	}
+	if v5 {
+		if i := strings.IndexByte(v, '_'); i >= 0 {
+			v = v[:i]
+		}
+	}
+	return v
+}
+
+// pnpmSplitKey turns a packages/snapshots key into name and version:
+// "/@scope/name@1.2.3(peer@1)" (v6), "name@1.2.3(peer@1)" (v9),
+// "/@scope/name/1.2.3_peer@1" (v5). The version follows the last "@" that is
+// not the leading scope "@" (v6+), or the last "/" (v5).
+func pnpmSplitKey(key string, v5 bool) (name, version string, ok bool) {
+	k := strings.TrimPrefix(key, "/")
+	if v5 {
+		if slash := strings.LastIndexByte(k, '/'); slash > 0 {
+			name, version = k[:slash], pnpmVersion(k[slash+1:], true)
+		}
+	} else {
+		k = pnpmVersion(k, false)
+		if at := strings.LastIndexByte(k, '@'); at > 0 {
+			name, version = k[:at], k[at+1:]
+		}
+	}
+	if name == "" || version == "" {
+		return "", "", false
+	}
+	return name, version, true
+}
+
+// pnpmTarget resolves a dependency entry (name: value) to a node ID. value is
+// a version ("18.2.0(react@18.2.0)"), an alias target ("string-width@4.2.3"
+// in v9, "/string-width@4.2.3" in v6, "/string-width/4.2.3" in v5) or a
+// workspace link ("link:../core"), which is not a package.
+func pnpmTarget(name, value string, v5 bool) (string, bool) {
+	if value == "" || strings.HasPrefix(value, "link:") || strings.HasPrefix(value, "file:") {
+		return "", false
+	}
+	alias := strings.HasPrefix(value, "/") || (!v5 && strings.LastIndexByte(pnpmVersion(value, false), '@') > 0)
+	if alias {
+		n, ver, ok := pnpmSplitKey(value, v5)
+		if !ok {
+			return "", false
+		}
+		return NodeID("node", n, ver), true
+	}
+	return NodeID("node", name, pnpmVersion(value, v5)), true
+}
+
+// parsePnpmLock builds the graph of a pnpm-lock.yaml (v5, v6 or v9).
+// manifest (package.json) names the project, else fallback. The project is
+// the root and stands for importer "."; every other importer (workspace
+// package) becomes a node named by its path, linked from the project.
+func parsePnpmLock(data, manifest []byte, fallback string) (*DepGraph, error) {
+	var lock pnpmLockfile
+	if err := yaml.Unmarshal(data, &lock); err != nil {
+		return nil, fmt.Errorf("pnpm-lock.yaml: %w", err)
+	}
+	if lock.LockfileVersion == "" {
+		return nil, fmt.Errorf("pnpm-lock.yaml: missing lockfileVersion")
+	}
+	v5 := strings.HasPrefix(lock.LockfileVersion, "5")
+	g := NewGraph()
+
+	addNodes := func(m map[string]pnpmPackage) error {
+		for _, key := range sortedKeys(m) {
+			name, version, ok := pnpmSplitKey(key, v5)
+			if !ok {
+				return fmt.Errorf("pnpm-lock.yaml: cannot parse package key %q", key)
+			}
+			if g.GetNode(NodeID("node", name, version)) == nil {
+				n := NewDepNode("node", name, version)
+				if p := m[key]; p.Resolution.Integrity != "" {
+					n.WithMetadata("integrity", p.Resolution.Integrity)
+				}
+				g.AddNode(n)
+			}
+		}
+		return nil
+	}
+	if err := addNodes(lock.Packages); err != nil {
+		return nil, err
+	}
+	if err := addNodes(lock.Snapshots); err != nil {
+		return nil, err
+	}
+
+	// v9 keeps dependencies in snapshots; v5/v6 in packages.
+	withDeps := lock.Snapshots
+	if len(withDeps) == 0 {
+		withDeps = lock.Packages
+	}
+	for _, key := range sortedKeys(withDeps) {
+		name, version, _ := pnpmSplitKey(key, v5)
+		from := NodeID("node", name, version)
+		p := withDeps[key]
+		for _, sec := range []map[string]string{p.Dependencies, p.OptionalDependencies} {
+			for _, kv := range sortedPairs(sec) {
+				if to, ok := pnpmTarget(kv[0], kv[1], v5); ok && g.GetNode(to) != nil {
+					g.AddEdge(NewEdge(from, to))
+				}
+			}
+		}
+	}
+
+	m, err := parseNpmManifest(manifest)
+	if err != nil {
+		return nil, err
+	}
+	project := addProject(g, "node", m.Name, m.Version, fallback)
+	importers := lock.Importers
+	if len(importers) == 0 {
+		importers = map[string]pnpmImporter{".": lock.pnpmImporter}
+	}
+	importerID := func(p string) string {
+		if p == "." {
+			return project
+		}
+		return NodeID("node", p, "")
+	}
+	for _, p := range sortedKeys(importers) {
+		if p != "." {
+			g.AddNode(NewDepNode("node", p, ""))
+			g.AddEdge(NewEdge(project, importerID(p)))
+		}
+	}
+	for _, p := range sortedKeys(importers) {
+		imp := importers[p]
+		from := importerID(p)
+		for _, sec := range []map[string]pnpmImporterDep{imp.Dependencies, imp.DevDependencies, imp.OptionalDependencies} {
+			for _, name := range sortedKeys(sec) {
+				v := sec[name].Version
+				if rel, ok := strings.CutPrefix(v, "link:"); ok {
+					target := path.Clean(path.Join(p, rel))
+					if _, ok := importers[target]; ok {
+						g.AddEdge(NewEdge(from, importerID(target)))
+					}
+					continue
+				}
+				if id, ok := pnpmTarget(name, v, v5); ok && g.GetNode(id) != nil {
+					g.AddEdge(NewEdge(from, id))
+				}
+			}
+		}
+	}
+	return g, nil
+}
+
+// sortedKeys returns m's keys in order.
+func sortedKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+```
+
+Create `internal/graph/yarn.go`:
+
+```go
+package graph
+
+import (
+	"bufio"
+	"bytes"
+	"fmt"
+	"strconv"
+	"strings"
+
+	"gopkg.in/yaml.v3"
+)
+
+// yarnEntry is one resolved package of a yarn.lock (v1 or berry).
+type yarnEntry struct {
+	specs []string          // "name@range" keys that resolve to this entry
+	name  string            // real package name
+	ver   string            // resolved version
+	deps  map[string]string // dependency name -> range as written in the lockfile
+	root  bool              // berry "name@workspace:." entry (the project itself)
+	ws    bool              // berry workspace package other than the root
+}
+
+// parseYarnLock builds the graph of a yarn.lock, classic v1 or berry (v2+).
+// The root is the project: berry's "name@workspace:." entry, else
+// package.json (manifest), whose dependencies become the project's edges;
+// fallback names a project package.json does not name. Berry workspace
+// packages hang off the project.
+func parseYarnLock(data, manifest []byte, fallback string) (*DepGraph, error) {
+	var entries []*yarnEntry
+	var err error
+	berry := false
+	if bytes.Contains(data, []byte("\n__metadata:")) || bytes.HasPrefix(data, []byte("__metadata:")) {
+		berry = true
+		entries, err = parseYarnBerry(data)
+	} else {
+		entries, err = parseYarnV1(data)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	g := NewGraph()
+	bySpec := map[string]*yarnEntry{}
+	ids := map[*yarnEntry]string{}
+	var rootEntry *yarnEntry
+	for _, e := range entries {
+		for _, s := range e.specs {
+			bySpec[s] = e
+		}
+		if e.root {
+			rootEntry = e
+			continue
+		}
+		n := NewDepNode("node", e.name, e.ver)
+		if g.GetNode(n.ID) == nil {
+			g.AddNode(n)
+		}
+		ids[e] = n.ID
+	}
+	lookup := func(name, rng string) (string, bool) {
+		e, ok := bySpec[name+"@"+rng]
+		if !ok && berry && !strings.Contains(rng, ":") {
+			e, ok = bySpec[name+"@npm:"+rng]
+		}
+		if !ok {
+			return "", false
+		}
+		id, ok := ids[e]
+		return id, ok
+	}
+	for _, e := range entries {
+		from, ok := ids[e]
+		if !ok {
+			continue
+		}
+		for _, kv := range sortedPairs(e.deps) {
+			if to, ok := lookup(kv[0], kv[1]); ok {
+				g.AddEdge(NewEdge(from, to))
+			}
+		}
+	}
+
+	var project string
+	var rootDeps map[string]string
+	if rootEntry != nil {
+		project = addProject(g, "node", rootEntry.name, rootEntry.ver, fallback)
+		rootDeps = rootEntry.deps
+	} else {
+		m, err := parseNpmManifest(manifest)
+		if err != nil {
+			return nil, err
+		}
+		project = addProject(g, "node", m.Name, m.Version, fallback)
+		rootDeps = map[string]string{}
+		for _, sec := range []map[string]string{m.PeerDependencies, m.DevDependencies, m.Dependencies, m.OptionalDependencies} {
+			for k, v := range sec {
+				rootDeps[k] = v
+			}
+		}
+	}
+	for _, kv := range sortedPairs(rootDeps) {
+		if id, ok := lookup(kv[0], kv[1]); ok {
+			g.AddEdge(NewEdge(project, id))
+		}
+	}
+	for _, e := range entries {
+		if e.ws {
+			g.AddEdge(NewEdge(project, ids[e]))
+		}
+	}
+	return g, nil
+}
+
+// yarnSplitSpec splits "name@range" at the first "@" after a scope "@":
+// "@babel/core@^7.0.0" -> ("@babel/core", "^7.0.0"),
+// "string-width-cjs@npm:string-width@^4.2.0" -> ("string-width-cjs", "npm:string-width@^4.2.0").
+func yarnSplitSpec(spec string) (name, rng string, ok bool) {
+	if len(spec) < 2 {
+		return "", "", false
+	}
+	at := strings.IndexByte(spec[1:], '@')
+	if at < 0 {
+		return "", "", false
+	}
+	return spec[:at+1], spec[at+2:], true
+}
+
+// yarnRealName is the package an entry installs: for an npm alias
+// ("alias@npm:real@^1") it is the real name, otherwise the spec's name.
+func yarnRealName(name, rng string) string {
+	if r, ok := strings.CutPrefix(rng, "npm:"); ok {
+		if at := strings.LastIndexByte(r, '@'); at > 0 {
+			return r[:at]
+		}
+	}
+	return name
+}
+
+func yarnUnquote(s string) (string, error) {
+	s = strings.TrimSpace(s)
+	if strings.HasPrefix(s, `"`) {
+		return strconv.Unquote(s)
+	}
+	return s, nil
+}
+
+// parseYarnV1 reads the classic "# yarn lockfile v1" format.
+func parseYarnV1(data []byte) ([]*yarnEntry, error) {
+	var entries []*yarnEntry
+	var cur *yarnEntry
+	section := ""
+	sc := bufio.NewScanner(bytes.NewReader(data))
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	lineNo := 0
+	finish := func() error {
+		if cur != nil && cur.ver == "" {
+			return fmt.Errorf("yarn.lock: entry %q has no version", strings.Join(cur.specs, ", "))
+		}
+		return nil
+	}
+	for sc.Scan() {
+		lineNo++
+		line := strings.TrimRight(sc.Text(), " \r")
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		indent := len(line) - len(strings.TrimLeft(line, " "))
+		switch {
+		case indent == 0:
+			if err := finish(); err != nil {
+				return nil, err
+			}
+			if !strings.HasSuffix(line, ":") {
+				return nil, fmt.Errorf("yarn.lock line %d: expected an entry header ending in ':'", lineNo)
+			}
+			cur = &yarnEntry{deps: map[string]string{}}
+			section = ""
+			for _, raw := range strings.Split(strings.TrimSuffix(line, ":"), ",") {
+				spec, err := yarnUnquote(raw)
+				if err != nil {
+					return nil, fmt.Errorf("yarn.lock line %d: %w", lineNo, err)
+				}
+				name, rng, ok := yarnSplitSpec(spec)
+				if !ok {
+					return nil, fmt.Errorf("yarn.lock line %d: cannot parse %q", lineNo, spec)
+				}
+				cur.specs = append(cur.specs, spec)
+				if cur.name == "" {
+					cur.name = yarnRealName(name, rng)
+				}
+			}
+			entries = append(entries, cur)
+		case cur == nil:
+			return nil, fmt.Errorf("yarn.lock line %d: indented line outside an entry", lineNo)
+		case indent == 2:
+			key, val, _ := strings.Cut(trimmed, " ")
+			section = ""
+			switch {
+			case key == "version":
+				v, err := yarnUnquote(val)
+				if err != nil {
+					return nil, fmt.Errorf("yarn.lock line %d: %w", lineNo, err)
+				}
+				cur.ver = v
+			case strings.HasSuffix(trimmed, ":"):
+				section = strings.TrimSuffix(trimmed, ":")
+			}
+		default:
+			if section != "dependencies" && section != "optionalDependencies" {
+				continue
+			}
+			k, v, ok := yarnSplitDepLine(trimmed)
+			if !ok {
+				return nil, fmt.Errorf("yarn.lock line %d: cannot parse dependency %q", lineNo, trimmed)
+			}
+			cur.deps[k] = v
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return nil, fmt.Errorf("yarn.lock: %w", err)
+	}
+	if err := finish(); err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
+// yarnSplitDepLine parses `name "range"` or `"@scope/name" "range"`.
+func yarnSplitDepLine(s string) (name, rng string, ok bool) {
+	var rest string
+	if strings.HasPrefix(s, `"`) {
+		end := strings.Index(s[1:], `"`)
+		if end < 0 {
+			return "", "", false
+		}
+		name, rest = s[1:end+1], s[end+2:]
+	} else {
+		name, rest, ok = strings.Cut(s, " ")
+		if !ok {
+			return "", "", false
+		}
+	}
+	r, err := yarnUnquote(rest)
+	if err != nil || name == "" || r == "" {
+		return "", "", false
+	}
+	return name, r, true
+}
+
+// parseYarnBerry reads a Yarn 2+ lockfile (YAML with __metadata).
+func parseYarnBerry(data []byte) ([]*yarnEntry, error) {
+	var doc map[string]struct {
+		Version      string            `yaml:"version"`
+		Resolution   string            `yaml:"resolution"`
+		Dependencies map[string]string `yaml:"dependencies"`
+		Optional     map[string]string `yaml:"optionalDependencies"`
+	}
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return nil, fmt.Errorf("yarn.lock: %w", err)
+	}
+	var entries []*yarnEntry
+	for _, key := range sortedKeys(doc) {
+		if key == "__metadata" {
+			continue
+		}
+		v := doc[key]
+		name, rng, ok := yarnSplitSpec(v.Resolution)
+		if !ok || v.Version == "" {
+			return nil, fmt.Errorf("yarn.lock: entry %q has no resolution or version", key)
+		}
+		e := &yarnEntry{name: name, ver: v.Version, deps: map[string]string{}}
+		for _, s := range strings.Split(key, ",") {
+			e.specs = append(e.specs, strings.TrimSpace(s))
+		}
+		for k, r := range v.Dependencies {
+			e.deps[k] = r
+		}
+		for k, r := range v.Optional {
+			e.deps[k] = r
+		}
+		if strings.HasPrefix(rng, "workspace:") {
+			e.root = rng == "workspace:."
+			e.ws = !e.root
+		}
+		entries = append(entries, e)
+	}
+	return entries, nil
+}
+```
+
+Replace `internal/graph/extract_node.go`:
+
+```go
+package graph
+
+import (
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+)
+
+// NodeExtractor extracts dependencies from Node.js lockfiles.
+type NodeExtractor struct{}
+
+func (e *NodeExtractor) Name() string {
+	return "node"
+}
+
+func (e *NodeExtractor) Supports(file string) bool {
+	return file == "package-lock.json" || file == "yarn.lock" ||
+		file == "pnpm-lock.yaml" || file == "bun.lock" || file == "bun.lockb"
+}
+
+// Extract parses the first lockfile found, in the order package-lock.json,
+// pnpm-lock.yaml, yarn.lock. Bun lockfiles are detected but not parsed.
+func (e *NodeExtractor) Extract(dir string, _ ExtractOptions) (*DepGraph, error) {
+	manifest, err := readOptional(filepath.Join(dir, "package.json"))
+	if err != nil {
+		return nil, err
+	}
+	locks := []struct {
+		file  string
+		parse func(data, manifest []byte, fallback string) (*DepGraph, error)
+	}{
+		{"package-lock.json", parseNpmLock},
+		{"pnpm-lock.yaml", parsePnpmLock},
+		{"yarn.lock", parseYarnLock},
+	}
+	for _, l := range locks {
+		data, err := os.ReadFile(filepath.Join(dir, l.file))
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		return l.parse(data, manifest, dirName(dir))
+	}
+	for _, bun := range []string{"bun.lock", "bun.lockb"} {
+		if _, err := os.Stat(filepath.Join(dir, bun)); err == nil {
+			return nil, fmt.Errorf("%s is not supported yet", bun)
+		}
+	}
+	return nil, fmt.Errorf("no package-lock.json, pnpm-lock.yaml or yarn.lock found")
+}
+```
+
+- [ ] **Step 5: Run the tests and the gate**
+
+Run: `go test ./internal/graph/ -run 'Pnpm|Yarn|NodeExtractor|NpmLock' -v 2>&1 | grep -E '^(--- |ok|FAIL)'`
+Expected: every `--- PASS`, then `ok`.
+
+```bash
+go build ./... && go vet ./... && go test ./... && test -z "$(gofmt -l .)" && echo GREEN
+go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.5.0 run ./...
+```
+Expected: `GREEN`, then `0 issues.`
+- [ ] **Step 6: Commit**
+
+```bash
+git add internal/graph/pnpm.go internal/graph/yarn.go internal/graph/extract_node.go internal/graph/pnpm_yarn_test.go \
+  internal/graph/testdata/pnpm internal/graph/testdata/yarn
+git commit -m "graph: parse pnpm v5/v6/v9 (snapshots, peer suffixes, importers) and yarn v1/berry"
+```
+
+---
+
+### Task 5: Cargo, Go (go.mod via modfile, `go mod graph` with `--exec`), Python, Composer
+
+**Files:**
+- Modify: `go.mod`, `go.sum` (add `golang.org/x/mod v0.23.0`)
+- Replace: `internal/graph/extract_cargo.go`, `internal/graph/extract_go.go`, `internal/graph/extract_python.go`, `internal/graph/extract_composer.go`
+- Create: `internal/graph/cargo_test.go`, `internal/graph/golang_test.go`, `internal/graph/python_test.go`, `internal/graph/composer_test.go`, `internal/graph/testdata/{cargo/workspace,go/app,python/{poetry,pep621,requirements},composer/app}/…`
+
+**Interfaces:**
+- Consumes (Task 1): `ExtractOptions`, `o.run`, `o.warn`, `NewTransitiveEdge`. (Task 3/4): `addProject`, `dirName`, `readOptional`, `sortedPairs`, `sortedKeys`, test helpers.
+- Produces:
+  - `func parseCargoLock(data []byte) (*DepGraph, error)`: nodes keyed `rust:name@version`; dependency entries `"name"` (the only locked version), `"name version"`, `"name version (source)"`; roots = packages without `source` (workspace members); an entry that does not resolve is an error.
+  - `func parseGoMod(data []byte) (*DepGraph, error)`: `modfile.ParseLax`; root `go:<module path>@`; edge to every require, `Type "transitive"` and metadata `indirect=true` for `// indirect`; full module paths as names.
+  - `func parseGoModGraph(out []byte) (*DepGraph, error)`: `go mod graph` text; `path@version` tokens, main modules (no `@`) are roots, `go@…`/`toolchain@…` targets skipped.
+  - `GoExtractor.Extract(dir, opts)`: with `opts.Exec`, `opts.run(dir, "go", "mod", "graph")`; on error or bad output `opts.warn("go: `go mod graph` failed, using go.mod requires only: …")` and parse go.mod.
+  - `func pep503(name string) string`; `type pyprojectInfo struct { Name, Version string; Deps []string }`; `func parsePyproject(data []byte) (pyprojectInfo, error)` ([project] dependencies + optional-dependencies, PEP 735 `[dependency-groups]`, `[tool.poetry]` dependencies/dev-dependencies/groups, minus `python`).
+  - `func parsePoetryLock(data, pyproject []byte, fallback string) (*DepGraph, error)`, `func flatPythonGraph(info pyprojectInfo, fallback string) *DepGraph`, `func parseRequirements(data []byte, fallback string) (*DepGraph, error)`.
+  - `PythonExtractor.Extract`: poetry.lock (+pyproject for the project and its edges) → else pyproject's declared deps (versionless nodes) → else requirements.txt; a poetry.lock that fails to parse is an error, never skipped.
+  - `func parseComposerLock(data, manifest []byte, fallback string) (*DepGraph, error)`: `packages` + `packages-dev`, edges from `require`, names matched case-insensitively, platform requirements (`php`, `ext-*`, `lib-*`, `composer-*-api`: any name without `/`) skipped; project from composer.json with edges to `require` + `require-dev`.
+
+- [ ] **Step 1: Add the dependency**
+
+```bash
+go get golang.org/x/mod@v0.23.0
+```
+Expected: `go: upgraded go 1.22 => 1.22.0` and `go: added golang.org/x/mod v0.23.0` (or `upgraded … => v0.23.0`); it resolves from the module cache offline (`GOPROXY=off GOFLAGS=-mod=mod go get golang.org/x/mod@v0.23.0` works). `go mod tidy` after Step 4 moves it into the direct `require` block:
+
+```text
+require (
+	github.com/BurntSushi/toml v1.3.2
+	github.com/charmbracelet/bubbletea v0.25.0
+	github.com/charmbracelet/lipgloss v0.9.1
+	github.com/manifoldco/promptui v0.9.0
+	golang.org/x/mod v0.23.0
+	golang.org/x/term v0.6.0
+	gopkg.in/yaml.v3 v3.0.1
+)
+```
+and `go.sum` gains:
+```text
+golang.org/x/mod v0.23.0 h1:Zb7khfcRGKk+kqfxFaP5tZqCnDZMjC5VtUBs87Hr6QM=
+golang.org/x/mod v0.23.0/go.mod h1:6SkKJ3Xj0I0BrPOZoBy3bdMptDDU9oJrpohJ3eWZ1fY=
+```
+
+- [ ] **Step 2: Add the fixtures**
+
+Create `internal/graph/testdata/cargo/workspace/Cargo.lock`:
+
+```toml
+# This file is automatically @generated by Cargo.
+# It is not intended for manual editing.
+version = 4
+
+[[package]]
+name = "anyhow"
+version = "1.0.86"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b3d1d046238990b9cf5bcde22a3fb3584ee5cf65fb2765f454ed428c7a0063da"
+
+[[package]]
+name = "app"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "app-core",
+ "bitflags 2.5.0",
+ "serde",
+]
+
+[[package]]
+name = "app-core"
+version = "0.1.0"
+dependencies = [
+ "bitflags 1.3.2",
+ "serde 1.0.203 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
+name = "bitflags"
+version = "1.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
+
+[[package]]
+name = "bitflags"
+version = "2.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf4b9d6a944f767f8e5e0db018570623c85f3d925ac718db4e06d0187adb21c1"
+
+[[package]]
+name = "proc-macro2"
+version = "1.0.85"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "22244ce15aa966053a896d1accb3a6e68469b97c7f33f284b99f0d576879fc23"
+dependencies = [
+ "unicode-ident",
+]
+
+[[package]]
+name = "quote"
+version = "1.0.36"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0fa76aaf39101c457836aec0ce2316dbdc3ab723cdda1c6bd4e6ad4208acaca7"
+dependencies = [
+ "proc-macro2",
+]
+
+[[package]]
+name = "serde"
+version = "1.0.203"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7253ab4de971e72fb7be983802300c30b5a7f0c2e56fab8abfc6a214307c0094"
+dependencies = [
+ "serde_derive",
+]
+
+[[package]]
+name = "serde_derive"
+version = "1.0.203"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "500cbc0ebeb6f46627f50f3f5811ccf6bf00643be300b4c3eabc0ef55dc5b5ba"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "syn"
+version = "2.0.66"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c42f3f41a2de00b01c0aaad383c5a45241efc8b2d1eda5661812fda5f3cdcff5"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "unicode-ident",
+]
+
+[[package]]
+name = "unicode-ident"
+version = "1.0.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3354b9ac3fae1ff6755cb6db53683adb661634f67557942dea4facebec0fee4b"
+```
+
+Create `internal/graph/testdata/go/app/go.mod`:
+
+```text
+module example.com/app
+
+go 1.22
+
+require (
+	github.com/spf13/cobra v1.8.0
+	golang.org/x/mod v0.17.0
+)
+
+require (
+	github.com/inconshreveable/mousetrap v1.1.0 // indirect
+	github.com/spf13/pflag v1.0.5 // indirect
+)
+```
+
+Create `internal/graph/testdata/go/app/modgraph.txt`:
+
+```text
+example.com/app github.com/inconshreveable/mousetrap@v1.1.0
+example.com/app github.com/spf13/cobra@v1.8.0
+example.com/app github.com/spf13/pflag@v1.0.5
+example.com/app go@1.22
+example.com/app golang.org/x/mod@v0.17.0
+github.com/spf13/cobra@v1.8.0 github.com/cpuguy83/go-md2man/v2@v2.0.3
+github.com/spf13/cobra@v1.8.0 github.com/inconshreveable/mousetrap@v1.1.0
+github.com/spf13/cobra@v1.8.0 github.com/spf13/pflag@v1.0.5
+github.com/spf13/cobra@v1.8.0 gopkg.in/yaml.v3@v3.0.1
+github.com/cpuguy83/go-md2man/v2@v2.0.3 github.com/russross/blackfriday/v2@v2.1.0
+gopkg.in/yaml.v3@v3.0.1 gopkg.in/check.v1@v0.0.0-20161208181325-20d25e280405
+golang.org/x/mod@v0.17.0 go@1.18
+golang.org/x/mod@v0.17.0 toolchain@go1.21.1
+```
+
+Create `internal/graph/testdata/python/poetry/poetry.lock`:
+
+```toml
+# This file is automatically @generated by Poetry 1.8.3 and should not be changed by hand.
+
+[[package]]
+name = "annotated-types"
+version = "0.7.0"
+description = "Reusable constraint types to use with typing.Annotated"
+optional = false
+python-versions = ">=3.8"
+files = [
+    {file = "annotated_types-0.7.0-py3-none-any.whl", hash = "sha256:0192075477c67d0c8b27e08cf27a7e4994a352df929518eeb3f0ebba663c953e"},
+    {file = "annotated_types-0.7.0.tar.gz", hash = "sha256:f60e85c4fd0eccdc94b369289489e896c2681f938530f5f6a5c31e663dca4722"},
+]
+
+[[package]]
+name = "certifi"
+version = "2024.6.2"
+description = "Python package for providing Mozilla's CA Bundle."
+optional = false
+python-versions = ">=3.6"
+files = [
+    {file = "certifi-2024.6.2-py3-none-any.whl", hash = "sha256:87e2a7d865296af9073a5928612a969acfb399c85fe31978d4386c1450a60000"},
+    {file = "certifi-2024.6.2.tar.gz", hash = "sha256:160e5c153a7f8aa9d4169453007989c2459a1d6c0bf1722138862812618e7029"},
+]
+
+[[package]]
+name = "charset-normalizer"
+version = "3.3.2"
+description = "The Real First Universal Charset Detector. Open, modern and actively maintained alternative to Chardet."
+optional = false
+python-versions = ">=3.7.0"
+files = [
+    {file = "charset_normalizer-3.3.2-py3-none-any.whl", hash = "sha256:74a3903c4259a1e0a246990a1fe6faaf232d0fe74b43723115181a1a0df02982"},
+    {file = "charset_normalizer-3.3.2.tar.gz", hash = "sha256:4bab8efc59b6ddda25849148dbe242152093e159255ba26650e7758a5425a4f9"},
+]
+
+[[package]]
+name = "colorama"
+version = "0.4.6"
+description = "Cross-platform colored terminal text."
+optional = false
+python-versions = "!=3.0.*,!=3.1.*,!=3.2.*,!=3.3.*,!=3.4.*,!=3.5.*,!=3.6.*,>=2.7"
+files = [
+    {file = "colorama-0.4.6-py3-none-any.whl", hash = "sha256:a6dfb89fdc0c09af3222e3112b4a0693207c0260651e192cc873aad459025fa7"},
+    {file = "colorama-0.4.6.tar.gz", hash = "sha256:a1ac7dbd79ffad4cec8e275397da1e3c9cf5bcf3cd6047d9ce943a59b243b3fd"},
+]
+
+[[package]]
+name = "idna"
+version = "3.7"
+description = "Internationalized Domain Names in Applications (IDNA)"
+optional = false
+python-versions = ">=3.5"
+files = [
+    {file = "idna-3.7-py3-none-any.whl", hash = "sha256:4042911f1f717a2fe11841da6ac49260e90166b76000fbaf6acb29a00953a2d9"},
+    {file = "idna-3.7.tar.gz", hash = "sha256:267398018b58a9e6a16e91f76b3e11d2ecd20bd589f05eb2bb88efd46ea7dd1c"},
+]
+
+[[package]]
+name = "iniconfig"
+version = "2.0.0"
+description = "brain-dead simple config-ini parsing"
+optional = false
+python-versions = ">=3.7"
+files = [
+    {file = "iniconfig-2.0.0-py3-none-any.whl", hash = "sha256:bfe5ee6a9cf0c63c68a785431f1a8dadb6018e5c0d06ce093c9f8d72c5891fe3"},
+    {file = "iniconfig-2.0.0.tar.gz", hash = "sha256:e534e079602f79720e6643d7e544b929b401f17b50fcfb1fe1a2533b6c867bc8"},
+]
+
+[[package]]
+name = "packaging"
+version = "24.1"
+description = "Core utilities for Python packages"
+optional = false
+python-versions = ">=3.8"
+files = [
+    {file = "packaging-24.1-py3-none-any.whl", hash = "sha256:775d27ec2ad75e4a07412740bbf8347993d8a4e6709e9717d053de73b0187037"},
+    {file = "packaging-24.1.tar.gz", hash = "sha256:783d438a8221162ab234f32e6ff40acfeee73aa69ce587ea66961304454941d2"},
+]
+
+[[package]]
+name = "pluggy"
+version = "1.5.0"
+description = "plugin and hook calling mechanisms for python"
+optional = false
+python-versions = ">=3.8"
+files = [
+    {file = "pluggy-1.5.0-py3-none-any.whl", hash = "sha256:9b3cb3b306788f7414b80f397c4637030d79e37047ad208b5f3294399b9bc1d3"},
+    {file = "pluggy-1.5.0.tar.gz", hash = "sha256:b1fee09add35a93d269dd6cec666c97f32b67cd611545592c6d5020cd709250b"},
+]
+
+[package.extras]
+dev = ["pre-commit", "tox"]
+testing = ["pytest", "pytest-benchmark"]
+
+[[package]]
+name = "pydantic"
+version = "2.7.4"
+description = "Data validation using Python type hints"
+optional = false
+python-versions = ">=3.8"
+files = [
+    {file = "pydantic-2.7.4-py3-none-any.whl", hash = "sha256:9d80ea651fdd73a709dc63c0e78110db1202f09449210e2d5d8c241ab4b02c63"},
+    {file = "pydantic-2.7.4.tar.gz", hash = "sha256:bfb7edda100841db355ccbe90a5a88f9cd86aaa54440d41e2c433f910138db4c"},
+]
+
+[package.dependencies]
+annotated-types = ">=0.4.0"
+pydantic-core = "2.18.4"
+typing_extensions = ">=4.6.1"
+
+[package.extras]
+email = ["email-validator (>=2.0.0)"]
+
+[[package]]
+name = "pydantic-core"
+version = "2.18.4"
+description = "Core functionality for Pydantic validation and serialization"
+optional = false
+python-versions = ">=3.8"
+files = [
+    {file = "pydantic_core-2.18.4-py3-none-any.whl", hash = "sha256:2a5a0b87aa8bf66216e632c784255b07a028b3cd7cf8ec9746dbf103f06048c5"},
+    {file = "pydantic_core-2.18.4.tar.gz", hash = "sha256:1784b00f6344fd3a4c8e3afca804abd2ec51f0435a9b35936388bf02c34de1d3"},
+]
+
+[package.dependencies]
+typing-extensions = ">=4.6.0,<4.7.0 || >4.7.0"
+
+[[package]]
+name = "pytest"
+version = "8.2.2"
+description = "pytest: simple powerful testing with Python"
+optional = false
+python-versions = ">=3.8"
+files = [
+    {file = "pytest-8.2.2-py3-none-any.whl", hash = "sha256:2bbb36b8308e245e59949b76f19e082501ad016be72635201d2de7529506c642"},
+    {file = "pytest-8.2.2.tar.gz", hash = "sha256:0a16d90216f3a77064a24a8be158854a658419c81e13598537467a683641f9d9"},
+]
+
+[package.dependencies]
+colorama = {version = "*", markers = "sys_platform == \"win32\""}
+iniconfig = "*"
+packaging = "*"
+pluggy = ">=1.5,<2.0"
+
+[package.extras]
+dev = ["argcomplete", "attrs (>=19.2)", "hypothesis (>=3.56)", "mock", "pygments (>=2.7.2)", "requests", "setuptools", "xmlschema"]
+
+[[package]]
+name = "requests"
+version = "2.32.3"
+description = "Python HTTP for Humans."
+optional = false
+python-versions = ">=3.8"
+files = [
+    {file = "requests-2.32.3-py3-none-any.whl", hash = "sha256:702fe8e3c9bfab6797a163ed93ded6732d032a80b3abf1e57550a53f7b3c636c"},
+    {file = "requests-2.32.3.tar.gz", hash = "sha256:c2058952fb8f661cd0835a072ae0887a15b6902c4629148b47510c3574b13dd1"},
+]
+
+[package.dependencies]
+certifi = ">=2017.4.17"
+charset-normalizer = ">=2,<4"
+idna = ">=2.5,<4"
+urllib3 = ">=1.21.1,<3"
+
+[package.extras]
+socks = ["PySocks (>=1.5.6,!=1.5.7)"]
+use-chardet-on-py3 = ["chardet (>=3.0.2,<6)"]
+
+[[package]]
+name = "typing-extensions"
+version = "4.12.2"
+description = "Backported and Experimental Type Hints for Python 3.8+"
+optional = false
+python-versions = ">=3.8"
+files = [
+    {file = "typing_extensions-4.12.2-py3-none-any.whl", hash = "sha256:f962af479570d079f1440c159a46b077e045d99cdc6f982a0272c654d85ad235"},
+    {file = "typing_extensions-4.12.2.tar.gz", hash = "sha256:3fb6f692efdd5cb3561834205967b5f120b3628c1775ffa4657d27479acd5db9"},
+]
+
+[[package]]
+name = "urllib3"
+version = "2.2.2"
+description = "HTTP library with thread-safe connection pooling, file post, and more."
+optional = false
+python-versions = ">=3.8"
+files = [
+    {file = "urllib3-2.2.2-py3-none-any.whl", hash = "sha256:616a4f6899b338089c03e6feb4542fcb40344034a7f7457eda5f2a70eafe9b41"},
+    {file = "urllib3-2.2.2.tar.gz", hash = "sha256:5f5dc8a1b52b92dafc4d3e2372d705937faddda8482b92f311361480cc8220bb"},
+]
+
+[package.extras]
+brotli = ["brotli (>=1.0.9)", "brotlicffi (>=0.8.0)"]
+socks = ["pysocks (>=1.5.6,!=1.5.7,<2.0)"]
+
+[metadata]
+lock-version = "2.0"
+python-versions = "^3.10"
+content-hash = "7e274b6e6914747c66f9bb2d7edc305478f0ac0da85b29a306970a310e6b4f1f"
+```
+
+Create `internal/graph/testdata/python/poetry/pyproject.toml`:
+
+```toml
+[tool.poetry]
+name = "py-app"
+version = "0.1.0"
+description = ""
+authors = ["Dev <dev@example.com>"]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+requests = "^2.32.3"
+Pydantic = "^2.7.4"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.2.2"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+```
+
+Create `internal/graph/testdata/python/pep621/pyproject.toml`:
+
+```toml
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pep621-app"
+version = "0.2.0"
+requires-python = ">=3.9"
+dependencies = [
+    "httpx[http2]>=0.27",
+    "Rich ~= 13.7",
+    "tomli>=2.0.1; python_version < '3.11'",
+]
+
+[project.optional-dependencies]
+cli = ["click>=8.1"]
+
+[dependency-groups]
+test = ["pytest>=8", {include-group = "lint"}]
+lint = ["ruff==0.4.8"]
+```
+
+Create `internal/graph/testdata/python/requirements/requirements.txt`:
+
+```text
+# Pinned by pip-compile
+--index-url https://pypi.org/simple
+-r requirements-base.txt
+
+Django==5.0.6
+djangorestframework>=3.15,<4  # api
+psycopg[binary]==3.1.19 ; sys_platform != "win32"
+gunicorn==22.0.0 \
+    --hash=sha256:350679f91b24062c86e386e198a15438d53a7a8207235a78ba1b53df4c4378d9
+-e ./libs/shared
+https://example.com/wheels/internal_tool-1.0-py3-none-any.whl
+```
+
+Create `internal/graph/testdata/composer/app/composer.json`:
+
+```json
+{
+    "name": "acme/app",
+    "description": "Demo app",
+    "type": "project",
+    "require": {
+        "php": "^8.2",
+        "ext-json": "*",
+        "monolog/monolog": "^3.6",
+        "Symfony/Console": "^7.1"
+    },
+    "require-dev": {
+        "symfony/var-dumper": "^7.1"
+    }
+}
+```
+
+Create `internal/graph/testdata/composer/app/composer.lock`:
+
+```json
+{
+    "_readme": [
+        "This file locks the dependencies of your project to a known state",
+        "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
+        "This file is @generated automatically"
+    ],
+    "content-hash": "d2a57dc1d883fd21fb9951699df71cc7",
+    "packages": [
+        {
+            "name": "monolog/monolog",
+            "version": "3.6.0",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/monolog/monolog.git",
+                "reference": "79555596806112d49d2c7e1e0c08a83d6982d56b"
+            },
+            "require": {
+                "php": ">=8.1",
+                "psr/log": "^2.0 || ^3.0"
+            },
+            "type": "library",
+            "description": "Sends your logs to files, sockets, inboxes, databases and various web services"
+        },
+        {
+            "name": "psr/container",
+            "version": "2.0.2",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/psr/container.git",
+                "reference": "dddf3c132f208619c30a777bf98dd5c33dd38c65"
+            },
+            "require": {
+                "php": ">=7.4.0"
+            },
+            "type": "library",
+            "description": "Common Container Interface (PHP FIG PSR-11)"
+        },
+        {
+            "name": "psr/log",
+            "version": "3.0.0",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/psr/log.git",
+                "reference": "a2a8a513696aed23d46e1c619ccdf08fab87a7d8"
+            },
+            "require": {
+                "php": ">=8.0.0"
+            },
+            "type": "library",
+            "description": "Common interface for logging libraries"
+        },
+        {
+            "name": "symfony/console",
+            "version": "v7.1.1",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/symfony/console.git",
+                "reference": "e9f4ddefd8755b39a02f592aa8f6937ae72ce24e"
+            },
+            "require": {
+                "php": ">=8.2",
+                "symfony/deprecation-contracts": "^2.5|^3",
+                "symfony/polyfill-mbstring": "~1.0",
+                "symfony/service-contracts": "^2.5|^3",
+                "symfony/string": "^6.4|^7.0"
+            },
+            "type": "library",
+            "description": "Eases the creation of beautiful and testable command line interfaces"
+        },
+        {
+            "name": "symfony/deprecation-contracts",
+            "version": "v3.5.0",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/symfony/deprecation-contracts.git",
+                "reference": "a05a1fa0381f19c7ed2f411df4369f890aad6362"
+            },
+            "require": {
+                "php": ">=8.1"
+            },
+            "type": "library",
+            "description": "A generic function and convention to trigger deprecation notices"
+        },
+        {
+            "name": "symfony/polyfill-ctype",
+            "version": "v1.30.0",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/symfony/polyfill-ctype.git",
+                "reference": "1e6ef509740ea94aa66bf8f0c50c1f17186130ba"
+            },
+            "require": {
+                "php": ">=7.1"
+            },
+            "type": "library",
+            "description": "Symfony polyfill for ctype functions"
+        },
+        {
+            "name": "symfony/polyfill-mbstring",
+            "version": "v1.30.0",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/symfony/polyfill-mbstring.git",
+                "reference": "ab62b92f55ecdd0d04be8d70bc2269797e0c8f24"
+            },
+            "require": {
+                "php": ">=7.1"
+            },
+            "type": "library",
+            "description": "Symfony polyfill for the Mbstring extension"
+        },
+        {
+            "name": "symfony/service-contracts",
+            "version": "v3.5.0",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/symfony/service-contracts.git",
+                "reference": "eb731eafdfd5dbd0960ba4544a9bd0b24a416083"
+            },
+            "require": {
+                "php": ">=8.1",
+                "psr/container": "^1.1|^2.0",
+                "symfony/deprecation-contracts": "^2.5|^3"
+            },
+            "type": "library",
+            "description": "Generic abstractions related to writing services"
+        },
+        {
+            "name": "symfony/string",
+            "version": "v7.1.1",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/symfony/string.git",
+                "reference": "5c4a9491cb5d299f81f71dc1c0dbfd143598cd64"
+            },
+            "require": {
+                "php": ">=8.2",
+                "symfony/polyfill-ctype": "~1.8",
+                "symfony/polyfill-mbstring": "~1.0"
+            },
+            "type": "library",
+            "description": "Provides an object-oriented API to strings and deals with bytes, UTF-8 code points and grapheme clusters in a unified way"
+        }
+    ],
+    "packages-dev": [
+        {
+            "name": "symfony/var-dumper",
+            "version": "v7.1.1",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/symfony/var-dumper.git",
+                "reference": "2db4171fafbd124c469997bd28bed2621e8b540b"
+            },
+            "require": {
+                "php": ">=8.2",
+                "symfony/polyfill-mbstring": "~1.0"
+            },
+            "type": "library",
+            "description": "Provides mechanisms for walking through any arbitrary PHP variable"
+        }
+    ],
+    "aliases": [],
+    "minimum-stability": "stable",
+    "stability-flags": [],
+    "prefer-stable": false,
+    "prefer-lowest": false,
+    "platform": {
+        "php": "^8.2",
+        "ext-json": "*"
+    },
+    "platform-dev": [],
+    "plugin-api-version": "2.6.0"
+}
+```
+
+Expected shapes: Cargo 11 / 15 / 2 (two `bitflags` versions); go.mod 5 / 4 / 1; `go mod graph` 9 / 10 / 1; poetry 15 / 15 / 1; pep621 7 / 6 / 1; requirements 5 / 4 / 1; composer 11 / 13 / 1.
+
+- [ ] **Step 3: Write the failing tests**
+
+Create `internal/graph/cargo_test.go`:
+
+```go
+package graph
+
+import "testing"
+
+func TestParseCargoLockKeysByNameAndVersion(t *testing.T) {
+	g, err := parseCargoLock(fixture(t, "cargo/workspace/Cargo.lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantGraph(t, g, 11, 15, 2, []string{
+		"rust:app@0.1.0 -> rust:bitflags@2.5.0",      // "bitflags 2.5.0"
+		"rust:app-core@0.1.0 -> rust:bitflags@1.3.2", // "bitflags 1.3.2"
+		"rust:app@0.1.0 -> rust:anyhow@1.0.86",       // bare name, one locked version
+		"rust:app-core@0.1.0 -> rust:serde@1.0.203",  // "name version (source)"
+		"rust:app@0.1.0 -> rust:app-core@0.1.0",
+		"rust:syn@2.0.66 -> rust:unicode-ident@1.0.12",
+	}, []string{"rust:app@0.1.0", "rust:app-core@0.1.0"})
+}
+
+func TestParseCargoLockMalformed(t *testing.T) {
+	for name, data := range map[string]string{
+		"not-toml":       "[[package]\nname = \"x\"\n",
+		"no-version":     "version = 4\n\n[[package]]\nname = \"x\"\n",
+		"ambiguous-dep":  "[[package]]\nname = \"a\"\nversion = \"1.0.0\"\ndependencies = [\"b\"]\n\n[[package]]\nname = \"b\"\nversion = \"1.0.0\"\n\n[[package]]\nname = \"b\"\nversion = \"2.0.0\"\n",
+		"missing-dep":    "[[package]]\nname = \"a\"\nversion = \"1.0.0\"\ndependencies = [\"zzz 9.9.9\"]\n",
+		"dependencies-s": "[[package]]\nname = \"a\"\nversion = \"1.0.0\"\ndependencies = \"b\"\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if g, err := parseCargoLock([]byte(data)); err == nil {
+				t.Fatalf("want error, got %s", dumpGraph(g))
+			}
+		})
+	}
+}
+```
+
+Create `internal/graph/golang_test.go`:
+
+```go
+package graph
+
+import (
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestParseGoModDirectAndIndirect(t *testing.T) {
+	g, err := parseGoMod(fixture(t, "go/app/go.mod"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantGraph(t, g, 5, 4, 1, []string{
+		"go:example.com/app@ -> go:github.com/spf13/cobra@v1.8.0", // full module path, not "cobra"
+		"go:example.com/app@ -> go:github.com/spf13/pflag@v1.0.5",
+	}, []string{"go:example.com/app@"})
+	types := map[string]string{}
+	for _, e := range g.Edges {
+		types[e.To] = e.Type
+	}
+	if types["go:golang.org/x/mod@v0.17.0"] != "direct" || types["go:github.com/spf13/pflag@v1.0.5"] != "transitive" {
+		t.Errorf("edge types = %v; want direct for x/mod, transitive for // indirect pflag", types)
+	}
+}
+
+func TestParseGoModGraph(t *testing.T) {
+	g, err := parseGoModGraph(fixture(t, "go/app/modgraph.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantGraph(t, g, 9, 10, 1, []string{
+		"go:github.com/spf13/cobra@v1.8.0 -> go:github.com/cpuguy83/go-md2man/v2@v2.0.3",
+		"go:github.com/cpuguy83/go-md2man/v2@v2.0.3 -> go:github.com/russross/blackfriday/v2@v2.1.0",
+		"go:gopkg.in/yaml.v3@v3.0.1 -> go:gopkg.in/check.v1@v0.0.0-20161208181325-20d25e280405",
+	}, []string{"go:example.com/app@"})
+}
+
+func TestParseGoMalformed(t *testing.T) {
+	for name, data := range map[string]string{
+		"no-module":      "go 1.22\n\nrequire example.com/x v1.0.0\n",
+		"unclosed-block": "module example.com/app\n\nrequire (\n\texample.com/x v1.0.0\n",
+		"bad-version":    "module example.com/app\n\nrequire example.com/x one.two\n",
+	} {
+		t.Run("go.mod/"+name, func(t *testing.T) {
+			if g, err := parseGoMod([]byte(data)); err == nil {
+				t.Fatalf("want error, got %s", dumpGraph(g))
+			}
+		})
+	}
+	for name, data := range map[string]string{
+		"three-fields": "example.com/app github.com/a/b@v1.0.0 extra\n",
+		"no-main":      "github.com/a/b@v1.0.0 github.com/c/d@v1.0.0\n",
+	} {
+		t.Run("graph/"+name, func(t *testing.T) {
+			if g, err := parseGoModGraph([]byte(data)); err == nil {
+				t.Fatalf("want error, got %s", dumpGraph(g))
+			}
+		})
+	}
+}
+
+func TestGoExtractorRunsNothingWithoutExec(t *testing.T) {
+	opts := ExtractOptions{Run: func(dir, name string, args ...string) ([]byte, error) {
+		t.Fatalf("ran %s %v without Exec", name, args)
+		return nil, nil
+	}}
+	g, err := (&GoExtractor{}).Extract(copyFixtureDir(t, "go/app"), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantGraph(t, g, 5, 4, 1, nil, nil)
+}
+
+func TestGoExtractorExecUsesGoModGraph(t *testing.T) {
+	dir := copyFixtureDir(t, "go/app")
+	var ran string
+	opts := ExtractOptions{Exec: true, Run: func(d, name string, args ...string) ([]byte, error) {
+		ran = d + "|" + name + " " + strings.Join(args, " ")
+		return os.ReadFile(filepath.Join("testdata", "go", "app", "modgraph.txt"))
+	}}
+	g, err := (&GoExtractor{}).Extract(dir, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ran != dir+"|go mod graph" {
+		t.Errorf("ran %q, want %q", ran, dir+"|go mod graph")
+	}
+	wantGraph(t, g, 9, 10, 1, nil, nil)
+}
+
+func TestGoExtractorExecFailureFallsBackWithWarning(t *testing.T) {
+	var warnings []string
+	opts := ExtractOptions{
+		Exec: true,
+		Run: func(string, string, ...string) ([]byte, error) {
+			return nil, errors.New("go: command not found")
+		},
+		Warn: func(msg string) { warnings = append(warnings, msg) },
+	}
+	g, err := (&GoExtractor{}).Extract(copyFixtureDir(t, "go/app"), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantGraph(t, g, 5, 4, 1, nil, nil)
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "command not found") {
+		t.Errorf("warnings = %q, want one mentioning the failure", warnings)
+	}
+}
+```
+
+Create `internal/graph/python_test.go`:
+
+```go
+package graph
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestParsePoetryLock(t *testing.T) {
+	g, err := parsePoetryLock(fixture(t, "python/poetry/poetry.lock"), fixture(t, "python/poetry/pyproject.toml"), "fallback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 14 packages + the project; 12 package edges + 3 from the project.
+	wantGraph(t, g, 15, 15, 1, []string{
+		"python:pydantic@2.7.4 -> python:typing-extensions@4.12.2", // written "typing_extensions"
+		"python:pydantic-core@2.18.4 -> python:typing-extensions@4.12.2",
+		"python:pytest@8.2.2 -> python:colorama@0.4.6", // inline-table dependency
+		"python:requests@2.32.3 -> python:urllib3@2.2.2",
+		"python:py-app@0.1.0 -> python:pydantic@2.7.4", // declared "Pydantic"
+		"python:py-app@0.1.0 -> python:pytest@8.2.2",   // dev group
+	}, []string{"python:py-app@0.1.0"})
+}
+
+func TestParsePyprojectPEP621IsFlat(t *testing.T) {
+	info, err := parsePyproject(fixture(t, "python/pep621/pyproject.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := flatPythonGraph(info, "fallback")
+	wantGraph(t, g, 7, 6, 1, []string{
+		"python:pep621-app@0.2.0 -> python:httpx@",  // extras stripped
+		"python:pep621-app@0.2.0 -> python:Rich@",   // "Rich ~= 13.7"
+		"python:pep621-app@0.2.0 -> python:tomli@",  // environment marker
+		"python:pep621-app@0.2.0 -> python:click@",  // optional-dependencies
+		"python:pep621-app@0.2.0 -> python:ruff@",   // dependency-groups
+		"python:pep621-app@0.2.0 -> python:pytest@", // include-group table skipped
+	}, []string{"python:pep621-app@0.2.0"})
+}
+
+func TestParseRequirements(t *testing.T) {
+	g, err := parseRequirements(fixture(t, "python/requirements/requirements.txt"), "reqs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantGraph(t, g, 5, 4, 1, []string{
+		"python:reqs@ -> python:Django@5.0.6",
+		"python:reqs@ -> python:djangorestframework@", // a range is not a version
+		"python:reqs@ -> python:psycopg@3.1.19",       // extras and marker
+		"python:reqs@ -> python:gunicorn@22.0.0",      // line continuation + --hash
+	}, []string{"python:reqs@"})
+}
+
+func TestParsePythonMalformed(t *testing.T) {
+	if _, err := parsePoetryLock([]byte("[[package]]\nname = \"x\"\nversion = \n"), nil, "f"); err == nil {
+		t.Error("poetry.lock: want error for invalid TOML")
+	}
+	if _, err := parsePoetryLock([]byte("[[package]]\nname = \"x\"\n"), nil, "f"); err == nil {
+		t.Error("poetry.lock: want error for a package without version")
+	}
+	if _, err := parsePoetryLock(fixture(t, "python/poetry/poetry.lock"), []byte("[tool.poetry\n"), "f"); err == nil {
+		t.Error("pyproject.toml: want error for invalid TOML")
+	}
+	conflict := "requests==2.32.3\n<<<<<<< HEAD\nflask==3.0.3\n=======\nflask==3.0.2\n>>>>>>> feature\n"
+	if _, err := parseRequirements([]byte(conflict), "f"); err == nil {
+		t.Error("requirements.txt: want error for merge-conflict markers")
+	}
+}
+
+func TestPythonExtractorMalformedPoetryLockIsNotSkipped(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "poetry.lock"), []byte("[[package]"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "requirements.txt"), []byte("requests\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&PythonExtractor{}).Extract(dir, ExtractOptions{}); err == nil {
+		t.Fatal("a broken poetry.lock must be reported, not replaced by requirements.txt")
+	}
+}
+
+func TestPythonExtractorFallbacks(t *testing.T) {
+	g, err := (&PythonExtractor{}).Extract(copyFixtureDir(t, "python/poetry"), ExtractOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantGraph(t, g, 15, 15, 1, nil, []string{"python:py-app@0.1.0"})
+
+	g, err = (&PythonExtractor{}).Extract(copyFixtureDir(t, "python/pep621"), ExtractOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantGraph(t, g, 7, 6, 1, nil, []string{"python:pep621-app@0.2.0"})
+
+	dir := copyFixtureDir(t, "python/requirements")
+	g, err = (&PythonExtractor{}).Extract(dir, ExtractOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantGraph(t, g, 5, 4, 1, nil, []string{"python:" + filepath.Base(dir) + "@"})
+}
+```
+
+Create `internal/graph/composer_test.go`:
+
+```go
+package graph
+
+import "testing"
+
+func TestParseComposerLock(t *testing.T) {
+	g, err := parseComposerLock(fixture(t, "composer/app/composer.lock"), fixture(t, "composer/app/composer.json"), "fallback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 10 packages + the project; 10 package edges + 3 from the project.
+	wantGraph(t, g, 11, 13, 1, []string{
+		"php:monolog/monolog@3.6.0 -> php:psr/log@3.0.0",
+		"php:symfony/console@v7.1.1 -> php:symfony/string@v7.1.1",
+		"php:symfony/service-contracts@v3.5.0 -> php:psr/container@2.0.2",
+		"php:symfony/var-dumper@v7.1.1 -> php:symfony/polyfill-mbstring@v1.30.0", // packages-dev
+		"php:acme/app@ -> php:symfony/console@v7.1.1",                            // "Symfony/Console": case-insensitive
+		"php:acme/app@ -> php:symfony/var-dumper@v7.1.1",                         // require-dev
+	}, []string{"php:acme/app@"})
+	for id := range g.Nodes {
+		if id == "php:php@" || id == "php:ext-json@" {
+			t.Errorf("platform requirement %s became a node", id)
+		}
+	}
+}
+
+func TestParseComposerLockMalformed(t *testing.T) {
+	for name, data := range map[string]string{
+		"truncated":       `{"packages": [{"name": "psr/log", "version": "3.0.0"`,
+		"packages-object": `{"packages": {"psr/log": "3.0.0"}}`,
+		"no-version":      `{"packages": [{"name": "psr/log"}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if g, err := parseComposerLock([]byte(data), nil, "f"); err == nil {
+				t.Fatalf("want error, got %s", dumpGraph(g))
+			}
+		})
+	}
+	if _, err := parseComposerLock([]byte(`{"packages": []}`), []byte("{"), "f"); err == nil {
+		t.Fatal("malformed composer.json must be an error")
+	}
+}
+```
+
+- [ ] **Step 4: Run the tests to verify they fail**
+
+Run: `go test ./internal/graph/`
+Expected: build failure, including `undefined: parseCargoLock`, `undefined: parseGoMod`, `undefined: parsePoetryLock`, `undefined: parseComposerLock`.
+
+- [ ] **Step 5: Implement**
+
+Replace `internal/graph/extract_cargo.go`:
+
+```go
+package graph
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/BurntSushi/toml"
+)
+
+// CargoExtractor extracts dependencies from Rust Cargo lockfiles.
+type CargoExtractor struct{}
+
+func (e *CargoExtractor) Name() string {
+	return "rust"
+}
+
+func (e *CargoExtractor) Supports(file string) bool {
+	return file == "Cargo.lock"
+}
+
+func (e *CargoExtractor) Extract(dir string, _ ExtractOptions) (*DepGraph, error) {
+	data, err := os.ReadFile(filepath.Join(dir, "Cargo.lock"))
+	if err != nil {
+		return nil, err
+	}
+	return parseCargoLock(data)
+}
+
+type cargoPackage struct {
+	Name         string   `toml:"name"`
+	Version      string   `toml:"version"`
+	Source       string   `toml:"source"`
+	Dependencies []string `toml:"dependencies"`
+}
+
+// parseCargoLock builds the graph of a Cargo.lock (v1–v4). Nodes are keyed by
+// name+version, so two versions of one crate stay distinct. A dependency entry
+// is "name" (the only locked version), "name version", or
+// "name version (source)". Roots are the packages without a source: the
+// workspace members.
+func parseCargoLock(data []byte) (*DepGraph, error) {
+	var lock struct {
+		Package []cargoPackage `toml:"package"`
+	}
+	if _, err := toml.Decode(string(data), &lock); err != nil {
+		return nil, fmt.Errorf("parse Cargo.lock: %w", err)
+	}
+	g := NewGraph()
+	byName := map[string][]string{} // name -> versions
+	for _, p := range lock.Package {
+		if p.Name == "" || p.Version == "" {
+			return nil, fmt.Errorf("parse Cargo.lock: [[package]] without name or version")
+		}
+		n := NewDepNode("rust", p.Name, p.Version)
+		if g.GetNode(n.ID) == nil {
+			if p.Source != "" {
+				n.WithMetadata("source", p.Source)
+			}
+			g.AddNode(n)
+			byName[p.Name] = append(byName[p.Name], p.Version)
+		}
+		if p.Source == "" {
+			g.AddRoot(n.ID)
+		}
+	}
+	for _, p := range lock.Package {
+		from := NodeID("rust", p.Name, p.Version)
+		for _, spec := range p.Dependencies {
+			f := strings.Fields(spec)
+			if len(f) == 0 {
+				return nil, fmt.Errorf("parse Cargo.lock: empty dependency in %s %s", p.Name, p.Version)
+			}
+			version := ""
+			if len(f) >= 2 {
+				version = f[1]
+			} else if vs := byName[f[0]]; len(vs) == 1 {
+				version = vs[0]
+			}
+			to := NodeID("rust", f[0], version)
+			if version == "" || g.GetNode(to) == nil {
+				return nil, fmt.Errorf("parse Cargo.lock: %s %s depends on %q, which is not locked", p.Name, p.Version, spec)
+			}
+			g.AddEdge(NewEdge(from, to))
+		}
+	}
+	return g, nil
+}
+```
+
+Replace `internal/graph/extract_go.go`:
+
+```go
+package graph
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"golang.org/x/mod/modfile"
+)
+
+// GoExtractor extracts dependencies from Go modules.
+type GoExtractor struct{}
+
+func (e *GoExtractor) Name() string {
+	return "go"
+}
+
+func (e *GoExtractor) Supports(file string) bool {
+	return file == "go.mod"
+}
+
+// Extract parses go.mod: the module is the root, with an edge to every
+// require ("transitive" for // indirect ones). With opts.Exec it runs
+// `go mod graph` for the full module graph and falls back to go.mod, with a
+// warning, when that fails.
+func (e *GoExtractor) Extract(dir string, opts ExtractOptions) (*DepGraph, error) {
+	if opts.Exec {
+		out, err := opts.run(dir, "go", "mod", "graph")
+		if err == nil {
+			g, perr := parseGoModGraph(out)
+			if perr == nil {
+				return g, nil
+			}
+			err = perr
+		}
+		opts.warn("go: `go mod graph` failed, using go.mod requires only: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "go.mod"))
+	if err != nil {
+		return nil, err
+	}
+	return parseGoMod(data)
+}
+
+// parseGoMod builds a one-level graph from go.mod.
+func parseGoMod(data []byte) (*DepGraph, error) {
+	f, err := modfile.ParseLax("go.mod", data, nil)
+	if err != nil {
+		return nil, fmt.Errorf("go.mod: %w", err)
+	}
+	if f.Module == nil || f.Module.Mod.Path == "" {
+		return nil, fmt.Errorf("go.mod: no module directive")
+	}
+	g := NewGraph()
+	root := NewDepNode("go", f.Module.Mod.Path, "")
+	g.AddNode(root)
+	g.AddRoot(root.ID)
+	for _, r := range f.Require {
+		n := NewDepNode("go", r.Mod.Path, r.Mod.Version)
+		g.AddNode(n)
+		if r.Indirect {
+			n.WithMetadata("indirect", "true")
+			g.AddEdge(NewTransitiveEdge(root.ID, n.ID))
+		} else {
+			g.AddEdge(NewEdge(root.ID, n.ID))
+		}
+	}
+	return g, nil
+}
+
+// parseGoModGraph parses `go mod graph` output: one "from to" pair per line,
+// each "path@version" except main modules (no "@"), which become the roots.
+// The go and toolchain pseudo-modules are skipped.
+func parseGoModGraph(out []byte) (*DepGraph, error) {
+	g := NewGraph()
+	node := func(tok string) string {
+		path, version, _ := strings.Cut(tok, "@")
+		id := NodeID("go", path, version)
+		if g.GetNode(id) == nil {
+			g.AddNode(NewDepNode("go", path, version))
+		}
+		if version == "" {
+			g.AddRoot(id)
+		}
+		return id
+	}
+	for i, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		f := strings.Fields(line)
+		if len(f) != 2 {
+			return nil, fmt.Errorf("go mod graph line %d: want 2 fields, got %q", i+1, line)
+		}
+		if strings.HasPrefix(f[1], "go@") || strings.HasPrefix(f[1], "toolchain@") {
+			continue
+		}
+		from, to := node(f[0]), node(f[1])
+		g.AddEdge(NewEdge(from, to))
+	}
+	if len(g.Root) == 0 {
+		return nil, fmt.Errorf("go mod graph: no main module in output")
+	}
+	return g, nil
+}
+```
+
+Replace `internal/graph/extract_python.go`:
+
+```go
+package graph
+
+import (
+	"bufio"
+	"bytes"
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+
+	"github.com/BurntSushi/toml"
+)
+
+// PythonExtractor extracts dependencies from Python projects.
+type PythonExtractor struct{}
+
+func (e *PythonExtractor) Name() string {
+	return "python"
+}
+
+func (e *PythonExtractor) Supports(file string) bool {
+	return file == "requirements.txt" || file == "pyproject.toml" || file == "poetry.lock"
+}
+
+// Extract uses poetry.lock (with pyproject.toml for the roots) when present;
+// otherwise pyproject.toml's declared dependencies, then requirements.txt, as
+// flat roots. A file that exists but does not parse is an error, never a
+// silent fallback.
+func (e *PythonExtractor) Extract(dir string, _ ExtractOptions) (*DepGraph, error) {
+	fallback := dirName(dir)
+	pyproject, err := readOptional(filepath.Join(dir, "pyproject.toml"))
+	if err != nil {
+		return nil, err
+	}
+	lock, err := os.ReadFile(filepath.Join(dir, "poetry.lock"))
+	switch {
+	case err == nil:
+		return parsePoetryLock(lock, pyproject, fallback)
+	case !errors.Is(err, fs.ErrNotExist):
+		return nil, err
+	}
+	reqs, err := readOptional(filepath.Join(dir, "requirements.txt"))
+	if err != nil {
+		return nil, err
+	}
+	if pyproject != nil {
+		info, err := parsePyproject(pyproject)
+		if err != nil {
+			return nil, err
+		}
+		if len(info.Deps) > 0 || reqs == nil {
+			return flatPythonGraph(info, fallback), nil
+		}
+	}
+	if reqs == nil {
+		return nil, fmt.Errorf("no poetry.lock, pyproject.toml or requirements.txt found")
+	}
+	return parseRequirements(reqs, fallback)
+}
+
+var pep503Sep = regexp.MustCompile(`[-_.]+`)
+
+// pep503 normalizes a distribution name ("Typing_Extensions" -> "typing-extensions").
+func pep503(name string) string {
+	return pep503Sep.ReplaceAllString(strings.ToLower(strings.TrimSpace(name)), "-")
+}
+
+// pep508Name matches the distribution name at the start of a PEP 508 requirement.
+var pep508Name = regexp.MustCompile(`^\s*([A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)`)
+
+type pyprojectFile struct {
+	Project struct {
+		Name                 string              `toml:"name"`
+		Version              string              `toml:"version"`
+		Dependencies         []string            `toml:"dependencies"`
+		OptionalDependencies map[string][]string `toml:"optional-dependencies"`
+	} `toml:"project"`
+	DependencyGroups map[string][]interface{} `toml:"dependency-groups"`
+	Tool             struct {
+		Poetry struct {
+			Name            string                 `toml:"name"`
+			Version         string                 `toml:"version"`
+			Dependencies    map[string]interface{} `toml:"dependencies"`
+			DevDependencies map[string]interface{} `toml:"dev-dependencies"`
+			Group           map[string]struct {
+				Dependencies map[string]interface{} `toml:"dependencies"`
+			} `toml:"group"`
+		} `toml:"poetry"`
+	} `toml:"tool"`
+}
+
+// pyprojectInfo is what the graph needs from pyproject.toml.
+type pyprojectInfo struct {
+	Name, Version string
+	Deps          []string // declared direct dependency names, "python" excluded
+}
+
+// parsePyproject reads the project name/version ([project], else
+// [tool.poetry]) and the declared direct dependencies: [project]
+// dependencies and optional-dependencies, PEP 735 dependency-groups, and
+// [tool.poetry] dependencies, dev-dependencies and groups.
+func parsePyproject(data []byte) (pyprojectInfo, error) {
+	var p pyprojectFile
+	if _, err := toml.Decode(string(data), &p); err != nil {
+		return pyprojectInfo{}, fmt.Errorf("pyproject.toml: %w", err)
+	}
+	info := pyprojectInfo{Name: p.Project.Name, Version: p.Project.Version}
+	if info.Name == "" {
+		info.Name, info.Version = p.Tool.Poetry.Name, p.Tool.Poetry.Version
+	}
+	seen := map[string]bool{}
+	add := func(name string) {
+		key := pep503(name)
+		if key == "" || key == "python" || seen[key] {
+			return
+		}
+		seen[key] = true
+		info.Deps = append(info.Deps, strings.TrimSpace(name))
+	}
+	addReq := func(req string) {
+		if m := pep508Name.FindStringSubmatch(req); m != nil {
+			add(m[1])
+		}
+	}
+	for _, r := range p.Project.Dependencies {
+		addReq(r)
+	}
+	for _, extra := range sortedKeys(p.Project.OptionalDependencies) {
+		for _, r := range p.Project.OptionalDependencies[extra] {
+			addReq(r)
+		}
+	}
+	for _, grp := range sortedKeys(p.DependencyGroups) {
+		for _, r := range p.DependencyGroups[grp] {
+			if s, ok := r.(string); ok { // tables are {include-group = "..."}
+				addReq(s)
+			}
+		}
+	}
+	poetry := p.Tool.Poetry
+	for _, n := range sortedKeys(poetry.Dependencies) {
+		add(n)
+	}
+	for _, n := range sortedKeys(poetry.DevDependencies) {
+		add(n)
+	}
+	for _, grp := range sortedKeys(poetry.Group) {
+		for _, n := range sortedKeys(poetry.Group[grp].Dependencies) {
+			add(n)
+		}
+	}
+	return info, nil
+}
+
+// parsePoetryLock builds the graph of a poetry.lock. Dependency names are
+// matched after PEP 503 normalization. The root is the project from
+// pyproject.toml (else fallback), with edges to its declared dependencies.
+func parsePoetryLock(data, pyproject []byte, fallback string) (*DepGraph, error) {
+	var lock struct {
+		Package []struct {
+			Name         string                 `toml:"name"`
+			Version      string                 `toml:"version"`
+			Dependencies map[string]interface{} `toml:"dependencies"`
+		} `toml:"package"`
+	}
+	if _, err := toml.Decode(string(data), &lock); err != nil {
+		return nil, fmt.Errorf("poetry.lock: %w", err)
+	}
+	g := NewGraph()
+	byName := map[string]string{} // normalized name -> node ID
+	for _, p := range lock.Package {
+		if p.Name == "" || p.Version == "" {
+			return nil, fmt.Errorf("poetry.lock: [[package]] without name or version")
+		}
+		n := NewDepNode("python", p.Name, p.Version)
+		g.AddNode(n)
+		byName[pep503(p.Name)] = n.ID
+	}
+	for _, p := range lock.Package {
+		from := NodeID("python", p.Name, p.Version)
+		for _, dep := range sortedKeys(p.Dependencies) {
+			if to, ok := byName[pep503(dep)]; ok {
+				g.AddEdge(NewEdge(from, to))
+			}
+		}
+	}
+	var info pyprojectInfo
+	if pyproject != nil {
+		var err error
+		if info, err = parsePyproject(pyproject); err != nil {
+			return nil, err
+		}
+	}
+	project := addProject(g, "python", info.Name, info.Version, fallback)
+	for _, n := range info.Deps {
+		if id, ok := byName[pep503(n)]; ok {
+			g.AddEdge(NewEdge(project, id))
+		}
+	}
+	return g, nil
+}
+
+// flatPythonGraph is the project with an edge to one versionless node per
+// declared dependency (no lockfile, so nothing is resolved).
+func flatPythonGraph(info pyprojectInfo, fallback string) *DepGraph {
+	g := NewGraph()
+	project := addProject(g, "python", info.Name, info.Version, fallback)
+	for _, n := range info.Deps {
+		node := NewDepNode("python", n, "")
+		g.AddNode(node)
+		g.AddEdge(NewEdge(project, node.ID))
+	}
+	return g
+}
+
+// parseRequirements reads requirements.txt as the project (named fallback)
+// with an edge to each requirement. Exact pins ("name==1.2.3") keep their
+// version; other lines are versionless. Options (-r, -e, --index-url) and
+// URLs are skipped; a line that is not a requirement (for example a
+// merge-conflict marker) is an error.
+func parseRequirements(data []byte, fallback string) (*DepGraph, error) {
+	g := NewGraph()
+	project := addProject(g, "python", "", "", fallback)
+	sc := bufio.NewScanner(bytes.NewReader(data))
+	lineNo := 0
+	for sc.Scan() {
+		lineNo++
+		line := sc.Text()
+		if i := strings.Index(line, " #"); i >= 0 {
+			line = line[:i]
+		}
+		line = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(line), "\\"))
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "-") || strings.Contains(line, "://") {
+			continue
+		}
+		m := pep508Name.FindStringSubmatch(line)
+		if m == nil {
+			return nil, fmt.Errorf("requirements.txt line %d: not a requirement: %q", lineNo, line)
+		}
+		version := ""
+		rest := strings.TrimSpace(line[len(m[0]):])
+		if strings.HasPrefix(rest, "[") { // extras
+			if end := strings.IndexByte(rest, ']'); end >= 0 {
+				rest = strings.TrimSpace(rest[end+1:])
+			}
+		}
+		if spec, _, _ := strings.Cut(rest, ";"); strings.HasPrefix(strings.TrimSpace(spec), "==") && !strings.Contains(spec, ",") {
+			version = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(spec), "=="))
+		}
+		n := NewDepNode("python", m[1], version)
+		g.AddNode(n)
+		g.AddEdge(NewEdge(project, n.ID))
+	}
+	if err := sc.Err(); err != nil {
+		return nil, fmt.Errorf("requirements.txt: %w", err)
+	}
+	return g, nil
+}
+```
+
+Replace `internal/graph/extract_composer.go`:
+
+```go
+package graph
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+// ComposerExtractor extracts dependencies from PHP Composer lockfiles.
+type ComposerExtractor struct{}
+
+func (e *ComposerExtractor) Name() string {
+	return "php"
+}
+
+func (e *ComposerExtractor) Supports(file string) bool {
+	return file == "composer.lock"
+}
+
+func (e *ComposerExtractor) Extract(dir string, _ ExtractOptions) (*DepGraph, error) {
+	data, err := os.ReadFile(filepath.Join(dir, "composer.lock"))
+	if err != nil {
+		return nil, err
+	}
+	manifest, err := readOptional(filepath.Join(dir, "composer.json"))
+	if err != nil {
+		return nil, err
+	}
+	return parseComposerLock(data, manifest, dirName(dir))
+}
+
+type composerPackage struct {
+	Name       string            `json:"name"`
+	Version    string            `json:"version"`
+	Require    map[string]string `json:"require"`
+	RequireDev map[string]string `json:"require-dev"`
+	Source     *struct {
+		URL string `json:"url"`
+	} `json:"source"`
+}
+
+// composerPlatform reports platform requirements (php, ext-*, lib-*,
+// composer-plugin-api, ...): every real package name is "vendor/name".
+func composerPlatform(name string) bool {
+	return !strings.Contains(name, "/")
+}
+
+// parseComposerLock builds the graph of a composer.lock ("packages" and
+// "packages-dev", edges from each "require"). Names match case-insensitively
+// and platform requirements are skipped. The root is the project from
+// composer.json (manifest, else fallback) with edges to its require and
+// require-dev packages.
+func parseComposerLock(data, manifest []byte, fallback string) (*DepGraph, error) {
+	var lock struct {
+		Packages    []composerPackage `json:"packages"`
+		PackagesDev []composerPackage `json:"packages-dev"`
+	}
+	if err := json.Unmarshal(data, &lock); err != nil {
+		return nil, fmt.Errorf("composer.lock: %w", err)
+	}
+	var root composerPackage
+	if len(manifest) > 0 {
+		if err := json.Unmarshal(manifest, &root); err != nil {
+			return nil, fmt.Errorf("composer.json: %w", err)
+		}
+	}
+	g := NewGraph()
+	byName := map[string]string{} // lower-case name -> node ID
+	all := append(append([]composerPackage{}, lock.Packages...), lock.PackagesDev...)
+	for _, p := range all {
+		if p.Name == "" || p.Version == "" {
+			return nil, fmt.Errorf("composer.lock: package without name or version")
+		}
+		n := NewDepNode("php", p.Name, p.Version)
+		if p.Source != nil && p.Source.URL != "" {
+			n.WithMetadata("source", p.Source.URL)
+		}
+		g.AddNode(n)
+		byName[strings.ToLower(p.Name)] = n.ID
+	}
+	link := func(from string, req map[string]string) {
+		for _, kv := range sortedPairs(req) {
+			if composerPlatform(kv[0]) {
+				continue
+			}
+			if to, ok := byName[strings.ToLower(kv[0])]; ok {
+				g.AddEdge(NewEdge(from, to))
+			}
+		}
+	}
+	for _, p := range all {
+		link(NodeID("php", p.Name, p.Version), p.Require)
+	}
+	project := addProject(g, "php", root.Name, root.Version, fallback)
+	link(project, root.Require)
+	link(project, root.RequireDev)
+	return g, nil
+}
+```
+
+Then run `go mod tidy` (offline: `GOPROXY=off go mod tidy`); `go.mod`/`go.sum` must match Step 1.
+
+- [ ] **Step 6: Run the tests and the gate**
+
+Run: `go test ./internal/graph/ -run 'Cargo|GoMod|GoExtractor|ParseGo|Poetry|Pyproject|Requirements|Python|Composer' -v 2>&1 | grep -E '^(--- |ok|FAIL)'`
+Expected: every `--- PASS`, then `ok`.
+
+```bash
+go build ./... && go vet ./... && go test ./... && test -z "$(gofmt -l .)" && echo GREEN
+go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.5.0 run ./...
+```
+Expected: `GREEN`, then `0 issues.`
+Also: `GOTOOLCHAIN=go1.22.12 go vet ./internal/graph/` (skip if that toolchain is not in the module cache) prints nothing.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add go.mod go.sum internal/graph/extract_cargo.go internal/graph/extract_go.go internal/graph/extract_python.go \
+  internal/graph/extract_composer.go internal/graph/cargo_test.go internal/graph/golang_test.go \
+  internal/graph/python_test.go internal/graph/composer_test.go \
+  internal/graph/testdata/cargo internal/graph/testdata/go internal/graph/testdata/python internal/graph/testdata/composer
+git commit -m "graph: Cargo by name+version, go.mod via modfile and go mod graph behind --exec, poetry/pyproject/requirements, composer"
+```
+
+---
+
+### Task 6: Maven, Gradle, and the final `ExtractAll(dir, opts)`
+
+**Files:**
+- Replace: `internal/graph/extract_java.go`
+- Modify: `internal/graph/extract_all.go` (replace `ExtractAll`, `isEcosystemDetected`, `DetectEcosystems`), `internal/cli/graph_cmd.go` and `internal/cli/workspace_cmd.go` (one call each, minimal, so the tree compiles; Task 7 rewrites them)
+- Create: `internal/graph/java_test.go`, `internal/graph/extract_all_test.go`, `internal/graph/testdata/{maven/app,gradle/app}/…`
+
+**Interfaces:**
+- Consumes: everything above.
+- Produces:
+  - `func ExtractAll(dir string, opts ExtractOptions) (*DepGraph, error)` (final signature from the header).
+  - `func extractors() []Extractor` (fixed order: node, python, php, rust, go, java), `var ecosystemFiles`, `func DetectEcosystems(dir string) map[string]bool` (adds `bun.lock`, `package.json`, `composer.json`, `Cargo.toml`, `gradle.lockfile`, `settings.gradle(.kts)`; manifests without lockfiles are detected so their extractor *reports* what is missing).
+  - `func parsePom(data []byte, fallback string) (*DepGraph, error)`: `encoding/xml`, UTF-8/ASCII/ISO-8859-1 declarations; project `groupId:artifactId@version` (inherits `<parent>` groupId/version); edges to `<project><dependencies>` only (not dependencyManagement, profiles, plugin deps); `${prop}` from `<properties>` and `project.*`, unknown references kept literally, missing (managed) versions empty; node metadata `scope` (default `compile`) and `optional`.
+  - `func parseMavenTGF(data []byte) (*DepGraph, error)`: `id label` lines, `#`, `from to scope` lines; labels `g:a:type:version[:scope]` or `g:a:type:classifier:version:scope`; appended blocks (multi-module) each contribute a root.
+  - `func mavenTree(dir string, opts ExtractOptions) (*DepGraph, error)`: `opts.run(dir, <mvnw|mvn>, "-q", "dependency:tree", "-DoutputType=tgf", "-DoutputFile=<temp>", "-DappendOutput=true")` then reads the temp file.
+  - `func parseGradleLockfile(data []byte, fallback string) (*DepGraph, error)`: `group:artifact:version=conf,…` lines, `empty=` skipped, metadata `configurations`.
+  - `func parseGradleDependencies(out []byte, fallback string) (*DepGraph, error)`, `func gradleNode(spec string) (name, version string, ok bool, err error)`: first configuration tree of `gradle dependencies --console=plain`; depth = column of `+--- `/`\--- ` ÷ 5; `a:b:1 -> 2` and `a:b -> 2` take the resolved version; `(*)` entries are linked but have no children; `(c)` constraints are dropped; `(n)`/`FAILED` stripped; `project :core` → node `:core`; project name from `Root project 'x'`.
+  - `func wrapperOr(dir, unix, windows, tool string) string`: absolute path of `gradlew`/`mvnw` (`.bat`/`.cmd` on Windows) when present, else `gradle`/`mvn`.
+  - `JavaExtractor.Extract(dir, opts)`: pom.xml first, else Gradle. No `Exec`: pom.xml direct deps / gradle.lockfile (missing → error `no gradle.lockfile (enable Gradle dependency locking, or pass --exec to run gradle)`). `Exec`: run the tool, on failure `opts.warn(…)` and fall back to the file.
+
+`ExtractAll` decisions:
+- **Sequential, no goroutine fan-out.** Parsing a lockfile takes milliseconds; external tools run only with `--exec` and the user asked for them. Sequential runs keep the merge order, the order of `Run` calls and of warnings deterministic, and `opts.Warn` never needs to be goroutine-safe.
+- **Failures:** collected per extractor as `"<ecosystem>: <err>"`. If at least one extractor succeeded, each failure goes to `opts.warn` and the merged graph is returned. If every detected extractor failed, the joined errors are returned (and not also warned, so the CLI prints them once). Nothing detected → empty graph, nil error. Nothing is printed to stdout.
+
+- [ ] **Step 1: Add the fixtures**
+
+Create `internal/graph/testdata/maven/app/pom.xml`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.3.0</version>
+        <relativePath/> <!-- lookup parent from repository -->
+    </parent>
+    <groupId>com.example</groupId>
+    <artifactId>demo</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+    <name>demo</name>
+    <properties>
+        <java.version>17</java.version>
+        <guava.version>33.2.1-jre</guava.version>
+    </properties>
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.testcontainers</groupId>
+                <artifactId>testcontainers-bom</artifactId>
+                <version>1.19.8</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.google.guava</groupId>
+            <artifactId>guava</artifactId>
+            <version>${guava.version}</version>
+        </dependency>
+        <!-- <dependency><groupId>commented</groupId><artifactId>out</artifactId></dependency> -->
+        <dependency>
+            <groupId>commons-io</groupId>
+            <artifactId>commons-io</artifactId>
+            <version>2.16.1</version>
+        </dependency>
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <version>${lombok.version}</version>
+            <scope>provided</scope>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>${project.groupId}</groupId>
+            <artifactId>demo-common</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+    <profiles>
+        <profile>
+            <id>h2</id>
+            <dependencies>
+                <dependency>
+                    <groupId>com.h2database</groupId>
+                    <artifactId>h2</artifactId>
+                </dependency>
+            </dependencies>
+        </profile>
+    </profiles>
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <dependencies>
+                    <dependency>
+                        <groupId>org.ow2.asm</groupId>
+                        <artifactId>asm</artifactId>
+                        <version>9.7</version>
+                    </dependency>
+                </dependencies>
+            </plugin>
+        </plugins>
+    </build>
+</project>
+```
+
+Create `internal/graph/testdata/maven/app/tree.tgf`:
+
+```text
+1306896155 com.example:demo:jar:0.0.1-SNAPSHOT
+1597655940 org.springframework.boot:spring-boot-starter-web:jar:3.3.0:compile
+2049051802 org.springframework:spring-web:jar:6.1.8:compile
+1427040229 org.springframework:spring-beans:jar:6.1.8:compile
+1720891078 org.springframework:spring-webmvc:jar:6.1.8:compile
+1374754432 com.fasterxml.jackson.core:jackson-databind:jar:2.17.1:compile
+1891502635 com.fasterxml.jackson.core:jackson-core:jar:2.17.1:compile
+557023567 io.netty:netty-transport-native-epoll:jar:linux-x86_64:4.1.110.Final:runtime
+1276504061 org.junit.jupiter:junit-jupiter-api:jar:5.10.2:test
+597190999 org.opentest4j:opentest4j:jar:1.3.0:test
+#
+1306896155 1597655940 compile
+1597655940 2049051802 compile
+2049051802 1427040229 compile
+1597655940 1720891078 compile
+1597655940 1374754432 compile
+1374754432 1891502635 compile
+1306896155 557023567 runtime
+1306896155 1276504061 test
+1276504061 597190999 test
+```
+
+Create `internal/graph/testdata/gradle/app/build.gradle`:
+
+```groovy
+plugins {
+    id 'java'
+}
+
+dependencyLocking {
+    lockAllConfigurations()
+}
+```
+
+Create `internal/graph/testdata/gradle/app/dependencies.txt`:
+
+```text
+
+> Task :dependencies
+
+------------------------------------------------------------
+Root project 'demo'
+------------------------------------------------------------
+
+runtimeClasspath - Runtime classpath of source set 'main'.
++--- org.springframework.boot:spring-boot-dependencies:3.3.0
+|    +--- com.fasterxml.jackson.core:jackson-databind:2.17.1 (c)
+|    \--- com.fasterxml.jackson.core:jackson-core:2.17.1 (c)
++--- com.fasterxml.jackson.core:jackson-databind -> 2.17.1
+|    +--- com.fasterxml.jackson.core:jackson-annotations:2.17.1
+|    |    \--- com.fasterxml.jackson:jackson-bom:2.17.1
+|    |         +--- com.fasterxml.jackson.core:jackson-annotations:2.17.1 (c)
+|    |         +--- com.fasterxml.jackson.core:jackson-core:2.17.1 (c)
+|    |         \--- com.fasterxml.jackson.core:jackson-databind:2.17.1 (c)
+|    +--- com.fasterxml.jackson.core:jackson-core:2.17.1
+|    |    \--- com.fasterxml.jackson:jackson-bom:2.17.1 (*)
+|    \--- com.fasterxml.jackson:jackson-bom:2.17.1 (*)
++--- com.google.guava:guava:33.0.0-jre -> 33.2.1-jre
+|    +--- com.google.guava:failureaccess:1.0.2
+|    \--- com.google.guava:listenablefuture:9999.0-empty-to-avoid-conflict-with-guava
+\--- project :core
+     \--- org.slf4j:slf4j-api:2.0.13
+
+(c) - A dependency constraint, not a dependency. The dependency affected by the constraint occurs elsewhere in the tree.
+(*) - Indicates repeated occurrences of a transitive dependency subtree. Gradle expands transitive dependency subtrees only once per project; repeat occurrences only display the root of the subtree, followed by this annotation.
+
+A web-based, searchable dependency report is available by adding the --scan option.
+
+BUILD SUCCESSFUL in 2s
+1 actionable task: 1 executed
+```
+
+Create `internal/graph/testdata/gradle/app/gradle.lockfile`:
+
+```text
+# This is a Gradle generated file for dependency locking.
+# Manual edits can break the build and are not advised.
+# This file is expected to be part of source control.
+com.fasterxml.jackson.core:jackson-annotations:2.17.1=compileClasspath,runtimeClasspath
+com.fasterxml.jackson.core:jackson-core:2.17.1=compileClasspath,runtimeClasspath
+com.fasterxml.jackson.core:jackson-databind:2.17.1=compileClasspath,runtimeClasspath
+com.google.guava:failureaccess:1.0.2=compileClasspath,runtimeClasspath
+com.google.guava:guava:33.2.1-jre=compileClasspath,runtimeClasspath
+org.apiguardian:apiguardian-api:1.1.2=testCompileClasspath
+org.junit.jupiter:junit-jupiter-api:5.10.2=testCompileClasspath,testRuntimeClasspath
+org.junit.platform:junit-platform-commons:1.10.2=testCompileClasspath,testRuntimeClasspath
+org.opentest4j:opentest4j:1.3.0=testCompileClasspath,testRuntimeClasspath
+empty=annotationProcessor,testAnnotationProcessor
+```
+
+Expected shapes: pom.xml 7 / 6 / 1; TGF 10 / 9 / 1 (11 / 10 / 2 with a second module appended); gradle.lockfile 10 / 9 / 1; gradle output 11 / 12 / 1.
+
+- [ ] **Step 2: Write the failing tests**
+
+Create `internal/graph/java_test.go`:
+
+```go
+package graph
+
+import (
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestParsePomDirectDependencies(t *testing.T) {
+	g, err := parsePom(fixture(t, "maven/app/pom.xml"), "fallback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Not counted: the dependencyManagement BOM, the profile's h2, the
+	// plugin's asm and the commented-out dependency.
+	wantGraph(t, g, 7, 6, 1, []string{
+		"java:com.example:demo@0.0.1-SNAPSHOT -> java:org.springframework.boot:spring-boot-starter-web@", // managed version
+		"java:com.example:demo@0.0.1-SNAPSHOT -> java:com.google.guava:guava@33.2.1-jre",                 // ${guava.version}
+		"java:com.example:demo@0.0.1-SNAPSHOT -> java:org.projectlombok:lombok@${lombok.version}",        // unknown property kept
+		"java:com.example:demo@0.0.1-SNAPSHOT -> java:com.example:demo-common@0.0.1-SNAPSHOT",            // ${project.*}
+	}, []string{"java:com.example:demo@0.0.1-SNAPSHOT"})
+	if s := g.GetNode("java:org.junit.jupiter:junit-jupiter@").GetMetadata("scope"); s != "test" {
+		t.Errorf("junit scope = %q, want test", s)
+	}
+}
+
+func TestParsePomLatin1(t *testing.T) {
+	pom := "<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?>\n<project><groupId>de.example</groupId><artifactId>b\xfcro</artifactId><version>1.0</version>" +
+		"<dependencies><dependency><groupId>junit</groupId><artifactId>junit</artifactId><version>4.13.2</version></dependency></dependencies></project>\n"
+	g, err := parsePom([]byte(pom), "fallback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantGraph(t, g, 2, 1, 1, []string{"java:de.example:büro@1.0 -> java:junit:junit@4.13.2"}, nil)
+}
+
+func TestParseMavenTGF(t *testing.T) {
+	g, err := parseMavenTGF(fixture(t, "maven/app/tree.tgf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantGraph(t, g, 10, 9, 1, []string{
+		"java:com.example:demo@0.0.1-SNAPSHOT -> java:org.springframework.boot:spring-boot-starter-web@3.3.0",
+		"java:org.springframework:spring-web@6.1.8 -> java:org.springframework:spring-beans@6.1.8",
+		"java:com.example:demo@0.0.1-SNAPSHOT -> java:io.netty:netty-transport-native-epoll@4.1.110.Final", // classifier label
+	}, []string{"java:com.example:demo@0.0.1-SNAPSHOT"})
+}
+
+func TestParseMavenTGFMultiModule(t *testing.T) {
+	second := "1931444790 com.example:demo-api:jar:0.0.1-SNAPSHOT\n" +
+		"1891502635 com.fasterxml.jackson.core:jackson-core:jar:2.17.1:compile\n#\n1931444790 1891502635 compile\n"
+	g, err := parseMavenTGF(append(fixture(t, "maven/app/tree.tgf"), second...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantGraph(t, g, 11, 10, 2, []string{
+		"java:com.example:demo-api@0.0.1-SNAPSHOT -> java:com.fasterxml.jackson.core:jackson-core@2.17.1",
+	}, []string{"java:com.example:demo@0.0.1-SNAPSHOT", "java:com.example:demo-api@0.0.1-SNAPSHOT"})
+}
+
+func TestParseGradleLockfile(t *testing.T) {
+	g, err := parseGradleLockfile(fixture(t, "gradle/app/gradle.lockfile"), "app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantGraph(t, g, 10, 9, 1, []string{
+		"java:app@ -> java:com.google.guava:guava@33.2.1-jre",
+		"java:app@ -> java:org.opentest4j:opentest4j@1.3.0",
+	}, []string{"java:app@"})
+	if c := g.GetNode("java:org.apiguardian:apiguardian-api@1.1.2").GetMetadata("configurations"); c != "testCompileClasspath" {
+		t.Errorf("configurations = %q", c)
+	}
+}
+
+func TestParseGradleDependencies(t *testing.T) {
+	g, err := parseGradleDependencies(fixture(t, "gradle/app/dependencies.txt"), "fallback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantGraph(t, g, 11, 12, 1, []string{
+		"java:demo@ -> java:com.fasterxml.jackson.core:jackson-databind@2.17.1",                                // "g:a -> 2.17.1"
+		"java:demo@ -> java:com.google.guava:guava@33.2.1-jre",                                                 // conflict arrow: resolved version
+		"java:com.fasterxml.jackson.core:jackson-core@2.17.1 -> java:com.fasterxml.jackson:jackson-bom@2.17.1", // (*) still linked
+		"java:demo@ -> java::core@",
+		"java::core@ -> java:org.slf4j:slf4j-api@2.0.13",
+	}, []string{"java:demo@"})
+	if g.GetNode("java:com.google.guava:guava@33.0.0-jre") != nil {
+		t.Error("the requested version of a conflict must not become a node")
+	}
+	for _, e := range g.Edges {
+		if e.From == "java:org.springframework.boot:spring-boot-dependencies@3.3.0" {
+			t.Errorf("(c) constraint became an edge: %s", e)
+		}
+	}
+}
+
+func TestGradleNodeMarkers(t *testing.T) {
+	cases := []struct{ in, name, version string }{
+		{"org.projectlombok:lombok:1.18.32 (n)", "org.projectlombok:lombok", "1.18.32"},
+		{"com.example:missing:1.0 FAILED", "com.example:missing", "1.0"},
+		{"org.slf4j:slf4j-api:{strictly 2.0.13} -> 2.0.13", "org.slf4j:slf4j-api", "2.0.13"},
+	}
+	for _, c := range cases {
+		name, version, ok, err := gradleNode(c.in)
+		if err != nil || !ok || name != c.name || version != c.version {
+			t.Errorf("gradleNode(%q) = %q, %q, %v, %v", c.in, name, version, ok, err)
+		}
+	}
+}
+
+func TestParseJavaMalformed(t *testing.T) {
+	if _, err := parsePom([]byte("<project><dependencies><dependency>"), "f"); err == nil {
+		t.Error("pom.xml: want error for truncated XML")
+	}
+	if _, err := parsePom([]byte(`<?xml version="1.0" encoding="EBCDIC"?><project/>`), "f"); err == nil {
+		t.Error("pom.xml: want error for an unsupported encoding")
+	}
+	if _, err := parseMavenTGF([]byte("1 com.example:demo:jar:1.0\n#\n1 2 compile\n")); err == nil {
+		t.Error("tgf: want error for an edge to an unknown node")
+	}
+	if _, err := parseMavenTGF([]byte("1 not-a-maven-label\n")); err == nil {
+		t.Error("tgf: want error for a bad label")
+	}
+	if _, err := parseGradleLockfile([]byte("com.google.guava:guava=compileClasspath\n"), "f"); err == nil {
+		t.Error("gradle.lockfile: want error for coordinates without a version")
+	}
+	if _, err := parseGradleLockfile([]byte("<<<<<<< HEAD\n"), "f"); err == nil {
+		t.Error("gradle.lockfile: want error for a line without '='")
+	}
+	if _, err := parseGradleDependencies([]byte("FAILURE: Build failed with an exception.\n"), "f"); err == nil {
+		t.Error("gradle output: want error when there is no tree")
+	}
+	if _, err := parseGradleDependencies([]byte("+--- a:b:1.0\n|         \\--- c:d:1.0\n"), "f"); err == nil {
+		t.Error("gradle output: want error for skipped indentation")
+	}
+}
+
+// failRun fails the test if any external command runs.
+func failRun(t *testing.T) func(string, string, ...string) ([]byte, error) {
+	return func(_, name string, args ...string) ([]byte, error) {
+		t.Fatalf("ran %s %v without Exec", name, args)
+		return nil, nil
+	}
+}
+
+func TestJavaExtractorParsesFilesWithoutExec(t *testing.T) {
+	g, err := (&JavaExtractor{}).Extract(copyFixtureDir(t, "maven/app"), ExtractOptions{Run: failRun(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantGraph(t, g, 7, 6, 1, nil, nil)
+
+	dir := copyFixtureDir(t, "gradle/app")
+	g, err = (&JavaExtractor{}).Extract(dir, ExtractOptions{Run: failRun(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantGraph(t, g, 10, 9, 1, nil, []string{"java:" + filepath.Base(dir) + "@"})
+
+	if err := os.Remove(filepath.Join(dir, "gradle.lockfile")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&JavaExtractor{}).Extract(dir, ExtractOptions{Run: failRun(t)}); err == nil || !strings.Contains(err.Error(), "--exec") {
+		t.Fatalf("err = %v, want a hint to use --exec", err)
+	}
+}
+
+func TestJavaExtractorExecMaven(t *testing.T) {
+	dir := copyFixtureDir(t, "maven/app")
+	tgf := fixture(t, "maven/app/tree.tgf")
+	var ran []string
+	opts := ExtractOptions{Exec: true, Run: func(d, name string, args ...string) ([]byte, error) {
+		ran = append(ran, name+" "+strings.Join(args, " "))
+		for _, a := range args {
+			if out, ok := strings.CutPrefix(a, "-DoutputFile="); ok {
+				return nil, os.WriteFile(out, tgf, 0o644)
+			}
+		}
+		return nil, errors.New("no -DoutputFile")
+	}}
+	g, err := (&JavaExtractor{}).Extract(dir, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantGraph(t, g, 10, 9, 1, nil, nil)
+	if len(ran) != 1 || !strings.HasPrefix(ran[0], "mvn -q dependency:tree -DoutputType=tgf -DoutputFile=") {
+		t.Errorf("ran %q", ran)
+	}
+}
+
+func TestJavaExtractorExecGradleWrapperAndFallback(t *testing.T) {
+	dir := copyFixtureDir(t, "gradle/app")
+	wrapper := "gradlew"
+	if runtimeIsWindows() {
+		wrapper = "gradlew.bat"
+	}
+	if err := os.WriteFile(filepath.Join(dir, wrapper), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out := fixture(t, "gradle/app/dependencies.txt")
+	var ranName string
+	opts := ExtractOptions{Exec: true, Run: func(_, name string, args ...string) ([]byte, error) {
+		ranName = name
+		return out, nil
+	}}
+	g, err := (&JavaExtractor{}).Extract(dir, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantGraph(t, g, 11, 12, 1, nil, []string{"java:demo@"})
+	if filepath.Base(ranName) != wrapper || !filepath.IsAbs(ranName) {
+		t.Errorf("ran %q, want the absolute path of the project's %s", ranName, wrapper)
+	}
+
+	var warnings []string
+	opts = ExtractOptions{
+		Exec: true,
+		Run:  func(string, string, ...string) ([]byte, error) { return nil, errors.New("exit status 1") },
+		Warn: func(m string) { warnings = append(warnings, m) },
+	}
+	g, err = (&JavaExtractor{}).Extract(dir, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantGraph(t, g, 10, 9, 1, nil, nil) // gradle.lockfile
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "gradle.lockfile") {
+		t.Errorf("warnings = %q", warnings)
+	}
+}
+```
+
+Create `internal/graph/extract_all_test.go`:
+
+```go
+package graph
+
+import (
+	"io"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+)
+
+func runtimeIsWindows() bool { return runtime.GOOS == "windows" }
+
+// projectDir builds a temp project from "testdata path -> file name" pairs.
+func projectDir(t *testing.T, files map[string]string) string {
+	t.Helper()
+	dir := t.TempDir()
+	for src, name := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), fixture(t, src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+func polyglotDir(t *testing.T) string {
+	return projectDir(t, map[string]string{
+		"npm/v3-hoisted/package-lock.json": "package-lock.json",
+		"go/app/go.mod":                    "go.mod",
+		"maven/app/pom.xml":                "pom.xml",
+		"cargo/workspace/Cargo.lock":       "Cargo.lock",
+	})
+}
+
+func TestExtractAllRunsNoToolWithoutExec(t *testing.T) {
+	g, err := ExtractAll(polyglotDir(t), ExtractOptions{Run: failRun(t), Warn: func(m string) { t.Errorf("warning: %s", m) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// node 13/12/1 + go 5/4/1 + java 7/6/1 + rust 11/15/2
+	wantGraph(t, g, 36, 37, 5, nil, []string{
+		"node:hoisted-app@1.0.0", "go:example.com/app@", "java:com.example:demo@0.0.1-SNAPSHOT", "rust:app@0.1.0",
+	})
+}
+
+func TestExtractAllIsDeterministic(t *testing.T) {
+	dir := polyglotDir(t)
+	render := func() string {
+		g, err := ExtractAll(dir, ExtractOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var b strings.Builder
+		for _, e := range g.Edges {
+			b.WriteString(e.From + ">" + e.To + "\n")
+		}
+		b.WriteString(strings.Join(g.Root, ","))
+		return b.String()
+	}
+	first := render()
+	for i := 0; i < 5; i++ {
+		if got := render(); got != first {
+			t.Fatalf("run %d differs:\n%s\nvs\n%s", i, got, first)
+		}
+	}
+	if !strings.HasPrefix(first, "node:") {
+		t.Errorf("node edges must come first (fixed extractor order), got %.40q", first)
+	}
+}
+
+func TestExtractAllWarnsAndKeepsStdoutClean(t *testing.T) {
+	dir := projectDir(t, map[string]string{"go/app/go.mod": "go.mod"})
+	if err := os.WriteFile(filepath.Join(dir, "package-lock.json"), []byte("{"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout := os.Stdout
+	os.Stdout = w
+	var warnings []string
+	g, err := ExtractAll(dir, ExtractOptions{Warn: func(m string) { warnings = append(warnings, m) }})
+	os.Stdout = stdout
+	w.Close()
+	printed, _ := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(printed) != 0 {
+		t.Errorf("ExtractAll wrote to stdout: %q", printed)
+	}
+	wantGraph(t, g, 5, 4, 1, nil, nil)
+	if len(warnings) != 1 || !strings.HasPrefix(warnings[0], "node: ") {
+		t.Errorf("warnings = %q, want one node: warning", warnings)
+	}
+}
+
+func TestExtractAllAllFailedIsAnError(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "Cargo.lock"), []byte("[[package]"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var warned bool
+	if _, err := ExtractAll(dir, ExtractOptions{Warn: func(string) { warned = true }}); err == nil || !strings.Contains(err.Error(), "rust:") {
+		t.Fatalf("err = %v, want the rust failure", err)
+	}
+	if warned {
+		t.Error("a failure returned as the error must not also be warned")
+	}
+}
+
+func TestExtractAllNothingDetected(t *testing.T) {
+	g, err := ExtractAll(t.TempDir(), ExtractOptions{})
+	if err != nil || g == nil || len(g.Nodes) != 0 {
+		t.Fatalf("got (%v, %v), want an empty graph", g, err)
+	}
+}
+
+func TestExtractAllExecRunsToolsInProjectDir(t *testing.T) {
+	dir := projectDir(t, map[string]string{"go/app/go.mod": "go.mod", "maven/app/pom.xml": "pom.xml"})
+	tgf := fixture(t, "maven/app/tree.tgf")
+	modGraph := fixture(t, "go/app/modgraph.txt")
+	var ran []string
+	opts := ExtractOptions{Exec: true, Run: func(d, name string, args ...string) ([]byte, error) {
+		if d != dir {
+			t.Errorf("%s ran in %q, want %q", name, d, dir)
+		}
+		ran = append(ran, name)
+		if name == "go" {
+			return modGraph, nil
+		}
+		for _, a := range args {
+			if out, ok := strings.CutPrefix(a, "-DoutputFile="); ok {
+				return nil, os.WriteFile(out, tgf, 0o644)
+			}
+		}
+		return nil, nil
+	}}
+	g, err := ExtractAll(dir, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantGraph(t, g, 19, 19, 2, nil, nil) // go mod graph 9/10/1 + tgf 10/9/1
+	if strings.Join(ran, ",") != "go,mvn" {
+		t.Errorf("ran %v, want [go mvn] in extractor order", ran)
+	}
+}
+
+func TestDetectEcosystems(t *testing.T) {
+	for file, eco := range map[string]string{
+		"bun.lock":            "node",
+		"package.json":        "node",
+		"gradle.lockfile":     "java",
+		"settings.gradle.kts": "java",
+		"composer.json":       "php",
+		"Cargo.toml":          "rust",
+		"go.mod":              "go",
+	} {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, file), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if got := DetectEcosystems(dir); !got[eco] || len(got) != 1 {
+			t.Errorf("%s: detected %v, want only %s", file, got, eco)
+		}
+	}
+}
+```
+
+- [ ] **Step 3: Run the tests to verify they fail**
+
+Run: `go test ./internal/graph/`
+Expected: build failure, including `undefined: parsePom`, `undefined: parseMavenTGF` and `too many arguments in call to ExtractAll`.
+
+- [ ] **Step 4: Implement**
+
+Replace `internal/graph/extract_java.go`:
+
+```go
+package graph
+
+import (
+	"bytes"
+	"encoding/xml"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"regexp"
+	"runtime"
+	"strings"
+)
+
+// JavaExtractor extracts dependencies from Maven and Gradle projects.
+type JavaExtractor struct{}
+
+func (e *JavaExtractor) Name() string {
+	return "java"
+}
+
+func (e *JavaExtractor) Supports(file string) bool {
+	return file == "pom.xml" || file == "gradle.lockfile" ||
+		file == "build.gradle" || file == "build.gradle.kts" ||
+		file == "settings.gradle" || file == "settings.gradle.kts"
+}
+
+// Extract reads Maven (pom.xml) first, else Gradle. Without opts.Exec it
+// only parses files: pom.xml's direct dependencies, or gradle.lockfile.
+// With opts.Exec it runs `mvn dependency:tree` / `gradle dependencies` for
+// the full tree and falls back to the files, with a warning, on failure.
+func (e *JavaExtractor) Extract(dir string, opts ExtractOptions) (*DepGraph, error) {
+	name := dirName(dir)
+	if pom, err := os.ReadFile(filepath.Join(dir, "pom.xml")); err == nil {
+		if opts.Exec {
+			g, err := mavenTree(dir, opts)
+			if err == nil {
+				return g, nil
+			}
+			opts.warn("java: `mvn dependency:tree` failed, using pom.xml direct dependencies only: %v", err)
+		}
+		return parsePom(pom, name)
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return nil, err
+	}
+
+	if opts.Exec {
+		out, err := opts.run(dir, wrapperOr(dir, "gradlew", "gradlew.bat", "gradle"),
+			"dependencies", "--configuration", "runtimeClasspath", "--console=plain")
+		if err == nil {
+			g, perr := parseGradleDependencies(out, name)
+			if perr == nil {
+				return g, nil
+			}
+			err = perr
+		}
+		opts.warn("java: `gradle dependencies` failed, using gradle.lockfile: %v", err)
+	}
+	lock, err := os.ReadFile(filepath.Join(dir, "gradle.lockfile"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("no gradle.lockfile (enable Gradle dependency locking, or pass --exec to run gradle)")
+	}
+	if err != nil {
+		return nil, err
+	}
+	return parseGradleLockfile(lock, name)
+}
+
+// wrapperOr returns the project's wrapper script (gradlew/mvnw, .bat/.cmd on
+// Windows) as an absolute path when it exists, else the plain tool name.
+func wrapperOr(dir, unix, windows, tool string) string {
+	name := unix
+	if runtime.GOOS == "windows" {
+		name = windows
+	}
+	p := filepath.Join(dir, name)
+	if _, err := os.Stat(p); err == nil {
+		if abs, err := filepath.Abs(p); err == nil {
+			return abs
+		}
+		return p
+	}
+	return tool
+}
+
+// mavenTree runs `mvn dependency:tree` in TGF format into a temp file
+// (-q keeps stdout quiet; appendOutput collects every reactor module).
+func mavenTree(dir string, opts ExtractOptions) (*DepGraph, error) {
+	f, err := os.CreateTemp("", "xpm-mvn-*.tgf")
+	if err != nil {
+		return nil, err
+	}
+	out := f.Name()
+	defer os.Remove(out)
+	if err := f.Close(); err != nil {
+		return nil, err
+	}
+	if _, err := opts.run(dir, wrapperOr(dir, "mvnw", "mvnw.cmd", "mvn"), "-q", "dependency:tree",
+		"-DoutputType=tgf", "-DoutputFile="+out, "-DappendOutput=true"); err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(out)
+	if err != nil {
+		return nil, err
+	}
+	return parseMavenTGF(data)
+}
+
+type pomDependency struct {
+	GroupID    string `xml:"groupId"`
+	ArtifactID string `xml:"artifactId"`
+	Version    string `xml:"version"`
+	Scope      string `xml:"scope"`
+	Optional   string `xml:"optional"`
+}
+
+type pomProject struct {
+	GroupID    string `xml:"groupId"`
+	ArtifactID string `xml:"artifactId"`
+	Version    string `xml:"version"`
+	Parent     struct {
+		GroupID string `xml:"groupId"`
+		Version string `xml:"version"`
+	} `xml:"parent"`
+	Properties struct {
+		Entries []struct {
+			XMLName xml.Name
+			Value   string `xml:",chardata"`
+		} `xml:",any"`
+	} `xml:"properties"`
+	// Only <project><dependencies>: dependencyManagement, profiles and
+	// plugin dependencies sit at other paths and are not matched.
+	Dependencies []pomDependency `xml:"dependencies>dependency"`
+}
+
+// xmlCharsetReader accepts the encodings POMs declare: UTF-8/ASCII pass
+// through, ISO-8859-1 (Latin-1) is converted to UTF-8.
+func xmlCharsetReader(charset string, in io.Reader) (io.Reader, error) {
+	switch strings.ToLower(charset) {
+	case "utf-8", "utf8", "us-ascii", "ascii":
+		return in, nil
+	case "iso-8859-1", "iso8859-1", "latin1", "latin-1":
+		data, err := io.ReadAll(in)
+		if err != nil {
+			return nil, err
+		}
+		runes := make([]rune, len(data))
+		for i, b := range data {
+			runes[i] = rune(b)
+		}
+		return strings.NewReader(string(runes)), nil
+	}
+	return nil, fmt.Errorf("unsupported XML encoding %q", charset)
+}
+
+var pomProperty = regexp.MustCompile(`\$\{([^}]+)\}`)
+
+// parsePom builds the project (groupId:artifactId@version, inheriting from
+// <parent>) with an edge to each direct <dependency>. ${...} references are
+// resolved from <properties> and project.*; unknown ones stay as written,
+// and a missing version (managed by a parent or BOM) stays empty.
+func parsePom(data []byte, fallback string) (*DepGraph, error) {
+	var p pomProject
+	dec := xml.NewDecoder(bytes.NewReader(data))
+	dec.CharsetReader = xmlCharsetReader
+	if err := dec.Decode(&p); err != nil {
+		return nil, fmt.Errorf("pom.xml: %w", err)
+	}
+	if p.GroupID == "" {
+		p.GroupID = p.Parent.GroupID
+	}
+	if p.Version == "" {
+		p.Version = p.Parent.Version
+	}
+	props := map[string]string{
+		"project.groupId": p.GroupID, "project.artifactId": p.ArtifactID, "project.version": p.Version,
+		"pom.groupId": p.GroupID, "pom.artifactId": p.ArtifactID, "pom.version": p.Version,
+		"project.parent.version": p.Parent.Version,
+	}
+	for _, e := range p.Properties.Entries {
+		props[e.XMLName.Local] = strings.TrimSpace(e.Value)
+	}
+	expand := func(s string) string {
+		return pomProperty.ReplaceAllStringFunc(strings.TrimSpace(s), func(ref string) string {
+			if v, ok := props[ref[2:len(ref)-1]]; ok && !strings.Contains(v, "${") {
+				return v
+			}
+			return ref
+		})
+	}
+	g := NewGraph()
+	name := ""
+	if p.ArtifactID != "" {
+		name = expand(p.GroupID) + ":" + expand(p.ArtifactID)
+	}
+	project := addProject(g, "java", name, expand(p.Version), fallback)
+	for _, d := range p.Dependencies {
+		if d.GroupID == "" || d.ArtifactID == "" {
+			return nil, fmt.Errorf("pom.xml: <dependency> without groupId or artifactId")
+		}
+		n := NewDepNode("java", expand(d.GroupID)+":"+expand(d.ArtifactID), expand(d.Version))
+		scope := strings.TrimSpace(d.Scope)
+		if scope == "" {
+			scope = "compile"
+		}
+		n.WithMetadata("scope", scope)
+		if strings.TrimSpace(d.Optional) == "true" {
+			n.WithMetadata("optional", "true")
+		}
+		if g.GetNode(n.ID) == nil {
+			g.AddNode(n)
+		}
+		g.AddEdge(NewEdge(project, n.ID))
+	}
+	return g, nil
+}
+
+// mavenLabel parses a TGF node label: groupId:artifactId:type:version[:scope]
+// or groupId:artifactId:type:classifier:version:scope.
+func mavenLabel(label string) (name, version, scope string, ok bool) {
+	p := strings.Split(label, ":")
+	switch len(p) {
+	case 4:
+		return p[0] + ":" + p[1], p[3], "", true
+	case 5:
+		return p[0] + ":" + p[1], p[3], p[4], true
+	case 6:
+		return p[0] + ":" + p[1], p[4], p[5], true
+	}
+	return "", "", "", false
+}
+
+// parseMavenTGF parses `mvn dependency:tree -DoutputType=tgf` output: blocks
+// of "id label" node lines, a "#" line, then "from to scope" edge lines. With
+// -DappendOutput a multi-module build appends one block per module; the
+// first node of each block (the module) is a root.
+func parseMavenTGF(data []byte) (*DepGraph, error) {
+	g := NewGraph()
+	ids := map[string]string{}
+	inEdges, first := false, true
+	for i, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if line == "#" {
+			inEdges = true
+			continue
+		}
+		f := strings.Fields(line)
+		if inEdges && len(f) == 2 && strings.Contains(f[1], ":") { // next module's block
+			inEdges, first, ids = false, true, map[string]string{}
+		}
+		if !inEdges {
+			if len(f) != 2 {
+				return nil, fmt.Errorf("tgf line %d: want \"id label\", got %q", i+1, line)
+			}
+			name, version, scope, ok := mavenLabel(f[1])
+			if !ok {
+				return nil, fmt.Errorf("tgf line %d: cannot parse %q", i+1, f[1])
+			}
+			n := NewDepNode("java", name, version)
+			if scope != "" {
+				n.WithMetadata("scope", scope)
+			}
+			if g.GetNode(n.ID) == nil {
+				g.AddNode(n)
+			}
+			ids[f[0]] = n.ID
+			if first {
+				g.AddRoot(n.ID)
+				first = false
+			}
+			continue
+		}
+		if len(f) < 2 {
+			return nil, fmt.Errorf("tgf line %d: want \"from to [scope]\", got %q", i+1, line)
+		}
+		from, ok1 := ids[f[0]]
+		to, ok2 := ids[f[1]]
+		if !ok1 || !ok2 {
+			return nil, fmt.Errorf("tgf line %d: edge references an unknown node", i+1)
+		}
+		g.AddEdge(NewEdge(from, to))
+	}
+	if len(g.Root) == 0 {
+		return nil, fmt.Errorf("tgf: no nodes")
+	}
+	return g, nil
+}
+
+// parseGradleLockfile reads gradle.lockfile ("group:artifact:version=conf,..."
+// lines; "empty=..." lists configurations with no dependencies) as the
+// project (named fallback) with an edge to each locked module.
+func parseGradleLockfile(data []byte, fallback string) (*DepGraph, error) {
+	g := NewGraph()
+	project := addProject(g, "java", "", "", fallback)
+	for i, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		coords, confs, ok := strings.Cut(line, "=")
+		if !ok {
+			return nil, fmt.Errorf("gradle.lockfile line %d: missing '='", i+1)
+		}
+		if coords == "empty" {
+			continue
+		}
+		p := strings.Split(coords, ":")
+		if len(p) != 3 || p[0] == "" || p[1] == "" || p[2] == "" {
+			return nil, fmt.Errorf("gradle.lockfile line %d: want group:artifact:version, got %q", i+1, coords)
+		}
+		n := NewDepNode("java", p[0]+":"+p[1], p[2])
+		n.WithMetadata("configurations", confs)
+		g.AddNode(n)
+		g.AddEdge(NewEdge(project, n.ID))
+	}
+	return g, nil
+}
+
+var gradleRootProject = regexp.MustCompile(`^Root project '([^']+)'`)
+
+// gradleNode parses one tree entry ("g:a:1.0", "g:a:1.0 -> 2.0", "g:a -> 2.0",
+// "project :core", with optional "(*)", "(n)" or "FAILED" suffixes). ok is
+// false for "(c)" constraints, which are not dependencies.
+func gradleNode(spec string) (name, version string, ok bool, err error) {
+	spec = strings.TrimSpace(spec)
+	for _, suffix := range []string{" (*)", " (n)", " FAILED"} {
+		spec = strings.TrimSuffix(spec, suffix)
+	}
+	if strings.HasSuffix(spec, " (c)") {
+		return "", "", false, nil
+	}
+	if rest, isProject := strings.CutPrefix(spec, "project "); isProject {
+		return rest, "", true, nil
+	}
+	coords, target, arrow := strings.Cut(spec, " -> ")
+	p := strings.Split(coords, ":")
+	if len(p) < 2 || p[0] == "" || p[1] == "" {
+		return "", "", false, fmt.Errorf("cannot parse dependency %q", spec)
+	}
+	if len(p) >= 3 {
+		version = p[2]
+	}
+	if arrow {
+		version = strings.TrimSpace(target)
+	}
+	return p[0] + ":" + p[1], version, true, nil
+}
+
+// parseGradleDependencies parses the first configuration tree of
+// `gradle dependencies --console=plain` output. The root is the project
+// ("Root project 'name'", else fallback); repeated subtrees "(*)" are
+// linked, not expanded again.
+func parseGradleDependencies(out []byte, fallback string) (*DepGraph, error) {
+	lines := strings.Split(strings.ReplaceAll(string(out), "\r\n", "\n"), "\n")
+	name := ""
+	for _, l := range lines {
+		if m := gradleRootProject.FindStringSubmatch(strings.TrimSpace(l)); m != nil {
+			name = m[1]
+			break
+		}
+	}
+	g := NewGraph()
+	project := addProject(g, "java", name, "", fallback)
+	var stack []string // stack[d] is the node at depth d; "" for a constraint
+	seen := false
+	for i, line := range lines {
+		at := strings.Index(line, "+--- ")
+		if at < 0 {
+			at = strings.Index(line, `\--- `)
+		}
+		if at < 0 || at%5 != 0 || strings.Trim(line[:at], " |") != "" {
+			if seen && strings.TrimSpace(line) == "" {
+				break // end of the first configuration
+			}
+			continue
+		}
+		seen = true
+		depth := at / 5
+		if depth > len(stack) {
+			return nil, fmt.Errorf("gradle output line %d: indentation skips a level", i+1)
+		}
+		stack = stack[:depth]
+		depName, version, ok, err := gradleNode(line[at+5:])
+		if err != nil {
+			return nil, fmt.Errorf("gradle output line %d: %w", i+1, err)
+		}
+		if !ok {
+			stack = append(stack, "")
+			continue
+		}
+		n := NewDepNode("java", depName, version)
+		if g.GetNode(n.ID) == nil {
+			g.AddNode(n)
+		}
+		parent := project
+		if depth > 0 {
+			parent = stack[depth-1]
+		}
+		if parent != "" {
+			g.AddEdge(NewEdge(parent, n.ID))
+		}
+		stack = append(stack, n.ID)
+	}
+	if !seen && !bytes.Contains(out, []byte("No dependencies")) {
+		return nil, fmt.Errorf("no dependency tree in gradle output")
+	}
+	return g, nil
+}
+```
+
+In `internal/graph/extract_all.go`, replace the import block with:
+
+```go
+import (
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+)
+```
+
+and replace `ExtractAll`, `isEcosystemDetected` and `DetectEcosystems` (everything from `// ExtractAll runs all extractors in parallel` through the end of `DetectEcosystems`) with:
+
+```go
+// extractors lists every ecosystem extractor in the fixed order ExtractAll
+// runs and merges them.
+func extractors() []Extractor {
+	return []Extractor{
+		&NodeExtractor{},
+		&PythonExtractor{},
+		&ComposerExtractor{},
+		&CargoExtractor{},
+		&GoExtractor{},
+		&JavaExtractor{},
+	}
+}
+
+// ExtractAll runs the extractor of every ecosystem detected in dir, one after
+// another in a fixed order, and merges their graphs. Parsing is fast and
+// external tools run only with opts.Exec, so there is no goroutine fan-out:
+// the merge order, the warnings and opts.Run calls stay deterministic.
+//
+// An extractor that fails is reported through opts.Warn when another one
+// succeeded; when every detected extractor fails the joined errors are
+// returned instead. No ecosystem detected yields an empty graph.
+func ExtractAll(dir string, opts ExtractOptions) (*DepGraph, error) {
+	detected := DetectEcosystems(dir)
+	merged := NewGraph()
+	var failures []error
+	ok := 0
+	for _, ext := range extractors() {
+		if !detected[ext.Name()] {
+			continue
+		}
+		g, err := ext.Extract(dir, opts)
+		if err != nil {
+			failures = append(failures, fmt.Errorf("%s: %w", ext.Name(), err))
+			continue
+		}
+		ok++
+		merged.Merge(g)
+	}
+	if ok == 0 && len(failures) > 0 {
+		return nil, fmt.Errorf("extract dependencies: %w", errors.Join(failures...))
+	}
+	for _, err := range failures {
+		opts.warn("%v", err)
+	}
+	return merged, nil
+}
+
+// ecosystemFiles maps the files whose presence enables an extractor.
+// Manifests without a lockfile are listed too, so their extractor reports
+// what is missing instead of the ecosystem being silently ignored.
+var ecosystemFiles = []struct {
+	file      string
+	ecosystem string
+}{
+	{"package-lock.json", "node"},
+	{"pnpm-lock.yaml", "node"},
+	{"yarn.lock", "node"},
+	{"bun.lock", "node"},
+	{"bun.lockb", "node"},
+	{"package.json", "node"},
+	{"poetry.lock", "python"},
+	{"pyproject.toml", "python"},
+	{"requirements.txt", "python"},
+	{"composer.lock", "php"},
+	{"composer.json", "php"},
+	{"Cargo.lock", "rust"},
+	{"Cargo.toml", "rust"},
+	{"go.mod", "go"},
+	{"pom.xml", "java"},
+	{"gradle.lockfile", "java"},
+	{"build.gradle", "java"},
+	{"build.gradle.kts", "java"},
+	{"settings.gradle", "java"},
+	{"settings.gradle.kts", "java"},
+}
+
+// DetectEcosystems reports which ecosystems have a manifest or lockfile in dir.
+func DetectEcosystems(dir string) map[string]bool {
+	detected := make(map[string]bool)
+	for _, f := range ecosystemFiles {
+		if _, err := os.Stat(filepath.Join(dir, f.file)); err == nil {
+			detected[f.ecosystem] = true
+		}
+	}
+	return detected
+}
+```
+
+Leave anything else in the file as Task 1 left it. If `ExtractForPackage` still exists there (Task 1 replaces it with `Subgraph`; if it kept a shim), change its call to `ExtractAll(dir, ExtractOptions{})`; drop `"errors"`/`"fmt"` from the imports only if the compiler says they are unused.
+
+Minimal caller updates so the tree compiles (Task 7 rewrites both commands; `fmt` and `os` are already imported in both files). In `internal/cli/graph_cmd.go` replace `graph.ExtractAll(dir)` with:
+
+```go
+graph.ExtractAll(dir, graph.ExtractOptions{Warn: func(msg string) { fmt.Fprintln(os.Stderr, "warning:", msg) }})
+```
+
+In `internal/cli/workspace_cmd.go` (`cmdGraphWorkspace`) replace `graph.ExtractAll(project.Path)` with:
+
+```go
+graph.ExtractAll(project.Path, graph.ExtractOptions{Warn: func(msg string) { fmt.Fprintln(os.Stderr, "warning:", msg) }})
+```
+
+- [ ] **Step 5: Run the tests and the gate**
+
+Run: `go test ./internal/graph/ -run 'Pom|TGF|Gradle|Java|ExtractAll|DetectEcosystems' -v 2>&1 | grep -E '^(--- |ok|FAIL)'`
+Expected: every `--- PASS`, then `ok`.
+
+Run: `go test -race -count=1 ./internal/graph/ && go test -cover ./internal/graph/`
+Expected: `ok`, and coverage ≥ 60% (65.0% measured before Tasks 2/7 add their tests).
+
+```bash
+go build ./... && go vet ./... && go test ./... && test -z "$(gofmt -l .)" && echo GREEN
+go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.5.0 run ./...
+```
+Expected: `GREEN`, then `0 issues.`
+- [ ] **Step 6: Commit**
+
+```bash
+git add internal/graph/extract_java.go internal/graph/extract_all.go internal/graph/java_test.go internal/graph/extract_all_test.go \
+  internal/graph/testdata/maven internal/graph/testdata/gradle internal/cli/graph_cmd.go internal/cli/workspace_cmd.go
+git commit -m "graph: Maven pom/TGF and Gradle lockfile/tree parsers; ExtractAll(dir, opts) runs no tool without --exec"
+```
+
+---
+
+## Rulings (Tasks 3–6)
+
+- Ruling: each extracted project has one root, the project's own node, with edges to its direct dependencies (Cargo: the workspace members; Go: the module) — adopted from the Task 7 writer's convention so `--depth`, `(*)` and workspace merges see one tree per project — cost if wrong: parsers change `addProject`+edges back to `AddRoot` on direct deps; tests' root counts change.
+- Ruling: `ExtractAll` runs extractors sequentially in a fixed order (node, python, php, rust, go, java) — deterministic output/warnings, no data race on `opts.Warn`, parsing is milliseconds — cost if wrong: `--exec` on a Maven+Gradle+Go polyglot repo runs the tools one after another (seconds), not in parallel.
+- Ruling: a failing extractor is a warning when another succeeded, and the returned error (not also a warning) when all failed — the CLI prints each failure once — cost if wrong: one message shape changes in Task 7.
+- Ruling: manifests without lockfiles (`package.json`, `composer.json`, `Cargo.toml`, Gradle build files) are detected, so a project with only `package.json` now reports `node: no package-lock.json, pnpm-lock.yaml or yarn.lock found` instead of "No dependencies found." — honest about what is missing — cost if wrong: drop those rows from `ecosystemFiles`.
+- Ruling: `bun.lock`/`bun.lockb` are detected but not parsed (error → warning "not supported yet") — bun's text lockfile is JSONC and out of P6 scope — cost if wrong: a bun parser later.
+- Ruling: pnpm workspace importers other than `.` become nodes named by their path (`node:packages/app@`) — the lockfile does not record their package names — cost if wrong: reading each importer's package.json for its name.
+- Ruling: Cargo dependency entries that do not resolve, poetry/composer/pnpm/yarn packages without name/version, and malformed lines in yarn v1, TGF, gradle.lockfile, `go mod graph` and requirements.txt (e.g. merge-conflict markers) are errors; npm/pnpm/yarn/poetry/composer dependency *names* that do not resolve are skipped (platform-optional packages, optional peers) — cost if wrong: one more silent skip or one more error.
+- Ruling: Python precedence is poetry.lock > pyproject.toml's declared deps > requirements.txt; a poetry.lock that fails to parse is an error, never a silent fallback; without a lockfile the deps are versionless nodes (only `==` pins in requirements.txt keep a version) — cost if wrong: users with both pyproject deps and requirements.txt see the pyproject list.
+- Ruling: Maven `${unknown.property}` versions are kept literally and parent-managed versions stay empty — no network/parent-POM resolution without `--exec` — cost if wrong: node IDs like `java:org.projectlombok:lombok@${lombok.version}`.
+- Ruling: Gradle with `--exec` runs `dependencies --configuration runtimeClasspath --console=plain` (wrapper first) and parses only the first configuration tree; Maven with `--exec` writes TGF to a temp file with `-q -DappendOutput=true` so multi-module builds yield one root per module — cost if wrong: compile-only/test dependencies are absent from the Gradle exec graph.
+- Ruling: `go.mod` uses `modfile.ParseLax` (tolerates directives newer than x/mod v0.23.0); the root module's node has an empty version (`go:example.com/app@`) — cost if wrong: unknown directives would otherwise fail the parse.
+
+## Interface notes / conflicts with the header
+
+- No conflict with the fixed signatures. Task 3 additionally changes the (unexported-use) `Extractor` interface to `Extract(dir string, opts ExtractOptions)`; nothing outside `internal/graph` implements or calls it.
+- Depends on Task 1 for `ExtractOptions` with unexported `run`/`warn` helpers exactly as described in Task 3's Interfaces, and on `NodeID` keeping names verbatim (tests assert `node:@babel/highlight@7.24.7`, `go:github.com/spf13/cobra@v1.8.0`, `php:monolog/monolog@3.6.0`).
+- Task 6's `extract_all.go` edit assumes Task 1 removed `ExtractForPackage`/`contains` (replaced by `Subgraph`); the step says what to do if a shim remains.
+- `Supports(file string) bool` stays in the interface (unused but harmless); Task 7 may drop it.
+
+---
+
+## Section A (continued) — Task 7
+
 ### Task 7: `xpm graph` — clean stdout, `--exec`, `--svg` streaming, `--depth` validation, workspace graph
 
 **Files:**
