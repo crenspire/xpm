@@ -148,4 +148,3 @@ func PrintWarnings(warnings []Warning, w io.Writer) {
 		fmt.Fprintln(w)
 	}
 }
-

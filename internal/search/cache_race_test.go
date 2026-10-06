@@ -90,4 +90,3 @@ func TestGetCachedSetCachedRace(t *testing.T) {
 		t.Error("getCached should return result after concurrent operations")
 	}
 }
-

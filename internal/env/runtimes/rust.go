@@ -172,4 +172,3 @@ func rustupExists() bool {
 	_, err := exec.LookPath("rustup")
 	return err == nil
 }
-

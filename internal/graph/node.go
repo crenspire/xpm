@@ -78,4 +78,3 @@ func (n *DepNode) GetMetadata(key string) string {
 	}
 	return n.Metadata[key]
 }
-

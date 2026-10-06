@@ -101,4 +101,3 @@ func runNonInteractive(query string, opts search.Options) error {
 
 	return nil
 }
-

@@ -178,4 +178,3 @@ func readGoModuleName(goModPath string) string {
 
 	return ""
 }
-

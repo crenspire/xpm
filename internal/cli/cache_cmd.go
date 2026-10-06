@@ -260,4 +260,3 @@ func cmdCachePath() int {
 
 	return 0
 }
-

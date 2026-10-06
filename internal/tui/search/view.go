@@ -116,10 +116,10 @@ func renderResults(m model, maxHeight int) string {
 
 	// Add pagination indicator if there are more results
 	result := lipgloss.JoinVertical(lipgloss.Left, lines...)
-	
+
 	// Show pagination info if there are more results than visible
 	if len(m.results) > visibleCount {
-		paginationInfo := fmt.Sprintf("Showing %d-%d of %d results", 
+		paginationInfo := fmt.Sprintf("Showing %d-%d of %d results",
 			startIdx+1, endIdx, len(m.results))
 		paginationLine := footerStyle.Render(paginationInfo)
 		result = lipgloss.JoinVertical(lipgloss.Left, result, paginationLine)
@@ -196,7 +196,7 @@ func renderFooter(m model) string {
 	if m.installMode {
 		return footerStyle.Render("↑/↓: Navigate  Enter: Select  Esc: Cancel")
 	}
-	
+
 	// Add pagination hints if there are many results
 	hints := "↑/↓: Navigate"
 	if len(m.results) > 0 {
@@ -206,7 +206,7 @@ func renderFooter(m model) string {
 		}
 	}
 	hints += "  Enter: Install  Esc: Exit  Ctrl+C: Quit"
-	
+
 	return footerStyle.Render(hints)
 }
 
@@ -236,7 +236,7 @@ func renderRegistrySelector(m model) string {
 	for i, reg := range availableRegistries {
 		isSelected := i == m.registryCursor
 		isEnabled := false
-		
+
 		if reg.id == "all" {
 			// Check if all are selected
 			allSelected := true
@@ -369,4 +369,3 @@ func truncate(s string, max int) string {
 	}
 	return s[:max-3] + "..."
 }
-

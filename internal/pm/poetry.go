@@ -28,5 +28,3 @@ func (a PoetryAdapter) InstallPackage(pkg string, global bool, extraArgs []strin
 	args = append(args, pkgSpec)
 	return Wrap("poetry", args)
 }
-
-

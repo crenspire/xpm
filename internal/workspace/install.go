@@ -163,4 +163,3 @@ func installProject(project Project) error {
 	fmt.Printf("[%s] ✓ Installed\n", project.Name)
 	return nil
 }
-

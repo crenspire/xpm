@@ -376,4 +376,3 @@ func CheckPATH(manager *Manager) bool {
 	path := os.Getenv("PATH")
 	return strings.Contains(path, shimsPath)
 }
-

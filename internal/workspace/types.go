@@ -21,4 +21,3 @@ type Project struct {
 	Lockfile  string // path to lockfile (if exists)
 	PM        pm.ID  // detected package manager
 }
-

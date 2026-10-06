@@ -202,4 +202,3 @@ func detectGradleWorkspace(root string) *Workspace {
 		Ecosystem: "java",
 	}
 }
-

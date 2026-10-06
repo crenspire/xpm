@@ -136,4 +136,3 @@ func GetGradleDependency(r Result) string {
 
 	return fmt.Sprintf("implementation '%s:%s:%s'", group, artifact, version)
 }
-

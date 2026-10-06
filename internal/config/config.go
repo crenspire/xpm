@@ -209,31 +209,31 @@ func defaultConfig() Config {
 			MaxVersions: 5,
 		},
 		Graph: GraphConfig{
-			ShowVersions: true,
+			ShowVersions:  true,
 			ShowEcosystem: true,
-			Depth:        5,
+			Depth:         5,
 		},
 		SearchUI: SearchUIConfig{
 			Enabled:    true,
 			DebounceMs: 200,
 			PageSize:   20,
 		},
-	Workspace: WorkspaceConfig{
-		Enabled:  true,
-		Include:  []string{},
-		Exclude:  []string{"**/test/**", "**/node_modules/**"},
-		Parallel: true,
-	},
-	Env: EnvConfig{
-		Enabled: true,
-		Path:    "~/.xpm/env",
-		Default: make(map[string]string),
-	},
-	Timeout: TimeoutConfig{
-		Default:     4, // 4 seconds default
-		PerRegistry: make(map[string]int),
-	},
-}
+		Workspace: WorkspaceConfig{
+			Enabled:  true,
+			Include:  []string{},
+			Exclude:  []string{"**/test/**", "**/node_modules/**"},
+			Parallel: true,
+		},
+		Env: EnvConfig{
+			Enabled: true,
+			Path:    "~/.xpm/env",
+			Default: make(map[string]string),
+		},
+		Timeout: TimeoutConfig{
+			Default:     4, // 4 seconds default
+			PerRegistry: make(map[string]int),
+		},
+	}
 }
 
 // configPath returns the platform-specific path to the configuration file.

@@ -329,16 +329,16 @@ func countGoSum(path string) int {
 		if len(parts) < 2 {
 			continue
 		}
-		
+
 		module := parts[0]
 		version := parts[1]
-		
+
 		// Handle /go.mod suffix - this indicates a go.mod checksum entry
 		// We want to count the module, not the go.mod entry separately
 		if strings.HasSuffix(version, "/go.mod") {
 			version = strings.TrimSuffix(version, "/go.mod")
 		}
-		
+
 		// Create unique key for module@version
 		// This deduplicates entries for the same module version
 		key := module + "@" + version
@@ -374,4 +374,3 @@ func countGradleLock(path string) int {
 func ComputeHash(path string) (string, error) {
 	return computeFileHash(path)
 }
-

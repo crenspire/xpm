@@ -23,4 +23,3 @@ func main() {
 	code := cli.Run()
 	os.Exit(code)
 }
-

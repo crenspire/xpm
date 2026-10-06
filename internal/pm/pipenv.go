@@ -22,5 +22,3 @@ func (a PipenvAdapter) InstallPackage(pkg string, global bool, extraArgs []strin
 	args = append(args, pkgSpec)
 	return Wrap("pipenv", args)
 }
-
-

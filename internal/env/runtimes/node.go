@@ -27,7 +27,7 @@ func (n *NodeInstaller) Name() string {
 
 // NodeRelease represents a Node.js release from the API.
 type NodeRelease struct {
-	Version string `json:"version"`
+	Version string      `json:"version"`
 	LTS     interface{} `json:"lts"` // Can be bool or string
 }
 
@@ -260,7 +260,7 @@ func (n *NodeInstaller) InstallWithAlias(version string, dest string, alias stri
 	// Node.js extracts to node-v<version>-<os>-<arch>/, find and copy contents
 	expectedDir := fmt.Sprintf("node-v%s-%s-%s", version, nodeos, arch)
 	extractedPath := filepath.Join(tmpExtractDir, expectedDir)
-	
+
 	// Check if the directory exists
 	if info, err := os.Stat(extractedPath); err == nil && info.IsDir() {
 		// Debug: Check what's in bin/ before copying
@@ -279,7 +279,7 @@ func (n *NodeInstaller) InstallWithAlias(version string, dest string, alias stri
 			}
 			fmt.Println()
 		}
-		
+
 		// Copy contents from extracted directory to destination
 		if err := copyDirectory(extractedPath, dest); err != nil {
 			return fmt.Errorf("failed to copy extracted files: %w", err)
@@ -317,7 +317,7 @@ func (n *NodeInstaller) InstallWithAlias(version string, dest string, alias stri
 			missing = append(missing, bin)
 		}
 	}
-	
+
 	if len(missing) > 0 {
 		// List what actually exists in bin/ with details
 		binDir := filepath.Join(dest, "bin")
@@ -337,7 +337,7 @@ func (n *NodeInstaller) InstallWithAlias(version string, dest string, alias stri
 				}
 			}
 		}
-		
+
 		// Try to manually create npm/npx if they're missing but the target exists
 		// npm typically points to ../lib/node_modules/npm/bin/npm-cli.js
 		if len(missing) > 0 {
@@ -366,7 +366,7 @@ func (n *NodeInstaller) InstallWithAlias(version string, dest string, alias stri
 				}
 			}
 		}
-		
+
 		// Check again after attempting to fix
 		if len(missing) > 0 {
 			var suggestions []string
@@ -375,8 +375,8 @@ func (n *NodeInstaller) InstallWithAlias(version string, dest string, alias stri
 			suggestions = append(suggestions, fmt.Sprintf("Missing: %v", missing))
 			suggestions = append(suggestions, fmt.Sprintf("Installation directory: %s", dest))
 			suggestions = append(suggestions, "This may be a Node.js archive structure issue. Try a different version.")
-			
-			return fmt.Errorf("installation incomplete: missing binaries %v.\n%s", 
+
+			return fmt.Errorf("installation incomplete: missing binaries %v.\n%s",
 				missing, strings.Join(suggestions, "\n"))
 		}
 	}
@@ -418,4 +418,3 @@ func removeString(slice []string, s string) []string {
 	}
 	return result
 }
-

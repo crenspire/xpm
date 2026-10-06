@@ -238,4 +238,3 @@ func TestEmptyConfig(t *testing.T) {
 		t.Errorf("empty config Search should be nil/empty, got %v", c.Search)
 	}
 }
-

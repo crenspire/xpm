@@ -164,4 +164,3 @@ func (g *GoInstaller) PostInstall(version, dest string) error {
 func (g *GoInstaller) BinaryPaths(version, dest string) []string {
 	return []string{"bin/go"}
 }
-

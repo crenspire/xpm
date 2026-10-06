@@ -10,10 +10,10 @@ import (
 
 // GCResult holds the results of a garbage collection run.
 type GCResult struct {
-	RemovedByAge       int
-	RemovedByVersion   int
-	OrphanedMetadata   int
-	FreedBytes         int64
+	RemovedByAge     int
+	RemovedByVersion int
+	OrphanedMetadata int
+	FreedBytes       int64
 }
 
 // Clean removes all cached artifacts.
@@ -323,4 +323,3 @@ func (m *Manager) Repair() (repaired int, err error) {
 
 	return repaired, nil
 }
-

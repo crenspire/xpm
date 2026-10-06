@@ -194,7 +194,7 @@ func TestAdapterID(t *testing.T) {
 
 // MockCommandRunner is a test helper that records commands instead of executing them.
 type MockCommandRunner struct {
-	Commands []string
+	Commands   []string
 	ShouldFail bool
 }
 
@@ -203,4 +203,3 @@ var commandExecutor = func(bin string, args ...string) error {
 	cmd := exec.Command(bin, args...)
 	return cmd.Run()
 }
-

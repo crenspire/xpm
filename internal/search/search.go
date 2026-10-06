@@ -104,36 +104,36 @@ func existsInNpm(pkg string) (*Result, error) {
 	}
 	url := fmt.Sprintf("https://registry.npmjs.org/%s", url.PathEscape(pkg))
 	logx.Info("query npm: %s", url)
-    resp, err := httpClient.Get(url)
-    if err != nil {
-        return nil, err
-    }
-    defer resp.Body.Close()
-    if resp.StatusCode != 200 {
+	resp, err := httpClient.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
 		// Read error body for debugging
 		body, _ := io.ReadAll(resp.Body)
 		if resp.StatusCode == 404 {
 			return nil, nil // Package not found
 		}
 		return nil, fmt.Errorf("npm registry returned status %d: %s", resp.StatusCode, string(body))
-    }
-    var data struct {
-        Description string            `json:"description"`
-        DistTags    map[string]string `json:"dist-tags"`
-    }
-    if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-        return nil, err
-    }
-    res := &Result{
-        Manager: pm.Npm,
-        Name:    pkg,
-        Info:    data.Description,
-        Extra:   map[string]string{},
-    }
-    if v, ok := data.DistTags["latest"]; ok {
-        res.Extra["version"] = v
-    }
-    return res, nil
+	}
+	var data struct {
+		Description string            `json:"description"`
+		DistTags    map[string]string `json:"dist-tags"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return nil, err
+	}
+	res := &Result{
+		Manager: pm.Npm,
+		Name:    pkg,
+		Info:    data.Description,
+		Extra:   map[string]string{},
+	}
+	if v, ok := data.DistTags["latest"]; ok {
+		res.Extra["version"] = v
+	}
+	return res, nil
 }
 
 // existsInPip checks if a package exists in the Python Package Index (PyPI).
@@ -144,34 +144,34 @@ func existsInPip(pkg string) (*Result, error) {
 	}
 	url := fmt.Sprintf("https://pypi.org/pypi/%s/json", url.PathEscape(pkg))
 	logx.Info("query pypi: %s", url)
-    resp, err := httpClient.Get(url)
-    if err != nil {
-        return nil, err
-    }
-    defer resp.Body.Close()
-    if resp.StatusCode != 200 {
+	resp, err := httpClient.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
 		// Read error body for debugging
 		body, _ := io.ReadAll(resp.Body)
 		if resp.StatusCode == 404 {
 			return nil, nil // Package not found
 		}
 		return nil, fmt.Errorf("PyPI returned status %d: %s", resp.StatusCode, string(body))
-    }
-    var data struct {
-        Info struct {
-            Summary string `json:"summary"`
-            Version string `json:"version"`
-        } `json:"info"`
-    }
-    if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-        return nil, err
-    }
-    return &Result{
-        Manager: pm.Pip,
-        Name:    pkg,
-        Info:    data.Info.Summary,
-        Extra:   map[string]string{"version": data.Info.Version},
-    }, nil
+	}
+	var data struct {
+		Info struct {
+			Summary string `json:"summary"`
+			Version string `json:"version"`
+		} `json:"info"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return nil, err
+	}
+	return &Result{
+		Manager: pm.Pip,
+		Name:    pkg,
+		Info:    data.Info.Summary,
+		Extra:   map[string]string{"version": data.Info.Version},
+	}, nil
 }
 
 // existsInComposer searches for a package in Packagist (PHP/Composer registry).
@@ -182,35 +182,35 @@ func existsInComposer(pkg string) (*Result, error) {
 	}
 	url := fmt.Sprintf("https://packagist.org/search.json?q=%s", url.QueryEscape(pkg))
 	logx.Info("query packagist: %s", url)
-    resp, err := httpClient.Get(url)
-    if err != nil {
-        return nil, err
-    }
-    defer resp.Body.Close()
-    if resp.StatusCode != 200 {
+	resp, err := httpClient.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
 		// Read error body for debugging
 		body, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("Packagist returned status %d: %s", resp.StatusCode, string(body))
-    }
-    var data struct {
-        Results []struct {
-            Name        string `json:"name"`
-            Description string `json:"description"`
-        } `json:"results"`
-    }
-    if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-        return nil, err
-    }
-    if len(data.Results) == 0 {
-        return nil, nil
-    }
-    first := data.Results[0]
-    return &Result{
-        Manager: pm.Composer,
-        Name:    first.Name,
-        Info:    first.Description,
-        Extra:   map[string]string{},
-    }, nil
+	}
+	var data struct {
+		Results []struct {
+			Name        string `json:"name"`
+			Description string `json:"description"`
+		} `json:"results"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return nil, err
+	}
+	if len(data.Results) == 0 {
+		return nil, nil
+	}
+	first := data.Results[0]
+	return &Result{
+		Manager: pm.Composer,
+		Name:    first.Name,
+		Info:    first.Description,
+		Extra:   map[string]string{},
+	}, nil
 }
 
 // existsInCrates checks if a crate exists in crates.io (Rust registry).
@@ -221,35 +221,35 @@ func existsInCrates(pkg string) (*Result, error) {
 	}
 	url := fmt.Sprintf("https://crates.io/api/v1/crates/%s", url.PathEscape(pkg))
 	logx.Info("query crates.io: %s", url)
-    resp, err := httpClient.Get(url)
-    if err != nil {
-        return nil, err
-    }
-    defer resp.Body.Close()
-    if resp.StatusCode != 200 {
+	resp, err := httpClient.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
 		// Read error body for debugging
 		body, _ := io.ReadAll(resp.Body)
 		if resp.StatusCode == 404 {
 			return nil, nil // Crate not found
 		}
 		return nil, fmt.Errorf("crates.io returned status %d: %s", resp.StatusCode, string(body))
-    }
-    var data struct {
-        Crate struct {
-            Description string `json:"description"`
-            MaxVersion  string `json:"max_version"`
-            Name        string `json:"name"`
-        } `json:"crate"`
-    }
-    if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-        return nil, err
-    }
-    return &Result{
-        Manager: pm.Cargo,
-        Name:    data.Crate.Name,
-        Info:    data.Crate.Description,
-        Extra:   map[string]string{"version": data.Crate.MaxVersion},
-    }, nil
+	}
+	var data struct {
+		Crate struct {
+			Description string `json:"description"`
+			MaxVersion  string `json:"max_version"`
+			Name        string `json:"name"`
+		} `json:"crate"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return nil, err
+	}
+	return &Result{
+		Manager: pm.Cargo,
+		Name:    data.Crate.Name,
+		Info:    data.Crate.Description,
+		Extra:   map[string]string{"version": data.Crate.MaxVersion},
+	}, nil
 }
 
 // existsInMaven searches for an artifact in Maven Central.
@@ -260,45 +260,45 @@ func existsInMaven(pkg string) (*Result, error) {
 	}
 	url := fmt.Sprintf("https://search.maven.org/solrsearch/select?q=%s&rows=5&wt=json", url.QueryEscape(pkg))
 	logx.Info("query maven: %s", url)
-    resp, err := httpClient.Get(url)
-    if err != nil {
-        return nil, err
-    }
-    defer resp.Body.Close()
-    if resp.StatusCode != 200 {
+	resp, err := httpClient.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
 		// Read error body for debugging
 		body, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("Maven Central returned status %d: %s", resp.StatusCode, string(body))
-    }
-    var data struct {
-        Response struct {
-            Docs []struct {
-                ID       string `json:"id"`
-                Latest   string `json:"latestVersion"`
-                Group    string `json:"g"`
-                Artifact string `json:"a"`
-            } `json:"docs"`
-        } `json:"response"`
-    }
-    if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-        return nil, err
-    }
-    if len(data.Response.Docs) == 0 {
-        return nil, nil
-    }
-    d := data.Response.Docs[0]
-    coord := fmt.Sprintf("%s:%s", d.Group, d.Artifact)
-    return &Result{
-        Manager: pm.Maven,
-        Name:    coord,
-        Info:    "Maven artifact",
-        Extra: map[string]string{
-            "version":  d.Latest,
-            "id":       d.ID,
-            "group":    d.Group,
-            "artifact": d.Artifact,
-        },
-    }, nil
+	}
+	var data struct {
+		Response struct {
+			Docs []struct {
+				ID       string `json:"id"`
+				Latest   string `json:"latestVersion"`
+				Group    string `json:"g"`
+				Artifact string `json:"a"`
+			} `json:"docs"`
+		} `json:"response"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return nil, err
+	}
+	if len(data.Response.Docs) == 0 {
+		return nil, nil
+	}
+	d := data.Response.Docs[0]
+	coord := fmt.Sprintf("%s:%s", d.Group, d.Artifact)
+	return &Result{
+		Manager: pm.Maven,
+		Name:    coord,
+		Info:    "Maven artifact",
+		Extra: map[string]string{
+			"version":  d.Latest,
+			"id":       d.ID,
+			"group":    d.Group,
+			"artifact": d.Artifact,
+		},
+	}, nil
 }
 
 // SearchEverywhere searches for a package across all enabled registries.
@@ -308,31 +308,31 @@ func existsInMaven(pkg string) (*Result, error) {
 func SearchEverywhere(pkg string, opts Options) ([]Result, error) {
 	var out []Result
 
-    if Enabled(opts, pm.Npm) {
-        if r, err := existsInNpm(pkg); err == nil && r != nil {
-            out = append(out, *r)
-        }
-    }
-    if Enabled(opts, pm.Pip) {
-        if r, err := existsInPip(pkg); err == nil && r != nil {
-            out = append(out, *r)
-        }
-    }
-    if Enabled(opts, pm.Composer) {
-        if r, err := existsInComposer(pkg); err == nil && r != nil {
-            out = append(out, *r)
-        }
-    }
-    if Enabled(opts, pm.Cargo) {
-        if r, err := existsInCrates(pkg); err == nil && r != nil {
-            out = append(out, *r)
-        }
-    }
-    if Enabled(opts, pm.Maven) {
-        if r, err := existsInMaven(pkg); err == nil && r != nil {
-            out = append(out, *r)
-        }
-    }
+	if Enabled(opts, pm.Npm) {
+		if r, err := existsInNpm(pkg); err == nil && r != nil {
+			out = append(out, *r)
+		}
+	}
+	if Enabled(opts, pm.Pip) {
+		if r, err := existsInPip(pkg); err == nil && r != nil {
+			out = append(out, *r)
+		}
+	}
+	if Enabled(opts, pm.Composer) {
+		if r, err := existsInComposer(pkg); err == nil && r != nil {
+			out = append(out, *r)
+		}
+	}
+	if Enabled(opts, pm.Cargo) {
+		if r, err := existsInCrates(pkg); err == nil && r != nil {
+			out = append(out, *r)
+		}
+	}
+	if Enabled(opts, pm.Maven) {
+		if r, err := existsInMaven(pkg); err == nil && r != nil {
+			out = append(out, *r)
+		}
+	}
 
-    return out, nil
+	return out, nil
 }

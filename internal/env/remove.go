@@ -30,4 +30,3 @@ func RemoveVersion(manager *Manager, runtime, version string) error {
 
 	return nil
 }
-

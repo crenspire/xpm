@@ -271,4 +271,3 @@ func (g *DepGraph) Trim() {
 	}
 	g.Edges = validEdges
 }
-

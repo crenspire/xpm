@@ -114,4 +114,3 @@ func SearchNpmPackages(query string, limit int) ([]Result, error) {
 
 	return results, nil
 }
-

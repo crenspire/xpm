@@ -124,7 +124,7 @@ func SearchEverywhereParallelWithConfig(pkg string, opts Options, cfg ParallelSe
 					return
 				}
 			}
-			
+
 			// If no results were sent (empty slice), send a completion marker
 			// This ensures the search is marked as completed even with no results
 			if len(results) == 0 {
@@ -287,7 +287,7 @@ func BatchSearch(packages []string, opts Options) map[string][]Result {
 	}
 
 	wg.Wait()
-	
+
 	// Return a copy to prevent race conditions when caller accesses the map
 	mu.Lock()
 	resultCopy := make(map[string][]Result, len(results))
@@ -298,7 +298,6 @@ func BatchSearch(packages []string, opts Options) map[string][]Result {
 		resultCopy[k] = vCopy
 	}
 	mu.Unlock()
-	
+
 	return resultCopy
 }
-

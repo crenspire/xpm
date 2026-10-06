@@ -72,4 +72,3 @@ func ActivateFromLocalEnv(manager *Manager) error {
 
 	return nil
 }
-

@@ -169,31 +169,30 @@ func copyDirectory(src, dest string) error {
 		if err != nil {
 			return err
 		}
-		
+
 		// Preserve executable permissions
 		if linkInfo.Mode()&0111 != 0 {
 			os.Chmod(destPath, linkInfo.Mode()|0111)
 		}
-		
+
 		filesCopied++
 		return nil
 	})
-	
+
 	if err != nil {
 		if copyErr != nil {
 			return copyErr
 		}
 		return fmt.Errorf("filepath.Walk failed: %w", err)
 	}
-	
+
 	if copyErr != nil {
 		return copyErr
 	}
-	
+
 	if filesCopied == 0 {
 		return fmt.Errorf("no files were copied from %s to %s", src, dest)
 	}
-	
+
 	return nil
 }
-

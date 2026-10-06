@@ -409,4 +409,3 @@ func runBinaryWithCode(bin string, args []string) int {
 	}
 	return 0
 }
-

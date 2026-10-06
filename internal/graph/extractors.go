@@ -18,4 +18,3 @@ type ExtractorResult struct {
 	Error error
 	Name  string
 }
-

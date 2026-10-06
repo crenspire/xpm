@@ -46,4 +46,3 @@ func (e *DepEdge) String() string {
 func (e *DepEdge) Equal(other *DepEdge) bool {
 	return e.From == other.From && e.To == other.To
 }
-

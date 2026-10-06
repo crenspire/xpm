@@ -45,4 +45,3 @@ func installSelectCmd(result search.Result) tea.Cmd {
 		return installSelectMsg{result: result}
 	}
 }
-

@@ -74,4 +74,3 @@ func WriteSVG(graph *DepGraph, w io.Writer) error {
 	_, err = w.Write(svgData)
 	return err
 }
-

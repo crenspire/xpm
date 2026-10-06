@@ -145,4 +145,3 @@ func ListSupportedFiles() []string {
 	}
 	return files
 }
-

@@ -138,5 +138,3 @@ func RunScriptByName(merged *MergedScripts, name string, extraArgs []string) err
 	}
 	return RunScript(*script, extraArgs)
 }
-
-

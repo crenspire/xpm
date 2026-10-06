@@ -198,4 +198,3 @@ func (c *InjectionConfig) Merge(other *InjectionConfig) {
 	}
 	c.Flags = append(c.Flags, other.Flags...)
 }
-

@@ -164,4 +164,3 @@ func formatNetworkError(err error, registry string) string {
 
 	return sb.String()
 }
-

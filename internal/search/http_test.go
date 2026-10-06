@@ -13,10 +13,10 @@ func TestContextCancellationLeak(t *testing.T) {
 	defer func() { httpConfig = oldConfig }()
 
 	httpConfig = HTTPConfig{
-		Timeout:       100 * time.Millisecond,
-		MaxRetries:    2,
-		RetryDelay:    10 * time.Millisecond,
-		RetryBackoff:  2.0,
+		Timeout:      100 * time.Millisecond,
+		MaxRetries:   2,
+		RetryDelay:   10 * time.Millisecond,
+		RetryBackoff: 2.0,
 	}
 
 	// Create a context that will be cancelled
@@ -65,4 +65,3 @@ func TestIsRetryableErrorFix(t *testing.T) {
 		})
 	}
 }
-

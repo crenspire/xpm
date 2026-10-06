@@ -229,4 +229,3 @@ func (e *JavaExtractor) parseGradleOutput(output string) (*DepGraph, error) {
 
 	return graph, nil
 }
-

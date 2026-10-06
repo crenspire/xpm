@@ -167,4 +167,3 @@ func (b *BunInstaller) BinaryPaths(version, dest string) []string {
 	}
 	return []string{"bin/bun"}
 }
-

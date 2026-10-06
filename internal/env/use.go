@@ -44,7 +44,7 @@ func UseVersion(manager *Manager, runtime, version string, global bool) error {
 				}
 			}
 		}
-		
+
 		// If still not found, return error
 		if _, err := os.Stat(versionPath); err != nil {
 			return fmt.Errorf("version %s@%s is not installed. Run 'xpm env install %s@%s' first", runtime, version, runtime, version)
@@ -98,4 +98,3 @@ func getSystemPHPVersion() string {
 	}
 	return "unknown"
 }
-

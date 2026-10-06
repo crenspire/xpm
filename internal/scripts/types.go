@@ -112,4 +112,3 @@ func (m *MergedScripts) IsEmpty() bool {
 func (m *MergedScripts) Count() int {
 	return len(m.Scripts)
 }
-

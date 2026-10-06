@@ -56,7 +56,7 @@ func cmdMan(args []string) int {
 // listCommands lists all available commands with their descriptions.
 func listCommands() {
 	fmt.Printf("%s%sAvailable commands:%s\n\n", colorBold, colorYellow, colorReset)
-	
+
 	commands := []struct {
 		name        string
 		aliases     []string
@@ -97,7 +97,7 @@ func listCommands() {
 func showCommandHelp(command string) {
 	// Normalize command name (handle aliases)
 	normalized := normalizeCommand(command)
-	
+
 	switch normalized {
 	case "install":
 		showInstallHelp()
@@ -144,20 +144,20 @@ func showCommandHelp(command string) {
 // normalizeCommand converts aliases to their canonical command names.
 func normalizeCommand(cmd string) string {
 	aliases := map[string]string{
-		"i":    "install",
-		"r":    "run",
-		"w":    "which",
-		"l":    "list",
-		"u":    "update",
-		"rm":   "remove",
-		"g":    "graph",
-		"s":    "search",
-		"d":    "doctor",
-		"-v":   "version",
-		"-h":   "help",
+		"i":      "install",
+		"r":      "run",
+		"w":      "which",
+		"l":      "list",
+		"u":      "update",
+		"rm":     "remove",
+		"g":      "graph",
+		"s":      "search",
+		"d":      "doctor",
+		"-v":     "version",
+		"-h":     "help",
 		"--help": "help",
 	}
-	
+
 	if canonical, ok := aliases[cmd]; ok {
 		return canonical
 	}
@@ -549,4 +549,3 @@ func showManHelp() {
 	fmt.Printf("%s\n", colorSection("RELATED COMMANDS:"))
 	fmt.Printf("  %s                       Show brief help\n", colorCommand("xpm help"))
 }
-

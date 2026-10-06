@@ -105,4 +105,3 @@ func runInProject(project Project, task string) error {
 	fmt.Printf("[%s] ✓ Completed\n", project.Name)
 	return nil
 }
-

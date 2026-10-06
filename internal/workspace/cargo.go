@@ -89,4 +89,3 @@ func DetectCargoWorkspace(root string) (*Workspace, error) {
 		Ecosystem: "rust",
 	}, nil
 }
-

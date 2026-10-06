@@ -100,7 +100,7 @@ func (m *Manager) Delete(ecosystem Ecosystem, name, version string) error {
 
 	// Try to remove empty parent directories
 	pkgDir := m.PackagePath(ecosystem, name, version)
-	os.Remove(pkgDir) // Remove version dir if empty
+	os.Remove(pkgDir)               // Remove version dir if empty
 	os.Remove(filepath.Dir(pkgDir)) // Remove package dir if empty
 
 	return nil
@@ -238,4 +238,3 @@ func copyFile(src, dst string) error {
 func hasPrefix(s, prefix string) bool {
 	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
 }
-

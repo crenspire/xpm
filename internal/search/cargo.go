@@ -92,10 +92,10 @@ func SearchCratesIO(query string, limit int) ([]Result, error) {
 
 	var data struct {
 		Crates []struct {
-			Name          string `json:"name"`
-			Description   string `json:"description"`
-			MaxVersion    string `json:"max_version"`
-			Downloads     int    `json:"downloads"`
+			Name        string `json:"name"`
+			Description string `json:"description"`
+			MaxVersion  string `json:"max_version"`
+			Downloads   int    `json:"downloads"`
 		} `json:"crates"`
 	}
 
@@ -118,4 +118,3 @@ func SearchCratesIO(query string, limit int) ([]Result, error) {
 
 	return results, nil
 }
-

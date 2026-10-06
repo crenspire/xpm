@@ -321,5 +321,3 @@ func mergeScripts(scripts []ScriptDefinition, prefer []string) map[string]Script
 
 	return merged
 }
-
-

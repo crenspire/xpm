@@ -12,11 +12,11 @@ import (
 
 // Manager manages runtime versions and environment.
 type Manager struct {
-	config      config.Config
-	envPath     string
+	config       config.Config
+	envPath      string
 	runtimesPath string
-	shimsPath   string
-	activePath  string
+	shimsPath    string
+	activePath   string
 	defaultsPath string
 }
 
@@ -88,7 +88,7 @@ func (m *Manager) EnsureDirs() error {
 // If the active version is an alias (lts, latest), it resolves to the actual installed version.
 func (m *Manager) GetActiveVersion(runtime string) (string, error) {
 	var activeVersion string
-	
+
 	// First check local .xpm-env
 	if version := m.getLocalVersion(runtime); version != "" {
 		activeVersion = version
@@ -100,7 +100,7 @@ func (m *Manager) GetActiveVersion(runtime string) (string, error) {
 				activeVersion = version
 			}
 		}
-		
+
 		// Finally check defaults
 		if activeVersion == "" {
 			defaults, err := m.loadDefaults()
@@ -111,11 +111,11 @@ func (m *Manager) GetActiveVersion(runtime string) (string, error) {
 			}
 		}
 	}
-	
+
 	if activeVersion == "" {
 		return "", fmt.Errorf("no active version found for %s", runtime)
 	}
-	
+
 	// If the active version is an alias (lts, latest), resolve it to the actual installed version
 	if activeVersion == "lts" || activeVersion == "latest" {
 		resolved, err := m.resolveAliasToVersion(runtime, activeVersion)
@@ -125,7 +125,7 @@ func (m *Manager) GetActiveVersion(runtime string) (string, error) {
 		// If resolution fails, return the alias anyway (might be used elsewhere)
 		return activeVersion, nil
 	}
-	
+
 	return activeVersion, nil
 }
 
@@ -136,27 +136,27 @@ func (m *Manager) resolveAliasToVersion(runtime, alias string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	
+
 	// Look for a version directory that has this alias in its metadata
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
 		}
-		
+
 		version := entry.Name()
 		// Skip alias directories themselves
 		if version == "latest" || version == "lts" || version == "" {
 			continue
 		}
-		
+
 		versionPath := filepath.Join(runtimePath, version)
 		versionAlias := getVersionAlias(versionPath)
-		
+
 		if versionAlias == alias {
 			return version, nil
 		}
 	}
-	
+
 	return "", fmt.Errorf("no installed version found with alias %s", alias)
 }
 
@@ -341,4 +341,3 @@ func splitKeyValue(s, sep string) []string {
 	}
 	return []string{s}
 }
-

@@ -141,4 +141,3 @@ func NoIssues() {
 func Skipped(reason string) {
 	fmt.Printf("  %s(skipped: %s)%s\n", colorYellow, reason, colorReset)
 }
-

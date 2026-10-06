@@ -164,4 +164,3 @@ func installFromSearchResult(result search.Result, pmID pm.ID) int {
 	fmt.Println("\nDone ✅")
 	return 0
 }
-

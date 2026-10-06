@@ -153,15 +153,15 @@ func (p *PythonInstaller) installMacOS(version string, dest string) error {
 	// 1. Official installers are .pkg files (hard to extract programmatically)
 	// 2. DMG files require mounting
 	// 3. Framework builds need special handling
-	
+
 	// For now, provide clear instructions
 	majorMinor := strings.Join(strings.Split(version, ".")[:2], ".")
-	return fmt.Errorf("Python installation on macOS requires manual setup.\n\n" +
-		"Option 1: Use system Python (already installed on macOS)\n" +
-		"Option 2: Install via Homebrew: brew install python@%s\n" +
-		"Option 3: Download from python.org and install manually\n\n" +
-		"Note: Automatic Python installation on macOS is complex due to .pkg installer format.\n" +
-		"Consider using the system Python or Homebrew-installed Python.\n\n" +
+	return fmt.Errorf("Python installation on macOS requires manual setup.\n\n"+
+		"Option 1: Use system Python (already installed on macOS)\n"+
+		"Option 2: Install via Homebrew: brew install python@%s\n"+
+		"Option 3: Download from python.org and install manually\n\n"+
+		"Note: Automatic Python installation on macOS is complex due to .pkg installer format.\n"+
+		"Consider using the system Python or Homebrew-installed Python.\n\n"+
 		"After installing Python via Homebrew or manually, you can use it with xpm by setting it up manually.", majorMinor)
 }
 
@@ -169,10 +169,10 @@ func (p *PythonInstaller) installMacOS(version string, dest string) error {
 func (p *PythonInstaller) installLinux(version string, dest string) error {
 	// For Linux, we could download source and compile, or use prebuilt binaries
 	// For now, suggest using system package manager
-	return fmt.Errorf("Python installation on Linux requires compilation or system packages.\n\n" +
-		"Option 1: Use system Python: sudo apt-get install python3.%s (Debian/Ubuntu)\n" +
-		"Option 2: Use pyenv: pyenv install %s\n" +
-		"Option 3: Download source from python.org and compile\n\n" +
+	return fmt.Errorf("Python installation on Linux requires compilation or system packages.\n\n"+
+		"Option 1: Use system Python: sudo apt-get install python3.%s (Debian/Ubuntu)\n"+
+		"Option 2: Use pyenv: pyenv install %s\n"+
+		"Option 3: Download source from python.org and compile\n\n"+
 		"Note: Automatic Python installation on Linux requires compilation which is time-consuming.",
 		strings.Split(version, ".")[1], version)
 }
@@ -182,31 +182,31 @@ func (p *PythonInstaller) installWindows(version string, dest string) error {
 	// For Windows, download the embeddable package
 	filename := fmt.Sprintf("python-%s-embed-amd64.zip", version)
 	url := fmt.Sprintf("https://www.python.org/ftp/python/%s/%s", version, filename)
-	
+
 	fmt.Printf("Downloading from %s...\n", url)
-	
+
 	resp, err := http.Get(url)
 	if err != nil {
 		return fmt.Errorf("failed to download: %w", err)
 	}
 	defer resp.Body.Close()
-	
+
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("download failed with status %d", resp.StatusCode)
 	}
-	
+
 	tmpFile, err := os.CreateTemp("", "python-*.zip")
 	if err != nil {
 		return err
 	}
 	defer os.Remove(tmpFile.Name())
-	
+
 	if _, err := io.Copy(tmpFile, resp.Body); err != nil {
 		tmpFile.Close()
 		return err
 	}
 	tmpFile.Close()
-	
+
 	// Extract to destination
 	return extractZip(tmpFile.Name(), dest)
 }
@@ -242,4 +242,3 @@ func pyenvExists() bool {
 	_, err := exec.LookPath("pyenv")
 	return err == nil
 }
-

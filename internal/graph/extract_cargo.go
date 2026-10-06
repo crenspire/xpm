@@ -76,4 +76,3 @@ func (e *CargoExtractor) parseDependencySpec(spec string) string {
 	}
 	return spec
 }
-

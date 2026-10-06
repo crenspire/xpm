@@ -173,8 +173,8 @@ func createPythonProject(projectDir, pyprojectPath string) *Project {
 func detectPythonPM(projectPath string) (pm.ID, string) {
 	// Check for lockfiles
 	lockfiles := map[string]pm.ID{
-		"poetry.lock": pm.Poetry,
-		"Pipfile.lock": pm.Pipenv,
+		"poetry.lock":       pm.Poetry,
+		"Pipfile.lock":      pm.Pipenv,
 		"requirements.lock": pm.Pip,
 	}
 
@@ -213,4 +213,3 @@ func isProjectInList(projects []Project, path string) bool {
 	}
 	return false
 }
-

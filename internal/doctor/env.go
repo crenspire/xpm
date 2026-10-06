@@ -16,12 +16,12 @@ type RuntimeInfo struct {
 
 // RuntimeCheck defines how to detect a runtime.
 type RuntimeCheck struct {
-	Name       string
-	Binary     string
-	Args       []string
-	VersionRe  *regexp.Regexp
-	AltBinary  string   // Alternative binary to check
-	AltArgs    []string // Args for alternative binary
+	Name      string
+	Binary    string
+	Args      []string
+	VersionRe *regexp.Regexp
+	AltBinary string   // Alternative binary to check
+	AltArgs   []string // Args for alternative binary
 }
 
 // runtimeChecks defines all runtimes to check.
@@ -183,4 +183,3 @@ func HasRuntime(results []RuntimeInfo, name string) bool {
 	}
 	return false
 }
-

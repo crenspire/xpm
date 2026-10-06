@@ -181,4 +181,3 @@ func (j *JavaInstaller) BinaryPaths(version, dest string) []string {
 	}
 	return []string{"bin/java", "bin/javac", "bin/keytool"}
 }
-

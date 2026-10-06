@@ -9,21 +9,21 @@ import (
 
 // model represents the TUI application state.
 type model struct {
-	query            string
-	results          []search.Result
-	cursor           int
-	scrollOffset     int // Offset for pagination
-	loading          bool
-	err              error
-	width            int
-	height           int
-	searchOpts       search.Options
-	installMode      bool
-	selectedResult   *search.Result
-	installPMs       []pm.ID
-	installCursor    int
-	registryMode     bool // Whether we're in registry selection mode
-	registryCursor    int  // Cursor for registry selection
+	query              string
+	results            []search.Result
+	cursor             int
+	scrollOffset       int // Offset for pagination
+	loading            bool
+	err                error
+	width              int
+	height             int
+	searchOpts         search.Options
+	installMode        bool
+	selectedResult     *search.Result
+	installPMs         []pm.ID
+	installCursor      int
+	registryMode       bool           // Whether we're in registry selection mode
+	registryCursor     int            // Cursor for registry selection
 	selectedRegistries map[pm.ID]bool // Selected registries for search
 }
 
@@ -37,7 +37,7 @@ func NewModel(initialQuery string, opts search.Options) model {
 		pm.Cargo,
 		pm.Maven,
 	}
-	
+
 	// Initialize selected registries - all enabled by default
 	selectedRegistries := make(map[pm.ID]bool)
 	for _, reg := range availableRegistries {
@@ -50,7 +50,7 @@ func NewModel(initialQuery string, opts search.Options) model {
 			selectedRegistries[reg] = false
 		}
 	}
-	
+
 	return model{
 		query:              initialQuery,
 		searchOpts:         opts,
@@ -95,4 +95,3 @@ type resizeMsg struct {
 type installSelectMsg struct {
 	result search.Result
 }
-

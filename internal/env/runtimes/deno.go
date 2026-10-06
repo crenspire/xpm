@@ -160,4 +160,3 @@ func (d *DenoInstaller) BinaryPaths(version, dest string) []string {
 	}
 	return []string{"bin/deno"}
 }
-

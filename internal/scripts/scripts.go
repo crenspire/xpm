@@ -177,7 +177,7 @@ func parsePyprojectTOML(path string) (*ProjectScripts, error) {
 
 	// Look for [project.scripts] or [tool.poetry.scripts] sections
 	scriptSections := []string{"[project.scripts]", "[tool.poetry.scripts]"}
-	
+
 	for _, section := range scriptSections {
 		idx := strings.Index(content, section)
 		if idx == -1 {
@@ -198,7 +198,7 @@ func parsePyprojectTOML(path string) (*ProjectScripts, error) {
 			if line == "" || strings.HasPrefix(line, "#") {
 				continue
 			}
-			
+
 			parts := strings.SplitN(line, "=", 2)
 			if len(parts) != 2 {
 				continue
@@ -271,4 +271,3 @@ func (ps *ProjectScripts) ListScripts() string {
 
 	return sb.String()
 }
-

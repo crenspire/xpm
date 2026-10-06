@@ -120,22 +120,22 @@ func (m *Manager) MetadataPath() string {
 func (m *Manager) PackagePath(ecosystem Ecosystem, name, version string) string {
 	// Sanitize name first
 	safeName := sanitizeName(name)
-	
+
 	// Clean both name and version to remove any path traversal sequences
 	safeName = filepath.Clean(safeName)
 	safeVersion := filepath.Clean(version)
-	
+
 	// Validate no path traversal sequences remain after cleaning
 	if strings.Contains(safeName, "..") || strings.Contains(safeVersion, "..") {
 		// If path traversal detected, return empty string to indicate error
 		return ""
 	}
-	
+
 	// Ensure cleaned paths don't start with / or contain absolute paths
 	if filepath.IsAbs(safeName) || filepath.IsAbs(safeVersion) {
 		return ""
 	}
-	
+
 	return filepath.Join(m.EcosystemPath(ecosystem), safeName, safeVersion)
 }
 
@@ -167,4 +167,3 @@ func GetCachePath() string {
 func ExpandPath(path string) string {
 	return expandPath(path)
 }
-

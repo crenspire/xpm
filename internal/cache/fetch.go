@@ -472,4 +472,3 @@ func isVersionLike(s string) bool {
 	// Should contain at least one dot
 	return strings.Contains(s, ".")
 }
-

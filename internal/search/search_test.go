@@ -11,10 +11,10 @@ import (
 // TestEnabled verifies the Enabled function correctly checks option flags.
 func TestEnabled(t *testing.T) {
 	tests := []struct {
-		name    string
-		opts    Options
-		id      pm.ID
-		want    bool
+		name string
+		opts Options
+		id   pm.ID
+		want bool
 	}{
 		{
 			name: "nil enable map returns true",
@@ -395,5 +395,3 @@ func TestURLInjectionPrevention(t *testing.T) {
 		})
 	}
 }
-
-
