@@ -15,8 +15,9 @@ const maxPathPushes = 100000
 type TargetPaths struct {
 	// Target is the node ID.
 	Target string
-	// Paths lists node-ID paths from a root to Target, shortest first, ties
-	// broken lexically. Empty when no root reaches Target.
+	// Paths lists node-ID paths from a root to Target, shortest first; ties
+	// are broken deterministically, in the order the search discovers them
+	// (not lexically). Empty when no root reaches Target.
 	Paths [][]string
 	// Truncated reports that more paths exist than were returned.
 	Truncated bool

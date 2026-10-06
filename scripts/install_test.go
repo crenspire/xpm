@@ -117,6 +117,11 @@ func runInstall(t *testing.T, baseURL string) (out, bin string, err error) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Read the script in-process: go test's result cache only keys on files
+	// the test binary opens, not on files a child process runs.
+	if _, err := os.ReadFile(script); err != nil {
+		t.Fatal(err)
+	}
 	home := t.TempDir()
 	bin = filepath.Join(home, "bin")
 	cmd := exec.Command("sh", script)
