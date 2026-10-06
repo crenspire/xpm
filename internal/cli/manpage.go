@@ -29,6 +29,7 @@ xpm {{.Command}} \- {{.Description}}
 {{.Examples}}
 .SH EXIT STATUS
 0 on success; 1 on errors, invalid arguments, cancelled install prompts, no matches, or a refused non-interactive choice.
+2 on a \fBgraph\fR usage error (bad flag or argument).
 \fBinstall\fR (without packages), \fBci\fR, \fBlist\fR, \fBupdate\fR, \fBremove\fR and \fBrun\fR pass through the underlying tool's exit code.
 .SH ENVIRONMENT
 .TP
@@ -229,7 +230,11 @@ Get detailed info about express`
 This command is experimental and is being reworked; its behaviour and output may change.`
 		data.Options = `.TP
 \fB--verify\fR
-Verify lockfiles haven't changed since last generation`
+Verify lockfiles haven't changed since last generation.
+Each recorded lockfile is reported as unchanged, changed or missing.
+Supported lockfiles on disk that xpm-lock.yaml does not record are reported as added.
+Unreadable entries and recorded paths outside the project are errors.
+Exit status 1 unless every lockfile is unchanged.`
 		data.Examples = `.B xpm lock
 Generate unified lockfile
 .PP
@@ -240,17 +245,26 @@ Check if lockfiles changed`
 	case "graph":
 		data.Description = "Show unified dependency graph (experimental)"
 		data.Synopsis = `.B xpm graph
-[\fIpackage\fR] [\fB--json\fR] [\fB--svg\fR] [\fB--workspace\fR]`
+[\fIpackage\fR] [\fB--json\fR] [\fB--svg\fR] [\fB--depth\fR \fIN\fR] [\fB--exec\fR] [\fB--workspace\fR|\fB-w\fR]`
 		data.FullDescription = `Show unified dependency graph across all ecosystems.
-This command is experimental and is being reworked; its behaviour and output may change.`
+This command is experimental and is being reworked; its behaviour and output may change.
+Without \fB--exec\fR, only the files on disk are read.
+Flags may come before or after the package name.
+A usage error (unknown flag, negative \fB--depth\fR, \fB--json\fR with \fB--svg\fR, more than one package) exits with status 2.`
 		data.Options = `.TP
 \fB--json\fR
-Export graph as JSON
+Export graph as JSON (cannot be combined with \fB--svg\fR)
 .TP
 \fB--svg\fR
-Generate SVG visualization
+Generate SVG visualization (needs GraphViz)
 .TP
-\fB--workspace\fR
+\fB--depth\fR \fIN\fR
+Tree depth below the roots (default: \fBgraph.depth\fR; 0 = unlimited)
+.TP
+\fB--exec\fR
+Run mvn/gradle/go to resolve full trees (default: files only)
+.TP
+\fB--workspace\fR, \fB-w\fR
 Generate combined graph for all workspaces`
 		data.Examples = `.B xpm graph
 Show full dependency graph

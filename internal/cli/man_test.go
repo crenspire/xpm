@@ -265,3 +265,43 @@ func TestUsageHasNoCache(t *testing.T) {
 		t.Errorf("usage still mentions cache:\n%s", out)
 	}
 }
+
+func TestGraphAndLockDocsCoverFlagsAndExitStatus(t *testing.T) {
+	graphPage, err := GenerateManPage("graph")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lockPage, err := GenerateManPage("lock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	graphPage = roffFontRe.ReplaceAllString(graphPage, "")
+	lockPage = roffFontRe.ReplaceAllString(lockPage, "")
+	graphHelp := ansiRe.ReplaceAllString(captureStdout(t, showGraphHelp), "")
+	lockHelp := ansiRe.ReplaceAllString(captureStdout(t, showLockHelp), "")
+
+	for label, out := range map[string]string{"graph help": graphHelp, "graph man": graphPage} {
+		for _, want := range []string{"--json", "--svg", "--exec", "--depth", "--workspace", "-w", "status 2"} {
+			if !strings.Contains(strings.ToLower(out), want) {
+				t.Errorf("%s: missing %q", label, want)
+			}
+		}
+	}
+	for label, out := range map[string]string{"lock help": lockHelp, "lock man": lockPage} {
+		for _, want := range []string{"unchanged", "changed", "missing", "added"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("%s: missing %q", label, want)
+			}
+		}
+	}
+
+	top, err := GenerateManPage("install")
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := strings.Index(top, ".SH EXIT STATUS")
+	j := strings.Index(top, ".SH ENVIRONMENT")
+	if i < 0 || j < i || !strings.Contains(top[i:j], "2") {
+		t.Errorf("EXIT STATUS section does not mention 2:\n%s", top)
+	}
+}

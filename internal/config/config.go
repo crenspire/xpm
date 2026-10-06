@@ -69,13 +69,16 @@ type SearchUIConfig struct {
 
 // WorkspaceConfig holds configuration for workspace/monorepo operations.
 type WorkspaceConfig struct {
-	// Include specifies glob patterns for workspace directories to include.
-	// If empty, all detected workspaces are included.
-	// Not yet honoured by any command (reserved for the workspaces rework).
+	// Include specifies glob patterns that a project's path, relative to its
+	// workspace root (slash-separated, "." for the root itself), must match
+	// to be kept by the workspace commands (workspaces, graph --workspace,
+	// run --workspace). Patterns use path.Match syntax per segment, plus "**"
+	// for any number of segments. If empty, every detected project is kept.
 	Include []string `json:"include"`
 
-	// Exclude specifies glob patterns for workspace directories to exclude.
-	// Not yet honoured by any command (reserved for the workspaces rework).
+	// Exclude specifies glob patterns, matched like Include, for projects the
+	// workspace commands drop. Exclude wins over Include. A workspace left
+	// with no projects is dropped.
 	Exclude []string `json:"exclude"`
 
 	// Parallel controls whether operations run in parallel across workspaces.
