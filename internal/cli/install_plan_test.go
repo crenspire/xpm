@@ -133,3 +133,44 @@ func TestTUINameIsValidatedBeforeOfferingToInstallTheTool(t *testing.T) {
 		t.Fatal("the user was offered to install bun for a name that is then refused")
 	}
 }
+
+func TestIsGoModulePath(t *testing.T) {
+	for s, want := range map[string]bool{
+		"github.com/gin-gonic/gin": true,
+		"golang.org/x/term":        true,
+		"gopkg.in/yaml.v3":         true,
+		"axios":                    false,
+		"@types/node":              false,
+		"monolog/monolog":          false,
+		"com.google.guava:guava":   false,
+		"example.com":              false,
+		"lodash.merge":             false,
+	} {
+		if got := isGoModulePath(s); got != want {
+			t.Errorf("isGoModulePath(%q) = %v, want %v", s, got, want)
+		}
+	}
+}
+
+func TestGoModulePathSkipsRegistries(t *testing.T) {
+	withConfig(t, config.Config{})
+	old := lookupReport
+	lookupReport = func(string, search.Options) (search.Report, error) {
+		t.Error("registries were queried for a Go module path")
+		return search.Report{}, nil
+	}
+	t.Cleanup(func() { lookupReport = old })
+	oldEnsure := ensurePM
+	ensurePM = func(id pm.ID) error {
+		if id != pm.GoMod {
+			t.Errorf("tool = %s, want gomod", id)
+		}
+		return errors.New("stop before running go")
+	}
+	t.Cleanup(func() { ensurePM = oldEnsure })
+
+	out := captureStdout(t, func() { installOne("github.com/gin-gonic/gin@v1.10.0", false) })
+	if !strings.Contains(out, "Will install github.com/gin-gonic/gin@v1.10.0 via go modules (Go).") {
+		t.Fatalf("output:\n%s", out)
+	}
+}

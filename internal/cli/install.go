@@ -48,6 +48,12 @@ func installOne(spec string, global bool) int {
 			showCommandUsage("install")
 			return 1
 		}
+	}
+	if isGoModulePath(pkg) {
+		fmt.Printf("%s is a Go module path; using go modules.\n\n", pkg)
+		return installCandidate(goModuleCandidate(pkg), pkg, requestedVersion, global)
+	}
+	if requestedVersion != "" {
 		fmt.Printf("Searching for %q (version %s) across ecosystems...\n\n", pkg, requestedVersion)
 	} else {
 		fmt.Printf("Searching for %q across ecosystems...\n\n", pkg)

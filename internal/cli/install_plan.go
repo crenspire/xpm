@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/crenspire/xpm/internal/pm"
 	"github.com/crenspire/xpm/internal/search"
@@ -79,4 +80,21 @@ func installSpec(c candidate, requestedVersion string) (name string, extra map[s
 		delete(extra, "version")
 	}
 	return c.Result.Name, extra
+}
+
+// isGoModulePath reports whether s looks like a Go module path
+// (github.com/gin-gonic/gin, golang.org/x/term, gopkg.in/yaml.v3): a first
+// element containing a dot (a domain) followed by at least one more element.
+// npm scopes (@a/b), Composer names (vendor/pkg) and Maven coordinates
+// (g:a) never match.
+func isGoModulePath(s string) bool {
+	first, rest, ok := strings.Cut(s, "/")
+	return ok && rest != "" && !strings.HasPrefix(s, "@") &&
+		strings.Contains(first, ".") && !strings.Contains(s, ":")
+}
+
+// goModuleCandidate installs a module path with go modules; no registry is
+// consulted (`go get` resolves and verifies it via the module proxy).
+func goModuleCandidate(path string) candidate {
+	return candidate{Result: search.Result{Manager: pm.GoMod, Name: path, Extra: map[string]string{"module": path}}}
 }

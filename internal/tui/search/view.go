@@ -316,22 +316,9 @@ func renderInstallSelector(m model) string {
 	title := titleStyle.Render("Install using:")
 	sections = append(sections, title)
 
-	// Get available package managers for this ecosystem
-	ecosystem := pm.EcosystemForManager(m.selectedResult.Manager)
-	var availablePMs []pm.ID
-
-	if ecosystem == pm.EcosystemNode {
-		availablePMs = []pm.ID{pm.Npm, pm.Yarn, pm.Pnpm, pm.Bun}
-	} else if ecosystem == pm.EcosystemPython {
-		availablePMs = []pm.ID{pm.Pip, pm.Poetry, pm.Pipenv}
-	} else {
-		// Single PM ecosystem
-		availablePMs = []pm.ID{m.selectedResult.Manager}
-	}
-
 	// Render PM list
 	var pmLines []string
-	for i, pmID := range availablePMs {
+	for i, pmID := range m.installPMs {
 		isSelected := i == m.installCursor
 		meta, _ := pm.MetaFor(pmID)
 		pmName := meta.Name

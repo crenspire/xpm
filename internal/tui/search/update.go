@@ -149,20 +149,7 @@ func handleInstallSelectMsg(m model, msg installSelectMsg) (tea.Model, tea.Cmd) 
 	m.installMode = true
 	m.selectedResult = &msg.result
 
-	// Get available package managers for this ecosystem
-	ecosystem := pm.EcosystemForManager(msg.result.Manager)
-	var availablePMs []pm.ID
-
-	if ecosystem == pm.EcosystemNode {
-		availablePMs = []pm.ID{pm.Npm, pm.Yarn, pm.Pnpm, pm.Bun}
-	} else if ecosystem == pm.EcosystemPython {
-		availablePMs = []pm.ID{pm.Pip, pm.Poetry, pm.Pipenv}
-	} else {
-		// Single PM ecosystem
-		availablePMs = []pm.ID{msg.result.Manager}
-	}
-
-	m.installPMs = availablePMs
+	m.installPMs = installManagersFor(msg.result.Manager)
 	m.installCursor = 0
 
 	return m, nil
@@ -385,4 +372,14 @@ func handleRegistryKeyMsg(m model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+}
+
+// installManagersFor lists the tools that can install a hit from registry
+// id: every manager of its ecosystem (npm hit: npm, yarn, pnpm, bun; Maven
+// hit: maven, gradle), or just id for single-tool ecosystems.
+func installManagersFor(id pm.ID) []pm.ID {
+	if ids := pm.ManagersInEcosystem(pm.EcosystemForManager(id)); len(ids) > 0 {
+		return ids
+	}
+	return []pm.ID{id}
 }
