@@ -40,8 +40,10 @@ type SecurityResult struct {
 }
 
 // severities accumulates vulnerability counts from an audit report.
+// skipped counts dependencies the tool reported but could not audit.
 type severities struct {
 	total, high, medium, low int
+	skipped                  int
 }
 
 func (s *severities) add(severity string) {
@@ -187,6 +189,9 @@ func runAudit(dir string, spec auditSpec) SecurityResult {
 		r.Status = AuditVulnerable
 		r.Summary = formatSeverities(sev)
 	}
+	if sev.skipped > 0 {
+		r.Summary += " (" + strconv.Itoa(sev.skipped) + " not audited)"
+	}
 	if spec.note != "" {
 		r.Summary += " (" + spec.note + ")"
 	}
@@ -309,16 +314,21 @@ func parseBunAudit(out []byte) (severities, error) {
 }
 
 // pipAuditDependency is one entry of pip-audit's JSON report.
+// SkipReason is set, without vulns, for a dependency pip-audit could not
+// audit (not on PyPI, local or editable).
 type pipAuditDependency struct {
-	Name  string `json:"name"`
-	Vulns []struct {
+	Name       string `json:"name"`
+	SkipReason string `json:"skip_reason"`
+	Vulns      []struct {
 		ID string `json:"id"`
 	} `json:"vulns"`
 }
 
 // parsePipAudit reads `pip-audit -f json` in both formats: the current object
 // {"dependencies": [...], "fixes": [...]} and the legacy top-level array.
-// pip-audit reports no severities, so every finding counts as low.
+// pip-audit reports no severities, so every finding counts as low. Skipped
+// dependencies are counted, not audited; a report that audited none is an
+// error (unavailable), never "no known vulnerabilities".
 func parsePipAudit(out []byte) (severities, error) {
 	trimmed := bytes.TrimSpace(out)
 	var deps []pipAuditDependency
@@ -341,9 +351,19 @@ func parsePipAudit(out []byte) (severities, error) {
 	}
 	var s severities
 	for _, d := range deps {
+		if d.SkipReason != "" {
+			s.skipped++
+			continue
+		}
 		for range d.Vulns {
 			s.add("")
 		}
+	}
+	if s.skipped == len(deps) {
+		if s.skipped > 0 {
+			return severities{}, fmt.Errorf("pip-audit audited no dependencies (%d skipped)", s.skipped)
+		}
+		return severities{}, errors.New("pip-audit audited no dependencies")
 	}
 	return s, nil
 }

@@ -133,8 +133,28 @@ func TestRunSecurityAuditClassifiesToolOutput(t *testing.T) {
 		{
 			name: "pip-audit object format", files: map[string]string{"requirements.txt": "requests==2.25.0\n"},
 			installed: "pip-audit", out: "pip-audit-object.json", code: 1,
-			want:     SecurityResult{Ecosystem: "python", Tool: "pip-audit", Status: AuditVulnerable, Vulnerabilities: 1, LowSeverity: 1, Summary: "1 vulnerabilities (1 low)"},
+			want:     SecurityResult{Ecosystem: "python", Tool: "pip-audit", Status: AuditVulnerable, Vulnerabilities: 1, LowSeverity: 1, Summary: "1 vulnerabilities (1 low) (1 not audited)"},
 			wantCall: "pip-audit -r requirements.txt -f json",
+		},
+		{
+			name: "pip-audit that skipped every dependency is unavailable, not OK", files: map[string]string{"requirements.txt": "-e .\n"},
+			installed: "pip-audit", out: "pip-audit-all-skipped.json", code: 0,
+			want: SecurityResult{Ecosystem: "python", Tool: "pip-audit", Status: AuditUnavailable, Summary: "unavailable: pip-audit audited no dependencies (2 skipped)"},
+		},
+		{
+			name: "pip-audit with no dependencies is unavailable", files: map[string]string{"requirements.txt": "\n"},
+			installed: "pip-audit", out: `{"dependencies": [], "fixes": []}`, code: 0,
+			want: SecurityResult{Ecosystem: "python", Tool: "pip-audit", Status: AuditUnavailable, Summary: "unavailable: pip-audit audited no dependencies"},
+		},
+		{
+			name: "pip-audit clean but partly skipped says so", files: map[string]string{"requirements.txt": "certifi\n"},
+			installed: "pip-audit", out: "pip-audit-clean-partly-skipped.json", code: 0,
+			want: SecurityResult{Ecosystem: "python", Tool: "pip-audit", Status: AuditOK, Summary: "no known vulnerabilities (1 not audited)"},
+		},
+		{
+			name: "bun bare object is clean", files: map[string]string{"package.json": "{}", "bun.lock": "{}"},
+			installed: "bun", out: "{}", code: 0,
+			want: SecurityResult{Ecosystem: "node", Tool: "bun audit", Status: AuditOK, Summary: "no known vulnerabilities"},
 		},
 		{
 			name: "pip-audit legacy array", files: map[string]string{"pyproject.toml": "[project]\nname = \"x\"\n"},

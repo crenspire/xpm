@@ -1,0 +1,1 @@
+{"dependencies": [{"name": "myapp", "skip_reason": "Dependency not found on PyPI and could not be audited: myapp (0.1.0)"}, {"name": "mylib", "skip_reason": "Dependency not found on PyPI and could not be audited: mylib (0.2.0)"}], "fixes": []}
