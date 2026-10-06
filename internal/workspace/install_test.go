@@ -8,6 +8,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/crenspire/xpm/internal/pm"
 )
 
 func installFixture(t *testing.T) string {
@@ -119,5 +121,44 @@ func TestInstallNothingToDo(t *testing.T) {
 	err := Install(ws, InstallOptions{Runner: (&recorder{}).run, Stdout: io.Discard, Stderr: io.Discard})
 	if err == nil || err.Error() != "no workspace projects to install" {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestInstallCommandTable(t *testing.T) {
+	withReq := t.TempDir()
+	if err := os.WriteFile(filepath.Join(withReq, "requirements.txt"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	empty := t.TempDir()
+	tests := []struct {
+		id   pm.ID
+		dir  string
+		want string
+		ok   bool
+	}{
+		{pm.Npm, empty, "npm install", true},
+		{pm.Yarn, empty, "yarn install", true},
+		{pm.Pnpm, empty, "pnpm install", true},
+		{pm.Bun, empty, "bun install", true},
+		{uvID, empty, "uv sync", true},
+		{pm.Poetry, empty, "poetry install", true},
+		{pm.Pipenv, empty, "pipenv install", true},
+		{pm.Pip, withReq, "pip install -r requirements.txt", true},
+		{pm.Pip, empty, "", false},
+		{pm.Composer, empty, "composer install", true},
+		{pm.Cargo, empty, "cargo fetch", true},
+		{pm.GoMod, empty, "GOWORK=off go mod download", true},
+		{pm.Maven, empty, "mvn -q dependency:resolve", true},
+		{pm.Gradle, empty, "gradle -q dependencies", true},
+		{pm.ID("bogus"), empty, "", false},
+	}
+	for _, tt := range tests {
+		cmd, ok := installCommand(tt.id, tt.dir)
+		if ok != tt.ok || (ok && cmd.String() != tt.want) {
+			t.Errorf("installCommand(%s) = %q, %v; want %q, %v", tt.id, cmd.String(), ok, tt.want, tt.ok)
+		}
+		if ok && cmd.Dir != tt.dir {
+			t.Errorf("installCommand(%s).Dir = %s, want %s", tt.id, cmd.Dir, tt.dir)
+		}
 	}
 }

@@ -19,6 +19,9 @@ type Command struct {
 	Name string   // executable
 	Args []string // arguments
 	Env  []string // extra KEY=VALUE pairs on top of the current environment
+	// Stdin is the process's standard input; nil means none. execute sets it
+	// to os.Stdin for sequential runs only.
+	Stdin io.Reader
 }
 
 // String renders the command line for headers and error messages.
@@ -36,6 +39,7 @@ func ExecRunner(ctx context.Context, c Command, stdout, stderr io.Writer) error 
 	cmd.Dir = c.Dir
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
+	cmd.Stdin = c.Stdin
 	if len(c.Env) > 0 {
 		cmd.Env = append(os.Environ(), c.Env...)
 	}
@@ -77,6 +81,9 @@ func execute(ctx context.Context, steps []step, o execOptions) error {
 		if s.err != nil {
 			errs[i] = fmt.Errorf("[%s] %w", s.label, s.err)
 			return
+		}
+		if !o.parallel {
+			s.cmd.Stdin = os.Stdin
 		}
 		if err := o.run(ctx, s.cmd, stdout, stderr); err != nil {
 			errs[i] = fmt.Errorf("[%s] %s: %w", s.label, s.cmd, err)

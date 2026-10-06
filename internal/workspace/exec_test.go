@@ -82,3 +82,28 @@ func TestExecuteParallelDoesNotInterleave(t *testing.T) {
 		}
 	}
 }
+
+func TestExecuteStdinOnlyForSequential(t *testing.T) {
+	for _, parallel := range []bool{false, true} {
+		var mu sync.Mutex
+		var got []io.Reader
+		run := func(_ context.Context, c Command, _, _ io.Writer) error {
+			mu.Lock()
+			defer mu.Unlock()
+			got = append(got, c.Stdin)
+			return nil
+		}
+		steps := []step{{label: "a", cmd: Command{Dir: "/w/a", Name: "x"}}, {label: "b", cmd: Command{Dir: "/w/b", Name: "x"}}}
+		if err := execute(context.Background(), steps, execOptions{parallel: parallel, run: run, stdout: io.Discard, stderr: io.Discard}); err != nil {
+			t.Fatal(err)
+		}
+		for _, in := range got {
+			if (in != nil) == parallel {
+				t.Errorf("parallel=%v: stdin = %v, want non-nil only when sequential", parallel, in)
+			}
+		}
+		if len(got) != 2 {
+			t.Errorf("parallel=%v: ran %d steps, want 2", parallel, len(got))
+		}
+	}
+}

@@ -59,7 +59,8 @@ func withWorkspaceRunner(t *testing.T, root, failDir string) *[]wsCall {
 	workspaceRunner = func(_ context.Context, c workspace.Command, _, _ io.Writer) error {
 		dir, err := filepath.EvalSymlinks(c.Dir)
 		if err != nil {
-			t.Fatal(err)
+			t.Errorf("EvalSymlinks(%s): %v", c.Dir, err)
+			return err
 		}
 		rel, _ := filepath.Rel(root, dir)
 		mu.Lock()
@@ -98,7 +99,7 @@ func TestCmdRunWorkspaceReexecsInEachProject(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit = %d", code)
 	}
-	want := []wsCall{{"packages/a", "/opt/xpm run build"}, {"packages/b", "/opt/xpm run build"}}
+	want := []wsCall{{"packages/a", "/opt/xpm run -- build"}, {"packages/b", "/opt/xpm run -- build"}}
 	if !reflect.DeepEqual(*calls, want) {
 		t.Fatalf("calls = %v, want %v", *calls, want)
 	}
@@ -115,7 +116,7 @@ func TestCmdRunWorkspaceFailureExitsNonZero(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("exit = %d, want 1", code)
 	}
-	if len(*calls) != 2 || !strings.Contains(errOut, "[a] /opt/xpm run build: exit status 2") {
+	if len(*calls) != 2 || !strings.Contains(errOut, "[a] /opt/xpm run -- build: exit status 2") {
 		t.Fatalf("calls = %v, stderr = %q", *calls, errOut)
 	}
 }

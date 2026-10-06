@@ -34,14 +34,14 @@ func TestRunReexecsPerProjectAndSkipsMissingTask(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"packages/a: /opt/xpm run build", "packages/c: /opt/xpm run build"}
+	want := []string{"packages/a: /opt/xpm run -- build", "packages/c: /opt/xpm run -- build"}
 	if got := rec.lines(root); !reflect.DeepEqual(got, want) {
 		t.Fatalf("commands = %v, want %v", got, want)
 	}
 	if got := stderr.String(); got != "[b] skipped: no task \"build\"\n" {
 		t.Errorf("stderr = %q", got)
 	}
-	if !strings.HasPrefix(stdout.String(), "[a] $ /opt/xpm run build\na-1\na-2\n") {
+	if !strings.HasPrefix(stdout.String(), "[a] $ /opt/xpm run -- build\na-1\na-2\n") {
 		t.Errorf("stdout = %q, want the [a] header then its streamed output", stdout.String())
 	}
 }
@@ -58,7 +58,7 @@ func TestRunAggregatesFailures(t *testing.T) {
 	root := all[0].Root
 	rec := &recorder{fail: map[string]bool{filepath.Join(root, "packages", "a"): true}}
 	err := Run(all, "test", RunOptions{Parallel: true, Executable: "/opt/xpm", Runner: rec.run, Stdout: io.Discard, Stderr: io.Discard})
-	if err == nil || !strings.Contains(err.Error(), "[a] /opt/xpm run test: exit status 1") {
+	if err == nil || !strings.Contains(err.Error(), "[a] /opt/xpm run -- test: exit status 1") {
 		t.Fatalf("err = %v", err)
 	}
 	if len(rec.cmds) != 2 {

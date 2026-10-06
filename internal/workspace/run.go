@@ -53,7 +53,7 @@ func Run(workspaces []Workspace, task string, opts RunOptions) error {
 				_, _ = fmt.Fprintf(stderr, "[%s] skipped: no task %q\n", p.Name, task)
 				continue
 			}
-			steps = append(steps, step{label: p.Name, cmd: Command{Dir: p.Path, Name: exe, Args: []string{"run", task}}})
+			steps = append(steps, step{label: p.Name, cmd: Command{Dir: p.Path, Name: exe, Args: []string{"run", "--", task}}})
 		}
 	}
 	if len(steps) == 0 {
