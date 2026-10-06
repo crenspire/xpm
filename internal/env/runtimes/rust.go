@@ -2,8 +2,6 @@ package runtimes
 
 import (
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -71,15 +69,14 @@ func (r *RustInstaller) ValidateVersion(version string) error {
 	return nil
 }
 
-// Install downloads and installs a Rust version.
+// Install installs a Rust toolchain via the user's rustup. xpm deliberately
+// does not bootstrap rustup itself: that meant running an unverified download
+// that also rewrote ~/.cargo and shell profiles.
 func (r *RustInstaller) Install(version string, dest string) error {
-	// Use rustup if available
-	if rustupExists() {
-		return r.installViaRustup(version, dest)
+	if !rustupExists() {
+		return fmt.Errorf("rust needs rustup: install it from https://rustup.rs, then re-run `xpm env install rust@%s`", version)
 	}
-
-	// Otherwise, download and run rustup installer
-	return r.installRustup(version, dest)
+	return r.installViaRustup(version, dest)
 }
 
 // installViaRustup uses rustup to install a toolchain.
@@ -108,50 +105,6 @@ func (r *RustInstaller) installViaRustup(version string, dest string) error {
 
 	// Copy to our location
 	return copyDirectory(matches[0], dest)
-}
-
-// installRustup downloads and runs rustup installer.
-func (r *RustInstaller) installRustup(version string, dest string) error {
-	// Download rustup-init
-	var filename string
-	if runtime.GOOS == "windows" {
-		filename = "rustup-init.exe"
-	} else {
-		filename = "rustup-init.sh"
-	}
-
-	url := fmt.Sprintf("https://static.rust-lang.org/rustup/dist/%s-%s/%s", runtime.GOOS, runtime.GOARCH, filename)
-	fmt.Printf("Downloading rustup from %s...\n", url)
-
-	resp, err := http.Get(url)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	tmpFile, err := os.CreateTemp("", "rustup-*")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tmpFile.Name())
-
-	if _, err := io.Copy(tmpFile, resp.Body); err != nil {
-		tmpFile.Close()
-		return err
-	}
-	tmpFile.Close()
-
-	// Make executable and run
-	os.Chmod(tmpFile.Name(), 0755)
-	cmd := exec.Command(tmpFile.Name(), "-y", "--default-toolchain", version)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("rustup installation failed: %w", err)
-	}
-
-	// Now use rustup to install
-	return r.installViaRustup(version, dest)
 }
 
 // PostInstall performs post-installation setup.
