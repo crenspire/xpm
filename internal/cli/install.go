@@ -26,7 +26,11 @@ func cmdInstall(args []string) int {
 		return 1
 	}
 	if len(ia.Packages) == 0 {
-		return autoInstallDetected(ia.Global)
+		if ia.Global {
+			fmt.Fprintln(os.Stderr, "error: -g/--global needs a package name (project dependencies are never global)")
+			return 1
+		}
+		return autoInstallDetected()
 	}
 	for i, p := range ia.Packages {
 		if len(ia.Packages) > 1 {
@@ -109,8 +113,17 @@ func chooseCandidate(cands []candidate) (candidate, bool) {
 		labels[i] = candidateLabel(c)
 	}
 	if !cfg.Interactive {
-		fmt.Println("Non-interactive mode: picking", labels[0])
-		return cands[0], true
+		if c, ok := nonInteractivePick(cands, cfg.Prefer); ok {
+			fmt.Println("Non-interactive mode: picking", candidateLabel(c))
+			return c, true
+		}
+		choices := make([]string, len(cands))
+		for i, c := range cands {
+			choices[i] = candidateChoice(c)
+		}
+		fmt.Fprintf(os.Stderr, "%s exists in several ecosystems: %s. Re-run interactively or set \"prefer\" in config.\n",
+			cands[0].Result.Name, strings.Join(choices, ", "))
+		return candidate{}, false
 	}
 	prompt := promptui.Select{Label: "Select package manager to install from", Items: labels}
 	idx, _, err := prompt.Run()
@@ -141,6 +154,17 @@ func installCandidate(c candidate, query, requestedVersion string, global bool) 
 
 	if name != query {
 		fmt.Printf("%q matched %s.\n", query, name)
+	}
+	if needsRenameConfirmation(query, c) {
+		if !cfg.Interactive {
+			fmt.Fprintf(os.Stderr, "%q is not an exact match for %q; re-run with the exact name\n", name, query)
+			return 1
+		}
+		yes, err := askYesNo(fmt.Sprintf("Install %s (closest match for %q)?", name, query))
+		if err != nil || !yes {
+			fmt.Println("Cancelled.")
+			return 1
+		}
 	}
 	target := name
 	if requestedVersion != "" {

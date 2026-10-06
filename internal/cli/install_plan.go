@@ -98,3 +98,68 @@ func isGoModulePath(s string) bool {
 func goModuleCandidate(path string) candidate {
 	return candidate{Result: search.Result{Manager: pm.GoMod, Name: path, Extra: map[string]string{"module": path}}}
 }
+
+// needsRenameConfirmation reports whether installing c would run a tool on a
+// name the user did not type (a fuzzy registry hit such as `expresss` ->
+// `express`). Maven and Gradle only print a snippet, so they never need it.
+func needsRenameConfirmation(query string, c candidate) bool {
+	if c.Result.Manager == pm.Maven || c.Result.Manager == pm.Gradle {
+		return false
+	}
+	return !strings.EqualFold(query, c.Result.Name)
+}
+
+// nonInteractivePick chooses a candidate without asking. It picks only when
+// all candidates share one ecosystem (the list is already ordered by prefer),
+// or when the prefer list puts exactly one candidate strictly first.
+func nonInteractivePick(cands []candidate, prefer []string) (candidate, bool) {
+	if len(cands) == 0 {
+		return candidate{}, false
+	}
+	same := true
+	eco := pm.EcosystemForManager(cands[0].Result.Manager)
+	for _, c := range cands[1:] {
+		if pm.EcosystemForManager(c.Result.Manager) != eco {
+			same = false
+			break
+		}
+	}
+	if same {
+		return cands[0], true
+	}
+	order := preferOrderMap(prefer)
+	best, ties := -1, 0
+	for i, c := range cands {
+		switch o := order[string(c.Result.Manager)]; {
+		case best == -1 || o < order[string(cands[best].Result.Manager)]:
+			best, ties = i, 1
+		case o == order[string(cands[best].Result.Manager)]:
+			ties++
+		}
+	}
+	if ties == 1 {
+		return cands[best], true
+	}
+	return candidate{}, false
+}
+
+// candidateChoice is a candidate as listed when xpm refuses to choose.
+func candidateChoice(c candidate) string {
+	label := fmt.Sprintf("%s (%s", c.Result.Manager, ecosystemTitle(pm.EcosystemForManager(c.Result.Manager)))
+	if c.Via != "" {
+		label += ", via " + c.Via
+	}
+	return label + ")"
+}
+
+func ecosystemTitle(e pm.Ecosystem) string {
+	switch e {
+	case pm.EcosystemNode:
+		return "Node"
+	case pm.EcosystemPython:
+		return "Python"
+	case pm.EcosystemJava:
+		return "Java"
+	}
+	return string(e)
+}

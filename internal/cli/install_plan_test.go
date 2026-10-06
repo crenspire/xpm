@@ -174,3 +174,67 @@ func TestGoModulePathSkipsRegistries(t *testing.T) {
 		t.Fatalf("output:\n%s", out)
 	}
 }
+
+func TestNeedsRenameConfirmation(t *testing.T) {
+	cases := []struct {
+		name  string
+		query string
+		c     candidate
+		want  bool
+	}{
+		{"exact", "axios", candidate{Result: npmAxios}, false},
+		{"case-insensitive", "Axios", candidate{Result: npmAxios}, false},
+		{"fuzzy npm", "axioss", candidate{Result: npmAxios}, true},
+		{"composer short name", "monolog", candidate{Result: search.Result{Manager: pm.Composer, Name: "monolog/monolog"}}, true},
+		{"composer full name", "monolog/monolog", candidate{Result: search.Result{Manager: pm.Composer, Name: "monolog/monolog"}}, false},
+		{"maven snippet only", "guava", candidate{Result: guava}, false},
+	}
+	for _, tc := range cases {
+		if got := needsRenameConfirmation(tc.query, tc.c); got != tc.want {
+			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestNonInteractivePick(t *testing.T) {
+	yarnProject := map[pm.Ecosystem][]pm.ProjectFile{pm.EcosystemNode: {{Name: "yarn.lock", Ecosystem: pm.EcosystemNode, Manager: pm.Yarn}}}
+	composer := search.Result{Manager: pm.Composer, Name: "requests/requests"}
+	cases := []struct {
+		name   string
+		cands  []candidate
+		prefer []string
+		want   string
+	}{
+		{"several ecosystems, no prefer", buildCandidates([]search.Result{npmAxios, pipAxios, composer}, yarnProject), nil, ""},
+		{"one ecosystem", buildCandidates([]search.Result{npmAxios}, map[pm.Ecosystem][]pm.ProjectFile{pm.EcosystemNode: {
+			{Name: "package-lock.json", Ecosystem: pm.EcosystemNode, Manager: pm.Npm},
+			{Name: "yarn.lock", Ecosystem: pm.EcosystemNode, Manager: pm.Yarn}}}), nil, "npm"},
+		{"prefer pip", buildCandidates([]search.Result{npmAxios, pipAxios}, nil), []string{"pip"}, "pip"},
+		{"prefer names neither", buildCandidates([]search.Result{npmAxios, pipAxios}, nil), []string{"cargo"}, ""},
+	}
+	for _, tc := range cases {
+		sortCandidates(tc.cands, tc.prefer)
+		got, ok := nonInteractivePick(tc.cands, tc.prefer)
+		if tc.want == "" {
+			if ok {
+				t.Errorf("%s: picked %s, want no pick", tc.name, got.Result.Manager)
+			}
+			continue
+		}
+		if !ok || string(got.Result.Manager) != tc.want {
+			t.Errorf("%s: got %v %v, want %s", tc.name, got.Result.Manager, ok, tc.want)
+		}
+	}
+}
+
+func TestInstallCandidateRefusesFuzzyMatchNonInteractively(t *testing.T) {
+	withConfig(t, config.Config{})
+	called := false
+	old := ensurePM
+	ensurePM = func(pm.ID) error { called = true; return nil }
+	t.Cleanup(func() { ensurePM = old })
+	c := candidate{Result: search.Result{Manager: pm.Composer, Name: "expressive/expressive"}}
+	if code := installCandidate(c, "expresss", "", false); code != 1 || called {
+		t.Fatalf("exit %d, ensurePM called=%v; want refusal before running anything", code, called)
+	}
+}
