@@ -130,7 +130,7 @@ var pinnedDenied = []string{
 // non-empty, contains a digit, and contains none of "${", "*", "^", "~",
 // ">", "<", "=", " ", "||", "workspace:", "file:", "link:", "git+", "git:",
 // and that neither starts with "git" nor has a dot-separated field that is
-// exactly "x" or "X" (1.x, 1.2.x, x.1).
+// exactly "x" or "X" (split on "." and "-"; 1.x, 1.2.x, x.1).
 func Pinned(v string) bool {
 	if v == "" || !strings.ContainsAny(v, "0123456789") {
 		return false
@@ -138,7 +138,7 @@ func Pinned(v string) bool {
 	if strings.HasPrefix(v, "git") {
 		return false
 	}
-	for _, f := range strings.Split(v, ".") {
+	for _, f := range strings.FieldsFunc(v, func(r rune) bool { return r == '.' || r == '-' }) {
 		if f == "x" || f == "X" {
 			return false
 		}

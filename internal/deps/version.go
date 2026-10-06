@@ -108,7 +108,7 @@ func parseVersion(ecosystem, v string) version {
 	release, pre := v, ""
 	if i := strings.IndexByte(v, '-'); i >= 0 {
 		release, pre = v[:i], v[i+1:]
-	} else if m := pepMarker.FindStringSubmatch(v); m != nil && ecosystem != "java" {
+	} else if m := pepMarker.FindStringSubmatch(v); m != nil && ecosystem == "python" {
 		release, pre = m[1], m[2]
 	}
 	fields := strings.Split(release, ".")
@@ -142,6 +142,10 @@ func parseVersion(ecosystem, v string) version {
 	}
 	if dotQual {
 		return version{release: fields, rank: rankOther, ids: ids}
+	}
+	if !dotQual && word != "" && strings.Trim(word, "0123456789") == "" {
+		// A bare numeric suffix (1.0-1) is a post-release.
+		return version{release: fields, rank: rankPost, ids: ids}
 	}
 	return version{release: fields, rank: preRank(pre), ids: ids}
 }
