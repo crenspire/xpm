@@ -35,6 +35,8 @@ help:
 	@echo "  make fmt         Format code"
 	@echo "  make clean       Remove build artifacts"
 	@echo "  make release     Build release binaries for all platforms"
+	@echo "  make snapshot    Build a local goreleaser snapshot in dist/ (no publishing)"
+	@echo "  make release-check  Validate .goreleaser.yaml"
 	@echo "  make deps        Download dependencies"
 	@echo "  make tidy        Run go mod tidy"
 	@echo ""
@@ -139,6 +141,19 @@ release: clean
 	
 	@echo "Release binaries built in $(BUILD_DIR)/"
 	@ls -la $(BUILD_DIR)/
+
+# GoReleaser (the real release runs in .github/workflows/release.yml on a v* tag)
+GORELEASER=$(GO) run github.com/goreleaser/goreleaser/v2@latest
+
+# Local snapshot build into dist/; publishes nothing (sbom skipped: needs syft)
+.PHONY: snapshot
+snapshot:
+	$(GORELEASER) release --snapshot --clean --skip=publish,sbom
+
+# Validate .goreleaser.yaml
+.PHONY: release-check
+release-check:
+	$(GORELEASER) check
 
 # Create checksums for release binaries
 .PHONY: checksums
