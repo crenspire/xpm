@@ -55,8 +55,8 @@ xpm is young. The core commands are solid; the bigger subsystems are being rebui
 | Diagnostics | `doctor` | ✅ Stable |
 | Runtime versions (node, go, …) | `env` | 🧪 Experimental: Node and Go are checksum-verified; Rust needs rustup; others in progress |
 | Dependency graph | `graph` | 🧪 Experimental: parses npm, pnpm, yarn, Cargo, Go, Poetry, pyproject.toml, requirements.txt, Composer, Maven and Gradle files; runs build tools only with `--exec` |
-| Unified lockfile | `lock` | 🧪 Experimental: records lockfile hashes in `xpm-lock.yaml`; `--verify` detects changed, added and removed lockfiles |
-| Monorepos | `workspaces`, `run --workspace` | 🧪 Experimental: `xpm install --workspace` is not wired yet |
+| Unified lockfile | `lock` | 🧪 Experimental: records lockfile hashes in `xpm-lock.yaml`; `--verify` detects changed, added and removed lockfiles and fails on entries it cannot check |
+| Monorepos | `workspaces`, `run --workspace`, `graph --workspace` | 🧪 Experimental: `xpm install --workspace` is not wired yet |
 
 ## Install
 
@@ -142,12 +142,12 @@ xpm run test -- --watch # everything after -- goes to the script untouched
 xpm doctor              # installed tools, runtimes, lockfiles and project health
 ```
 
-A security audit whose tool fails or prints unreadable output is reported as unavailable, never as passing. Lockfile drift is judged by comparing file contents, not file modification times.
+A security audit whose tool fails, prints unreadable output or audits nothing is reported as unavailable, never as passing. Lockfile drift is checked by content for `package-lock.json` (v2/v3), `pnpm-lock.yaml`, `Cargo.lock` and `go.sum`; `composer.lock`, `poetry.lock`, `uv.lock`, `pdm.lock` and `Pipfile.lock` are only checked to parse, and `yarn.lock` and bun lockfiles are not compared. File modification times are never used.
 
 ### Dependency graph, lockfile and monorepos (experimental)
 
 ```bash
-xpm graph                  # dependency tree from the lockfiles in this directory; repeats are marked (*)
+xpm graph                  # dependency tree from the lockfiles and manifests (pom.xml, go.mod, pyproject.toml, requirements.txt) in this directory; repeats are marked (*)
 xpm graph react            # only the subtree under react
 xpm graph --depth 2        # limit tree depth (default: graph.depth, 5; 0 = unlimited)
 xpm graph --json > g.json  # machine-readable; stdout carries only the graph, warnings go to stderr
@@ -155,12 +155,12 @@ xpm graph --svg > g.svg    # needs GraphViz `dot`
 xpm graph --exec           # also run mvn / gradle / go mod graph for full Java and Go trees
 xpm graph --workspace      # combine the graphs of all workspace projects
 xpm lock                   # write xpm-lock.yaml (hashes of the lockfiles in the project root)
-xpm lock --verify          # exit 1 if a lockfile changed, appeared or disappeared since `xpm lock`
+xpm lock --verify          # exit 1 if a lockfile changed, appeared or disappeared since `xpm lock`, or cannot be checked (unreadable, or a recorded path outside the project)
 xpm workspaces             # list monorepo projects (npm/yarn/pnpm, Cargo, go.work, Poetry and uv, Maven, Gradle, Composer)
 xpm run --workspace test   # run `test` in every project that defines it
 ```
 
-`xpm graph` reads files only; it never runs a build tool unless you pass `--exec`. `xpm-lock.yaml` has no timestamps, so running `xpm lock` again on an unchanged project leaves the file untouched. Workspace commands honour `workspace.include` / `workspace.exclude` (glob lists matched against each project's path relative to the workspace root, `**` allowed) and `workspace.parallel`.
+`xpm graph` reads files only; it never runs a build tool unless you pass `--exec`. `xpm-lock.yaml` has no timestamps, so running `xpm lock` again on an unchanged project leaves the file untouched. Workspace commands honour `workspace.include` / `workspace.exclude` (glob lists matched against each project's path relative to the workspace root, `**` allowed). `workspace.parallel` applies to `run --workspace` (and to `install --workspace` once it is wired), not to `workspaces` or `graph --workspace`; a parallel run prints each project's output when that project finishes, not live. `graph --workspace` reads npm/pnpm/yarn and Cargo workspaces from the root lockfile, which covers their members.
 
 The dependency cache (`xpm cache`) was removed: npm, pip, Cargo, Go and the others already keep their own caches.
 
@@ -265,7 +265,7 @@ make build
 
 CI runs the tests on Linux, macOS and Windows with Go 1.22 and the latest stable Go, plus lint and a build check.
 
-Project layout: `cmd/xpm` (entrypoint) and `internal/` (`cli`, `search`, `pm`, `config`, `env`, `scripts`, `graph`, `lock`, `workspace`, `cache`, `doctor`, `tui`).
+Project layout: `cmd/xpm` (entrypoint) and `internal/` (`cli`, `search`, `pm`, `config`, `env`, `scripts`, `graph`, `lock`, `workspace`, `doctor`, `tui`).
 
 Contributions are welcome. Pick an item from the [roadmap](docs/superpowers/plans/2026-10-06-xpm-roadmap.md) and open a PR against `develop`.
 
