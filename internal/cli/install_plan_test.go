@@ -106,7 +106,7 @@ func TestInstallCandidateExplainsRenamedMatch(t *testing.T) {
 	}
 	for _, want := range []string{
 		`"guava" matched com.google.guava:guava.`,
-		"Will install com.google.guava:guava via maven (Java).",
+		"Add com.google.guava:guava:33.3.1-jre to pom.xml:",
 		"<artifactId>guava</artifactId>",
 	} {
 		if !strings.Contains(out, want) {
@@ -266,7 +266,7 @@ func TestEnsureManagerExplainsManualInstallAndPath(t *testing.T) {
 	}
 }
 
-func TestEnsureManagerPrintsOfficialStepsWhenDeclinedOrNonInteractive(t *testing.T) {
+func TestEnsureManagerPrintsInstallHintWhenDeclinedOrNonInteractive(t *testing.T) {
 	for _, interactive := range []bool{true, false} {
 		withConfig(t, config.Config{AutoInstallPM: true, Interactive: interactive})
 		oldAsk := askYesNo
@@ -276,7 +276,7 @@ func TestEnsureManagerPrintsOfficialStepsWhenDeclinedOrNonInteractive(t *testing
 		restoreLook := pm.SetLookPath(func(string) (string, error) { return "", errors.New("not found") })
 
 		var err error
-		out := captureStdout(t, func() { err = ensureManager(pm.Bun) })
+		out := captureStdout(t, func() { err = ensureManager(pm.Pnpm) })
 		askYesNo = oldAsk
 		restoreRun()
 		restoreLook()
@@ -284,11 +284,191 @@ func TestEnsureManagerPrintsOfficialStepsWhenDeclinedOrNonInteractive(t *testing
 		if err == nil {
 			t.Fatalf("interactive=%v: want an error", interactive)
 		}
-		if !strings.Contains(out, "https://bun.sh/docs/installation") {
-			t.Errorf("interactive=%v: output lacks the official steps:\n%s", interactive, out)
+		if !strings.Contains(out, "npm install -g pnpm") {
+			t.Errorf("interactive=%v: output lacks the install hint:\n%s", interactive, out)
 		}
 		if ran != 0 {
 			t.Errorf("interactive=%v: ran %d commands; none may run", interactive, ran)
 		}
+	}
+}
+
+var (
+	saber      = search.Result{Manager: pm.Composer, Name: "swlib/saber", Info: "Coroutine HTTP client"}
+	nestAxios  = search.Result{Manager: pm.Maven, Name: "org.mvnpm.at.nestjs:axios", Extra: map[string]string{"version": "3.0.0", "group": "org.mvnpm.at.nestjs", "artifact": "axios"}}
+	axiosRetry = search.Result{Manager: pm.Maven, Name: "org.webjars.npm:axios-retry", Extra: map[string]string{"version": "4.0.0", "group": "org.webjars.npm", "artifact": "axios-retry"}}
+	nodeLock   = map[pm.Ecosystem][]pm.ProjectFile{pm.EcosystemNode: {{Name: "package-lock.json", Ecosystem: pm.EcosystemNode, Manager: pm.Npm}}}
+	pyReqs     = map[pm.Ecosystem][]pm.ProjectFile{pm.EcosystemPython: {{Name: "requirements.txt", Ecosystem: pm.EcosystemPython, Manager: pm.Pip}}}
+)
+
+func TestIsExact(t *testing.T) {
+	cases := []struct {
+		name  string
+		query string
+		c     candidate
+		want  bool
+	}{
+		{"npm same name", "axios", candidate{Result: npmAxios}, true},
+		{"npm other case", "Axios", candidate{Result: npmAxios}, true},
+		{"npm typo", "axioss", candidate{Result: npmAxios}, false},
+		{"pypi normalised", "flask_sqlalchemy", candidate{Result: search.Result{Manager: pm.Pip, Name: "Flask-SQLAlchemy"}}, true},
+		{"composer unrelated", "axios", candidate{Result: saber}, false},
+		{"composer full name", "swlib/saber", candidate{Result: saber}, true},
+		{"maven artifactId equals query", "guava", candidate{Result: guava}, true},
+		{"maven artifactId other case", "Guava", candidate{Result: guava}, true},
+		{"maven artifactId differs", "axios", candidate{Result: axiosRetry}, false},
+		{"maven full coordinate", "com.google.guava:guava", candidate{Result: guava}, true},
+		{"gradle uses the artifactId too", "guava", candidate{Result: search.Result{Manager: pm.Gradle, Name: "com.google.guava:guava"}}, true},
+		{"gradle unrelated", "requests", candidate{Result: search.Result{Manager: pm.Gradle, Name: "org.webjars.npm:axios-retry"}}, false},
+	}
+	for _, tc := range cases {
+		if got := isExact(tc.query, tc.c); got != tc.want {
+			t.Errorf("%s: isExact(%q, %s) = %v, want %v", tc.name, tc.query, tc.c.Result.Name, got, tc.want)
+		}
+	}
+}
+
+func TestDecideNonInteractive(t *testing.T) {
+	pipKeyring := search.Result{Manager: pm.Pip, Name: "keyring"}
+	npmKeyring := search.Result{Manager: pm.Npm, Name: "keyring"}
+	cases := []struct {
+		name        string
+		query       string
+		results     []search.Result
+		project     map[pm.Ecosystem][]pm.ProjectFile
+		prefer      []string
+		unavailable []pm.ID
+		want        string // manager:via, or "" for a refusal
+		errHas      string
+	}{
+		{"node project, fuzzy composer and maven dropped", "axios", []search.Result{npmAxios, saber, axiosRetry}, nodeLock, nil, nil, "npm:package-lock.json", ""},
+		{"node project beats an artifactId-equal maven hit", "axios", []search.Result{npmAxios, saber, nestAxios}, nodeLock, nil, nil, "npm:package-lock.json", ""},
+		{"node project, maven down outside the ecosystem", "axios", []search.Result{npmAxios, saber}, nodeLock, nil, []pm.ID{pm.Maven}, "npm:package-lock.json", ""},
+		{"empty dir, one exact among fuzzy", "axios", []search.Result{npmAxios, saber, axiosRetry}, nil, nil, nil, "npm:", ""},
+		{"empty dir, one exact but a registry was down", "axios", []search.Result{npmAxios, saber}, nil, nil, []pm.ID{pm.Maven}, "", "did not answer"},
+		{"python project, exact on pip and npm", "keyring", []search.Result{npmKeyring, pipKeyring, saber}, pyReqs, nil, nil, "pip:requirements.txt", ""},
+		{"empty dir, exact on npm and pip", "keyring", []search.Result{npmKeyring, pipKeyring, saber}, nil, nil, nil, "", "npm (Node), pip (Python)"},
+		{"empty dir, exact on npm and pip, prefer pip", "keyring", []search.Result{npmKeyring, pipKeyring, saber}, nil, []string{"pip"}, nil, "pip:", ""},
+		{"refusal lists only exact candidates", "keyring", []search.Result{npmKeyring, pipKeyring, saber}, nil, nil, nil, "", "keyring exists in several ecosystems: npm (Node), pip (Python)."},
+		{"only fuzzy hits: unchanged, several ecosystems refuse", "axioss", []search.Result{saber, axiosRetry}, nil, nil, nil, "", "composer, maven (Java)"},
+		{"only fuzzy hits: a registry down refuses", "axioss", []search.Result{saber}, nil, nil, []pm.ID{pm.Pip}, "", "did not answer"},
+	}
+	for _, tc := range cases {
+		cands := buildCandidates(tc.results, tc.project)
+		sortCandidates(cands, tc.prefer)
+		got, err := decideNonInteractive(tc.query, cands, tc.prefer, tc.unavailable)
+		if tc.want == "" {
+			if err == nil {
+				t.Errorf("%s: picked %s, want a refusal", tc.name, got.Result.Manager)
+			} else if !strings.Contains(err.Error(), tc.errHas) {
+				t.Errorf("%s: error %q lacks %q", tc.name, err, tc.errHas)
+			}
+			continue
+		}
+		if err != nil || string(got.Result.Manager)+":"+got.Via != tc.want {
+			t.Errorf("%s: got %s:%s, %v; want %s", tc.name, got.Result.Manager, got.Via, err, tc.want)
+		}
+	}
+}
+
+func TestNonInteractivePickKeepsSingleToolEcosystemsApart(t *testing.T) {
+	cands := []candidate{
+		{Result: search.Result{Manager: pm.Composer, Name: "a/b"}},
+		{Result: search.Result{Manager: pm.Cargo, Name: "b"}},
+	}
+	if c, ok := nonInteractivePick(cands, nil); ok {
+		t.Fatalf("composer and cargo are different ecosystems; picked %s", c.Result.Manager)
+	}
+	for _, c := range cands {
+		if got := candidateChoice(c); strings.Contains(got, "()") {
+			t.Errorf("candidateChoice = %q, want no empty parentheses", got)
+		}
+	}
+}
+
+func TestMenuChoiceOfAClosestMatchIsNotConfirmedTwice(t *testing.T) {
+	withConfig(t, config.Config{Interactive: true})
+	asked := 0
+	oldAsk := askYesNo
+	askYesNo = func(string) (bool, error) { asked++; return false, nil }
+	t.Cleanup(func() { askYesNo = oldAsk })
+	ran := recordAllCommands(t)
+	c := candidate{Result: saber, Picked: true}
+	var code int
+	captureStdout(t, func() { code = installCandidate(c, "axios", "", false) })
+	if code != 0 || asked != 0 || len(*ran) != 1 || (*ran)[0] != "composer require swlib/saber" {
+		t.Fatalf("code=%d asked=%d ran=%q; a menu pick that showed the full name must not be confirmed again", code, asked, *ran)
+	}
+}
+
+func TestMenuListsExactCandidatesFirst(t *testing.T) {
+	cands := buildCandidates([]search.Result{saber, npmAxios, axiosRetry}, nil)
+	items, labels := menuCandidates("axios", cands)
+	if managers(items) != "npm:,composer:,maven:" {
+		t.Fatalf("menu order = %s, want the exact npm hit first", managers(items))
+	}
+	if strings.Contains(labels[0], "closest match") || !strings.Contains(labels[1], "(closest match)") || !strings.Contains(labels[2], "(closest match)") {
+		t.Fatalf("labels = %q", labels)
+	}
+}
+
+func TestMavenAndGradleSnippetsNeedNoTool(t *testing.T) {
+	for _, id := range []pm.ID{pm.Maven, pm.Gradle} {
+		withConfig(t, config.Config{AutoInstallPM: true})
+		ran := 0
+		restoreRun := pm.SetCommandRunner(func(string, ...string) error { ran++; return nil })
+		restoreLook := pm.SetLookPath(func(string) (string, error) { return "", errors.New("not found") })
+		oldEnsure := ensurePM
+		ensurePM = ensureManager
+
+		c := candidate{Result: guava}
+		c.Result.Manager = id
+		var code int
+		out := captureStdout(t, func() { code = installCandidate(c, "guava", "", false) })
+		ensurePM = oldEnsure
+		restoreRun()
+		restoreLook()
+
+		want := "Add com.google.guava:guava:33.3.1-jre to pom.xml:"
+		if id == pm.Gradle {
+			want = "Add com.google.guava:guava:33.3.1-jre to build.gradle(.kts):"
+		}
+		if code != 0 || ran != 0 || !strings.Contains(out, want) || strings.Contains(out, "not installed") || strings.Contains(out, "Will install") {
+			t.Errorf("%s: code=%d ran=%d, want %q and no tool check:\n%s", id, code, ran, want, out)
+		}
+	}
+}
+
+func TestEnsureManagerDoesNotOfferToInstallManualTools(t *testing.T) {
+	for _, id := range []pm.ID{pm.Bun, pm.Cargo, pm.Composer, pm.GoMod, pm.Maven, pm.Gradle, pm.Npm} {
+		withConfig(t, config.Config{AutoInstallPM: true, Interactive: true})
+		asked := false
+		oldAsk := askYesNo
+		askYesNo = func(string) (bool, error) { asked = true; return true, nil }
+		restoreLook := pm.SetLookPath(func(string) (string, error) { return "", errors.New("not found") })
+		steps, _ := pm.ManualInstallSteps(id)
+
+		var err error
+		captureStdout(t, func() { err = ensureManager(id) })
+		askYesNo = oldAsk
+		restoreLook()
+
+		if asked || err == nil || steps == "" || !strings.Contains(err.Error(), steps) {
+			t.Errorf("%s: asked=%v err=%v; want the official steps (%q) without a prompt", id, asked, err, steps)
+		}
+	}
+}
+
+func TestEnsureManagerPrintsHintWhenThePromptFails(t *testing.T) {
+	withConfig(t, config.Config{AutoInstallPM: true, Interactive: true})
+	oldAsk := askYesNo
+	askYesNo = func(string) (bool, error) { return false, errors.New("^C") }
+	t.Cleanup(func() { askYesNo = oldAsk })
+	t.Cleanup(pm.SetLookPath(func(string) (string, error) { return "", errors.New("not found") }))
+
+	var err error
+	out := captureStdout(t, func() { err = ensureManager(pm.Pnpm) })
+	if err == nil || !strings.Contains(out, "npm install -g pnpm") {
+		t.Fatalf("err=%v, output lacks the hint:\n%s", err, out)
 	}
 }

@@ -3,6 +3,7 @@ package cli
 import (
 	"io"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/crenspire/xpm/internal/config"
@@ -61,4 +62,43 @@ func withInstallOne(t *testing.T, fn func(spec string, global bool) int) {
 	old := installPkg
 	installPkg = fn
 	t.Cleanup(func() { installPkg = old })
+}
+
+// captureStderr runs fn with os.Stderr redirected and returns what it printed.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stderr
+	os.Stderr = w
+	out := make(chan string)
+	go func() {
+		b, _ := io.ReadAll(r)
+		out <- string(b)
+	}()
+	defer func() {
+		os.Stderr = old
+	}()
+	fn()
+	w.Close()
+	return <-out
+}
+
+// writeConfig writes the user's config file under the current HOME (see
+// isolatedHome).
+func writeConfig(t *testing.T, data string) {
+	t.Helper()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(home, ".config", "xpm")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "xpmrc.json"), []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }

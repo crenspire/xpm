@@ -93,52 +93,49 @@ func installOne(spec string, global bool) int {
 	cwd, _ := os.Getwd()
 	cands := buildCandidates(rep.Results, pm.ProjectManagers(cwd))
 	sortCandidates(cands, cfg.Prefer)
-	chosen, ok := chooseCandidate(cands, rep.UnavailableIDs())
+	chosen, ok := chooseCandidate(cands, pkg, rep.UnavailableIDs())
 	if !ok {
 		return 1
 	}
 	return installCandidate(chosen, pkg, requestedVersion, global)
 }
 
-// chooseCandidate picks automatically when there is exactly one candidate
-// and every registry answered; otherwise it prompts or, without a terminal,
-// uses nonInteractivePick. A registry that did not answer makes the list
-// possibly incomplete, so a non-interactive run refuses to pick at all.
-func chooseCandidate(cands []candidate, unavailable []pm.ID) (candidate, bool) {
-	if len(cands) == 1 && len(unavailable) == 0 {
-		if c := cands[0]; c.Via != "" {
+// chooseCandidate picks the candidate for query. When some candidates are
+// exact, closest matches (a registry's unrelated first hit) do not count:
+// a single exact candidate is picked automatically if every registry
+// answered, and the menu lists exact candidates first. Without a terminal
+// decideNonInteractive decides or refuses.
+func chooseCandidate(cands []candidate, query string, unavailable []pm.ID) (candidate, bool) {
+	exact, _ := splitExact(query, cands)
+	primary := cands
+	if len(exact) > 0 {
+		primary = exact
+	}
+	if len(primary) == 1 && len(unavailable) == 0 {
+		if c := primary[0]; c.Via != "" {
 			fmt.Printf("Detected %s - using %s\n\n", c.Via, c.Result.Manager)
 		}
-		return cands[0], true
-	}
-	labels := make([]string, len(cands))
-	for i, c := range cands {
-		labels[i] = candidateLabel(c)
+		return primary[0], true
 	}
 	if !cfg.Interactive {
-		if err := refuseGuessWhenUnavailable(unavailable); err != nil {
+		c, err := decideNonInteractive(query, cands, cfg.Prefer, unavailable)
+		if err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			return candidate{}, false
 		}
-		if c, ok := nonInteractivePick(cands, cfg.Prefer); ok {
-			fmt.Println("Non-interactive mode: picking", candidateLabel(c))
-			return c, true
-		}
-		choices := make([]string, len(cands))
-		for i, c := range cands {
-			choices[i] = candidateChoice(c)
-		}
-		fmt.Fprintf(os.Stderr, "%s exists in several ecosystems: %s. Re-run interactively or set \"prefer\" in config.\n",
-			cands[0].Result.Name, strings.Join(choices, ", "))
-		return candidate{}, false
+		fmt.Println("Non-interactive mode: picking", candidateLabel(c))
+		return c, true
 	}
+	items, labels := menuCandidates(query, cands)
 	prompt := promptui.Select{Label: "Select package manager to install from", Items: labels}
 	idx, _, err := prompt.Run()
 	if err != nil {
 		fmt.Println("Cancelled.")
 		return candidate{}, false
 	}
-	return cands[idx], true
+	chosen := items[idx]
+	chosen.Picked = true
+	return chosen, true
 }
 
 // installCandidate installs (or prints the snippet for) one candidate.
@@ -162,7 +159,7 @@ func installCandidate(c candidate, query, requestedVersion string, global bool) 
 	if name != query {
 		fmt.Printf("%q matched %s.\n", query, name)
 	}
-	if needsRenameConfirmation(query, c) {
+	if needsRenameConfirmation(query, c) && !c.Picked {
 		if !cfg.Interactive {
 			fmt.Fprintf(os.Stderr, "%q is not an exact match for %q; re-run with the exact name\n", name, query)
 			return 1
@@ -172,6 +169,10 @@ func installCandidate(c candidate, query, requestedVersion string, global bool) 
 			fmt.Println("Cancelled.")
 			return 1
 		}
+	}
+	// Maven and Gradle only print a dependency snippet: no tool is needed.
+	if id == pm.Maven || id == pm.Gradle {
+		return printSnippet(id, name, extra)
 	}
 	target := name
 	if requestedVersion != "" {
@@ -214,8 +215,33 @@ func installCandidate(c candidate, query, requestedVersion string, global bool) 
 	return 0
 }
 
-// ensureManager makes sure id's binary is on PATH, offering to install it
-// when config allows. It returns an error the caller should print.
+// printSnippet prints the dependency to add for a Maven or Gradle hit.
+func printSnippet(id pm.ID, name string, extra map[string]string) int {
+	coord := name
+	if v := extra["version"]; v != "" {
+		coord += ":" + v
+	}
+	file := "pom.xml"
+	if id == pm.Gradle {
+		file = "build.gradle(.kts)"
+	}
+	fmt.Printf("Add %s to %s:\n", coord, file)
+	adapter, err := pm.NewAdapter(id)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "adapter error:", err)
+		return 1
+	}
+	if err := adapter.InstallPackage(name, false, nil, extra); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	return 0
+}
+
+// ensureManager makes sure id's binary is on PATH. A missing tool that xpm
+// can install with another tool (pnpm, yarn, pip, poetry, pipenv) is offered
+// when config allows; any other tool gets its official install steps. It
+// returns an error the caller should print.
 func ensureManager(id pm.ID) error {
 	meta, ok := pm.MetaFor(id)
 	if !ok {
@@ -225,6 +251,11 @@ func ensureManager(id pm.ID) error {
 		return nil
 	}
 	fmt.Printf("%s (%s) is not installed on this system.\n", meta.Name, meta.Binary)
+	// Tools with official manual steps are never offered: the answer
+	// could only be "do it yourself".
+	if steps, manual := pm.ManualInstallSteps(id); manual {
+		return manualInstallError(meta, &pm.ManualInstallError{Manager: id, Steps: steps})
+	}
 	if !cfg.AutoInstallPM {
 		if hint := strings.TrimSpace(pm.InstallHint(id)); hint != "" {
 			fmt.Println("Hint:", hint)
@@ -233,6 +264,9 @@ func ensureManager(id pm.ID) error {
 	}
 	yes, err := askYesNo(fmt.Sprintf("Attempt to install %s now?", meta.Name))
 	if err != nil {
+		if hint := strings.TrimSpace(pm.InstallHint(id)); hint != "" {
+			fmt.Println("To install it:", hint)
+		}
 		return fmt.Errorf("cancelled")
 	}
 	if !yes {

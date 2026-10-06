@@ -40,7 +40,7 @@ $ xpm run test               # runs package.json / composer.json / pyproject scr
 
 - **Fast.** All registries are queried in parallel with a hard 2.5 s deadline, and answers are cached on disk. A first lookup takes about a second; a repeat lookup takes under 10 ms.
 - **One syntax.** `name@version` works everywhere: xpm translates it to `npm i name@v`, `pip install name==v`, `composer require name:v`, `cargo add name@v` or `go get name@v`.
-- **Respects your project.** Lockfiles pick the tool inside their ecosystem (`yarn.lock` → yarn, `poetry.lock` → poetry, `build.gradle` → Gradle) for `install`, `list`, `update`, `remove` and `ci`. If a name exists in several ecosystems, xpm still asks which one you mean.
+- **Respects your project.** Lockfiles pick the tool inside their ecosystem (`yarn.lock` → yarn, `poetry.lock` → poetry, `build.gradle` → Gradle) for `install`, `list`, `update`, `remove` and `ci`. If the exact name exists in several ecosystems, xpm still asks which one you mean.
 - **Safe by default.** Package names that look like flags are rejected, runtime downloads are checked against published SHA-256 checksums, and archive extraction cannot write outside its folder.
 
 ## Status
@@ -103,16 +103,17 @@ xpm install axios               # search, then install with the right tool
 xpm install axios@1.7.0         # pin a version (universal @ syntax); without @ the tool picks its latest
 xpm install axios lodash        # several packages, in order (stops at the first failure)
 xpm install -g typescript       # global install where the tool supports it (-g may also come last)
+xpm install -g golang.org/x/tools/gopls   # Go: go install golang.org/x/tools/gopls@latest
 xpm install github.com/gin-gonic/gin   # Go module path: runs go get, no registry search
 xpm install                     # no args: install this project's dependencies with its own tool
 xpm ci                          # frozen/locked install where the tool supports it (see below)
 ```
 
-xpm installs the registry's own name (`xpm install monolog` → `composer require monolog/monolog`) and tells you when it differs from what you typed. A name that is only a close match (not the same package) is confirmed with you first, and refused when there is no terminal; PyPI names that differ only in case or `-`/`_`/`.` count as the same package. Lockfiles narrow the tool within an ecosystem; across ecosystems you choose. `xpm ci` runs the tool's strict form where one exists: `npm ci`, `pnpm`/`yarn`/`bun install --frozen-lockfile`, `yarn install --immutable` (yarn 2+), `pipenv install --deploy`, `cargo build --locked`, and `go mod download`. Other tools have no frozen flag, so `ci` runs their normal install: `composer install` (which installs from `composer.lock` when present), `pip install -r requirements.txt`, `poetry install`, `mvn install`, `gradle build`. `xpm ci` never deletes lockfiles, and deletes `node_modules/` (yarn, pnpm, bun) or Composer's `vendor/` only if you confirm. In a Go project `xpm install` runs `go mod tidy`, while `xpm ci` runs `go mod download`.
+xpm installs the registry's own name (`xpm install monolog` → `composer require monolog/monolog`) and tells you when it differs from what you typed. A name that is only a close match (not the same package) is confirmed with you first, and refused when there is no terminal; PyPI names that differ only in case or `-`/`_`/`.` count as the same package. Packagist and Maven Central answer a name with their first search hit even when it is another package (`axios` → `swlib/saber`); such closest matches never stand in the way of an exact one: they are left out of non-interactive decisions and listed after the exact matches in the menu, marked "(closest match)". A Maven or Gradle hit counts as exact when its artifactId is the name you typed. Picking a closest match from that menu installs it without asking again. Lockfiles narrow the tool within an ecosystem; across ecosystems you choose. `xpm ci` runs the tool's strict form where one exists: `npm ci`, `pnpm`/`yarn`/`bun install --frozen-lockfile`, `yarn install --immutable` (yarn 2+), `pipenv install --deploy`, `cargo build --locked`, and `go mod download`. Other tools have no frozen flag, so `ci` runs their normal install: `composer install` (which installs from `composer.lock` when present), `pip install -r requirements.txt`, `poetry install`, `mvn install`, `gradle build`. `xpm ci` checks every detected project's tool before running any install, never deletes lockfiles, and deletes `node_modules/` (yarn, pnpm, bun) or Composer's `vendor/` only if you confirm. In a Go project `xpm install` runs `go mod tidy`, while `xpm ci` runs `go mod download`.
 
-For a Maven or Gradle project (`pom.xml`, `build.gradle`), `xpm install <name>` prints the dependency snippet to paste instead of editing your build file. In the search TUI, a Maven Central hit can be installed as a Maven or a Gradle snippet.
+For a Maven or Gradle project (`pom.xml`, `build.gradle`), `xpm install <name>` prints the dependency snippet to paste (`Add com.google.guava:guava:33.3.1-jre to build.gradle(.kts):`) instead of editing your build file; no Maven or Gradle binary is needed for that. In the search TUI, a Maven Central hit can be installed as a Maven or a Gradle snippet.
 
-xpm never pipes a remote install script into a shell. If a tool such as bun, rustup or Composer is missing, it prints the official install instructions instead.
+xpm never pipes a remote install script into a shell. If a tool such as bun, rustup, Composer, Go, Maven, Gradle or npm (Node) is missing, it prints the official install instructions instead, without offering to install it.
 
 ### Run project scripts
 
@@ -144,7 +145,7 @@ Global flags go **before** the command: `xpm -v install axios` turns on verbose 
 
 ### Scripts and CI
 
-Without a terminal (stdin and stdout both must be terminals; pipes and CI are not), xpm never prompts and the search TUI does not open. Installs pick the first match only within one ecosystem, or across ecosystems when your `prefer` list ranks exactly one of them first; otherwise they refuse and list the candidates. If a registry was unavailable they refuse to guess and exit 1, so retry or turn that registry off (`xpm config set search.maven false`). `update` and `remove` with a package name refuse when several project types are present.
+Without a terminal (stdin and stdout both must be terminals; pipes and CI are not), xpm never prompts and the search TUI does not open. Installs first drop closest-match hits when some registry has the exact name. If exactly one ecosystem among the exact matches has a project file here (a lockfile, `requirements.txt`, `pom.xml` or `build.gradle`), its tool is used, even when a registry of another ecosystem was unavailable. Otherwise an install picks when the matches share one ecosystem, or when your `prefer` list ranks exactly one of them first, and refuses and lists the candidates when neither holds. If a registry was unavailable and no project file settles it, installs refuse to guess and exit 1, so retry or turn that registry off (`xpm config set search.maven false`). `update` and `remove` (with or without a package name) refuse when several project types are present; `list` uses the first.
 
 | Exit code | Meaning |
 |---|---|
@@ -182,7 +183,7 @@ Behaviour changes to check if you script xpm:
 | `prefer` | `[]` | Package managers to list first when choosing |
 | `search.<id>` | `true` | Turn a registry off (`npm`, `pip`, `composer`, `cargo`, `maven`) |
 | `interactive` | `true` | Prompt for choices (only when a terminal is attached); `false` picks the preferred option |
-| `autoInstallPM` | `true` | Offer to install a missing package manager (always asks first) |
+| `autoInstallPM` | `true` | Offer to install a missing pnpm, yarn, pip, poetry or pipenv (always asks first); other tools get official install steps |
 | `searchUI.enabled` | `true` | Use the TUI for `xpm search` |
 | `searchUI.debounceMs` / `searchUI.pageSize` | `200` / `20` | TUI typing pause before searching / max rows per page |
 | `timeout.default` | `0` | Seconds each registry may take; `0` = built-in 2.5 s. Older configs written by `xpm config set` contain `4`, which is also treated as the built-in deadline |

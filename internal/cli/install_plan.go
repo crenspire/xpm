@@ -16,6 +16,9 @@ type candidate struct {
 	Result search.Result
 	// Via is the project file that selected the tool ("yarn.lock"), or "".
 	Via string
+	// Picked means the user chose it from a menu that showed its full
+	// name, so a closest match needs no second confirmation.
+	Picked bool
 }
 
 // buildCandidates turns registry hits into install choices. Inside an
@@ -121,6 +124,111 @@ func pep503Name(name string) string {
 	return pep503Separators.ReplaceAllString(strings.ToLower(name), "-")
 }
 
+// isExact reports whether c is the package the user typed rather than a
+// registry's closest match (Packagist and Maven searches return their first
+// hit, often unrelated: axios -> swlib/saber). A Maven or Gradle hit is
+// exact when its artifactId (or full coordinate) is the query.
+func isExact(query string, c candidate) bool {
+	if c.Result.Manager == pm.Maven || c.Result.Manager == pm.Gradle {
+		name := c.Result.Name
+		artifact := name[strings.LastIndex(name, ":")+1:]
+		return strings.EqualFold(artifact, query) || strings.EqualFold(name, query)
+	}
+	return !needsRenameConfirmation(query, c)
+}
+
+// splitExact separates exact candidates from closest matches, keeping order.
+func splitExact(query string, cands []candidate) (exact, fuzzy []candidate) {
+	for _, c := range cands {
+		if isExact(query, c) {
+			exact = append(exact, c)
+		} else {
+			fuzzy = append(fuzzy, c)
+		}
+	}
+	return exact, fuzzy
+}
+
+// menuCandidates orders the interactive menu: exact candidates first, then
+// closest matches, labelled as such. It returns the items and their labels.
+func menuCandidates(query string, cands []candidate) ([]candidate, []string) {
+	exact, fuzzy := splitExact(query, cands)
+	items := make([]candidate, 0, len(cands))
+	items = append(append(items, exact...), fuzzy...)
+	labels := make([]string, len(items))
+	for i, c := range items {
+		labels[i] = candidateLabel(c)
+		if i >= len(exact) {
+			labels[i] += " (closest match)"
+		}
+	}
+	return items, labels
+}
+
+// ecosystemKey groups tools that install the same packages: npm, yarn,
+// pnpm and bun share "node"; a tool with no ecosystem (composer, cargo,
+// gomod) is its own group.
+func ecosystemKey(id pm.ID) string {
+	if eco := pm.EcosystemForManager(id); eco != "" {
+		return string(eco)
+	}
+	return "manager:" + string(id)
+}
+
+// projectEcosystemCandidates returns the candidates of the one ecosystem
+// that has a project file (lock or build file), or nil when none or
+// several have one.
+func projectEcosystemCandidates(cands []candidate) []candidate {
+	key := ""
+	for _, c := range cands {
+		if c.Via == "" {
+			continue
+		}
+		k := ecosystemKey(c.Result.Manager)
+		if key != "" && k != key {
+			return nil
+		}
+		key = k
+	}
+	if key == "" {
+		return nil
+	}
+	var out []candidate
+	for _, c := range cands {
+		if c.Via != "" && ecosystemKey(c.Result.Manager) == key {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// decideNonInteractive picks a candidate without asking, or explains why it
+// will not. Closest matches are ignored when there is an exact candidate.
+// Among exact candidates, the one ecosystem with a project file wins even
+// if a registry of another ecosystem did not answer; otherwise a missing
+// registry, or several ecosystems that prefer does not settle, refuse.
+// With only closest matches, all of them are considered.
+func decideNonInteractive(query string, cands []candidate, prefer []string, unavailable []pm.ID) (candidate, error) {
+	pool, _ := splitExact(query, cands)
+	if len(pool) == 0 {
+		pool = cands
+	} else if inProject := projectEcosystemCandidates(pool); inProject != nil {
+		return inProject[0], nil // one ecosystem, already ordered by prefer
+	}
+	if err := refuseGuessWhenUnavailable(unavailable); err != nil {
+		return candidate{}, err
+	}
+	if c, ok := nonInteractivePick(pool, prefer); ok {
+		return c, nil
+	}
+	choices := make([]string, len(pool))
+	for i, c := range pool {
+		choices[i] = candidateChoice(c)
+	}
+	return candidate{}, fmt.Errorf("%s exists in several ecosystems: %s. Re-run interactively or set \"prefer\" in config",
+		pool[0].Result.Name, strings.Join(choices, ", "))
+}
+
 // nonInteractivePick chooses a candidate without asking. It picks only when
 // all candidates share one ecosystem (the list is already ordered by prefer),
 // or when the prefer list puts exactly one candidate strictly first.
@@ -129,9 +237,9 @@ func nonInteractivePick(cands []candidate, prefer []string) (candidate, bool) {
 		return candidate{}, false
 	}
 	same := true
-	eco := pm.EcosystemForManager(cands[0].Result.Manager)
+	key := ecosystemKey(cands[0].Result.Manager)
 	for _, c := range cands[1:] {
-		if pm.EcosystemForManager(c.Result.Manager) != eco {
+		if ecosystemKey(c.Result.Manager) != key {
 			same = false
 			break
 		}
@@ -155,13 +263,20 @@ func nonInteractivePick(cands []candidate, prefer []string) (candidate, bool) {
 	return candidate{}, false
 }
 
-// candidateChoice is a candidate as listed when xpm refuses to choose.
+// candidateChoice is a candidate as listed when xpm refuses to choose:
+// "npm (Node, via package-lock.json)", or just "composer".
 func candidateChoice(c candidate) string {
-	label := fmt.Sprintf("%s (%s", c.Result.Manager, ecosystemTitle(pm.EcosystemForManager(c.Result.Manager)))
-	if c.Via != "" {
-		label += ", via " + c.Via
+	var details []string
+	if title := ecosystemTitle(pm.EcosystemForManager(c.Result.Manager)); title != "" {
+		details = append(details, title)
 	}
-	return label + ")"
+	if c.Via != "" {
+		details = append(details, "via "+c.Via)
+	}
+	if len(details) == 0 {
+		return string(c.Result.Manager)
+	}
+	return fmt.Sprintf("%s (%s)", c.Result.Manager, strings.Join(details, ", "))
 }
 
 func ecosystemTitle(e pm.Ecosystem) string {

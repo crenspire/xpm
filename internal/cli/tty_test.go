@@ -48,17 +48,17 @@ func TestChooseCandidateNonInteractiveWithUnavailableRegistry(t *testing.T) {
 	withConfig(t, config.Config{Interactive: false})
 	// Same-ecosystem candidates would normally be auto-picked.
 	cands := []candidate{{Result: npmAxios}}
-	if _, ok := chooseCandidate(cands, []pm.ID{pm.Maven}); ok {
+	if _, ok := chooseCandidate(cands, "axios", []pm.ID{pm.Maven}); ok {
 		t.Fatal("must refuse to pick while maven was down")
 	}
-	if c, ok := chooseCandidate(cands, nil); !ok || c.Result.Manager != pm.Npm {
+	if c, ok := chooseCandidate(cands, "axios", nil); !ok || c.Result.Manager != pm.Npm {
 		t.Fatalf("all answered: got (%+v, %v)", c, ok)
 	}
 }
 
 func TestInstallWithoutTerminalAndMissingRegistryExitsOne(t *testing.T) {
 	withConfig(t, config.Config{Interactive: false})
-	inProject(t, "package.json", "package-lock.json")
+	inProject(t) // no project file: nothing settles the choice
 	ran := recordTools(t)
 	withLookupReport(t, search.Report{
 		Results:     []search.Result{npmAxios},
@@ -68,5 +68,20 @@ func TestInstallWithoutTerminalAndMissingRegistryExitsOne(t *testing.T) {
 	captureStdout(t, func() { code = cmdInstall([]string{"axios"}) })
 	if code != 1 || len(*ran) != 0 {
 		t.Fatalf("code=%d ran=%v: must not install a guess while maven was down", code, *ran)
+	}
+}
+
+func TestInstallWithoutTerminalUsesTheProjectsEcosystemWhenAnotherRegistryIsDown(t *testing.T) {
+	withConfig(t, config.Config{Interactive: false})
+	inProject(t, "package.json", "package-lock.json")
+	ran := recordAllCommands(t)
+	withLookupReport(t, search.Report{
+		Results:     []search.Result{npmAxios},
+		Unavailable: []search.RegistryFailure{timedOut},
+	}, nil)
+	var code int
+	captureStdout(t, func() { code = cmdInstall([]string{"axios"}) })
+	if code != 0 || len(*ran) != 1 || (*ran)[0] != "npm install axios" {
+		t.Fatalf("code=%d ran=%q: a maven outage cannot change a Node project's npm hit", code, *ran)
 	}
 }

@@ -68,11 +68,11 @@ func TestInstallPMSucceedsWhenBinaryAppears(t *testing.T) {
 }
 
 func TestInstallPMFallsBackToTheNextInstaller(t *testing.T) {
-	ran := fakeTools(t, []string{"python"}, map[string]string{"python -m ensurepip --upgrade": "pip"})
+	ran := fakeTools(t, []string{"python"}, map[string]string{"python -m ensurepip --upgrade --default-pip": "pip"})
 	if err := InstallPM(Pip); err != nil {
 		t.Fatal(err)
 	}
-	if len(*ran) != 1 || (*ran)[0] != "python -m ensurepip --upgrade" {
+	if len(*ran) != 1 || (*ran)[0] != "python -m ensurepip --upgrade --default-pip" {
 		t.Fatalf("ran %v, want only the python fallback (python3 is missing)", *ran)
 	}
 }
@@ -92,5 +92,23 @@ func TestInstallHintsNeverPipeToAShell(t *testing.T) {
 		if h := InstallHint(m.ID); strings.Contains(h, "| sh") || strings.Contains(h, "| bash") {
 			t.Errorf("InstallHint(%s) = %q suggests piping a download into a shell", m.ID, h)
 		}
+	}
+}
+
+func TestGoModulesSupportGlobalInstalls(t *testing.T) {
+	meta, _ := MetaFor(GoMod)
+	if !meta.SupportsGlobal {
+		t.Fatal("go modules: -g runs go install, so SupportsGlobal must be true")
+	}
+	var ran []string
+	t.Cleanup(SetCommandRunner(func(bin string, args ...string) error {
+		ran = append(ran, bin+" "+strings.Join(args, " "))
+		return nil
+	}))
+	if err := (GoModAdapter{}).InstallPackage("golang.org/x/tools/gopls", true, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(ran) != 1 || ran[0] != "go install golang.org/x/tools/gopls@latest" {
+		t.Fatalf("ran %q", ran)
 	}
 }

@@ -72,7 +72,7 @@ var metas = []Meta{
 	{Pipenv, "pipenv (Python)", "pipenv", false},
 	{Composer, "composer (PHP)", "composer", true},
 	{Cargo, "cargo (Rust)", "cargo", false},
-	{GoMod, "go modules (Go)", "go", false},
+	{GoMod, "go modules (Go)", "go", true},
 	{Maven, "maven (Java)", "mvn", false},
 	{Gradle, "gradle (Java)", "gradle", false},
 }
@@ -204,7 +204,7 @@ func (e *ManualInstallError) Error() string {
 var installers = map[ID][][]string{
 	Pnpm:   {{"npm", "install", "-g", "pnpm"}},
 	Yarn:   {{"npm", "install", "-g", "yarn"}},
-	Pip:    {{"python3", "-m", "ensurepip", "--upgrade"}, {"python", "-m", "ensurepip", "--upgrade"}},
+	Pip:    {{"python3", "-m", "ensurepip", "--upgrade", "--default-pip"}, {"python", "-m", "ensurepip", "--upgrade", "--default-pip"}},
 	Poetry: {{"pipx", "install", "poetry"}},
 	Pipenv: {{"pipx", "install", "pipenv"}, {"python3", "-m", "pip", "install", "--user", "pipenv"}},
 }
@@ -255,6 +255,14 @@ func InstallPM(id ID) error {
 		return fmt.Errorf("%s was installed but %q is not on PATH yet; open a new shell or add its bin directory to PATH", meta.Name, meta.Binary)
 	}
 	return nil
+}
+
+// ManualInstallSteps returns the official instructions for a tool xpm will
+// not install itself (bun, cargo, composer, go, maven, gradle, npm), and
+// whether id is such a tool.
+func ManualInstallSteps(id ID) (string, bool) {
+	steps, ok := manualSteps[id]
+	return steps, ok
 }
 
 // InstallHint returns how to install the specified package manager, or "".
