@@ -22,7 +22,7 @@ linters:
     gosec:
       excludes:
         - G107 # HTTP GET with variable URL: registry/runtime URLs are built from validated names
-        - G110 # decompression bomb: runtime archives are SHA-256 verified before extraction (P2)
+        - G110 # decompression bomb: Node/Go archives are SHA-256 verified (P2); remaining runtimes get checksums in P5
         - G204 # subprocess with variable args: running package managers is xpm's job
         - G301 # 0755 dirs: runtime install dirs must be traversable
         - G302 # 0644/0755 files: installed binaries must be executable
