@@ -23,7 +23,8 @@ func cmdSearch(args []string) int {
 	searchOpts := search.OptionsFromConfig(cfg)
 
 	// Run TUI search
-	result, err := tuisearch.Run(query, searchOpts)
+	ui := tuisearch.UIOptions{DebounceMs: cfg.SearchUI.DebounceMs, PageSize: cfg.SearchUI.PageSize}
+	result, err := tuisearch.Run(query, searchOpts, ui)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return 1

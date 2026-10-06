@@ -2,10 +2,26 @@
 package search
 
 import (
-	"github.com/charmbracelet/bubbletea"
+	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/crenspire/xpm/internal/pm"
 	"github.com/crenspire/xpm/internal/search"
 )
+
+// UIOptions are the searchUI.* config values.
+type UIOptions struct {
+	// DebounceMs is how long typing must pause before a search starts
+	// (searchUI.debounceMs); 0 means 200 ms.
+	DebounceMs int
+	// PageSize caps the result rows shown at once (searchUI.pageSize);
+	// 0 means as many as fit the terminal.
+	PageSize int
+}
+
+// defaultDebounce is used when searchUI.debounceMs is unset.
+const defaultDebounce = 200 * time.Millisecond
 
 // model represents the TUI application state.
 type model struct {
@@ -25,64 +41,66 @@ type model struct {
 	registryMode       bool           // Whether we're in registry selection mode
 	registryCursor     int            // Cursor for registry selection
 	selectedRegistries map[pm.ID]bool // Selected registries for search
+	debounce           time.Duration  // pause before a query is searched
+	pageSize           int            // max rows shown; 0 = fit the terminal
+	seq                int            // bumped on every query change; older results are dropped
 }
 
 // NewModel creates a new TUI model with initial state.
-func NewModel(initialQuery string, opts search.Options) model {
-	// Available registries
-	availableRegistries := []pm.ID{
-		pm.Npm,
-		pm.Pip,
-		pm.Composer,
-		pm.Cargo,
-		pm.Maven,
-	}
-
-	// Initialize selected registries - all enabled by default
+func NewModel(initialQuery string, opts search.Options, ui UIOptions) model {
 	selectedRegistries := make(map[pm.ID]bool)
-	for _, reg := range availableRegistries {
-		// Check if enabled in opts, default to true
-		if opts.Enable == nil {
-			selectedRegistries[reg] = true
-		} else if enabled, ok := opts.Enable[reg]; !ok || enabled {
-			selectedRegistries[reg] = true
-		} else {
-			selectedRegistries[reg] = false
-		}
+	for _, reg := range search.Registries {
+		selectedRegistries[reg] = search.Enabled(opts, reg)
 	}
-
+	debounce := time.Duration(ui.DebounceMs) * time.Millisecond
+	if debounce <= 0 {
+		debounce = defaultDebounce
+	}
 	return model{
 		query:              initialQuery,
 		searchOpts:         opts,
 		results:            []search.Result{},
-		cursor:             0,
-		scrollOffset:       0,
-		loading:            false,
 		width:              80,
 		height:             24,
 		registryMode:       true, // Start in registry selection mode
-		registryCursor:     0,
 		selectedRegistries: selectedRegistries,
+		debounce:           debounce,
+		pageSize:           ui.PageSize,
 	}
 }
 
 // Init returns the initial command to run.
 func (m model) Init() tea.Cmd {
 	if m.query != "" {
-		return debounceSearchCmd(m.query, m.searchOpts, 200)
+		return debounceCmd(m.seq, m.query, m.debounce)
 	}
 	return nil
 }
 
-// searchMsg is sent when search results are received.
-type searchMsg struct {
-	results []search.Result
-	err     error
+// visibleRows is how many results fit on one page: the terminal height
+// minus header, query, separator and footer, capped by pageSize.
+func (m model) visibleRows() int {
+	rows := m.height - 5
+	if m.pageSize > 0 && m.pageSize < rows {
+		rows = m.pageSize
+	}
+	if rows < 1 {
+		rows = 1
+	}
+	return rows
 }
 
-// errMsg is sent when an error occurs.
-type errMsg struct {
-	err error
+// debounceMsg fires when typing has paused; seq identifies the keystroke.
+type debounceMsg struct {
+	seq   int
+	query string
+}
+
+// searchMsg carries the results of the search started for seq.
+type searchMsg struct {
+	seq     int
+	results []search.Result
+	err     error
 }
 
 // installSelectMsg is sent when entering install mode.

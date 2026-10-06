@@ -1,9 +1,10 @@
 package search
 
 import (
-	"time"
+	"unicode/utf8"
 
-	"github.com/charmbracelet/bubbletea"
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/crenspire/xpm/internal/pm"
 	"github.com/crenspire/xpm/internal/search"
 )
@@ -17,75 +18,79 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		return m, nil
+	case debounceMsg:
+		if msg.seq != m.seq {
+			return m, nil // typing continued; a newer debounce is pending
+		}
+		return m, searchCmd(msg.seq, msg.query, m.searchOpts)
 	case searchMsg:
 		return handleSearchMsg(m, msg)
-	case errMsg:
-		return handleErrMsg(m, msg)
 	case installSelectMsg:
 		return handleInstallSelectMsg(m, msg)
 	}
 	return m, nil
 }
 
-// handleKeyMsg handles keyboard input.
+// queryChanged starts a new debounce window for the current query.
+func queryChanged(m model) (model, tea.Cmd) {
+	m.seq++
+	m.cursor = 0
+	m.scrollOffset = 0
+	m.loading = true
+	return m, debounceCmd(m.seq, m.query, m.debounce)
+}
+
+// dropLastRune removes the last character (not byte) of s.
+func dropLastRune(s string) string {
+	_, size := utf8.DecodeLastRuneInString(s)
+	return s[:len(s)-size]
+}
+
+// handleKeyMsg handles keyboard input. In query mode only arrows, ctrl
+// keys, Enter and Esc act; every printable key, including q/j/k, is typed.
 func handleKeyMsg(m model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.installMode {
 		return handleInstallKeyMsg(m, msg)
 	}
-
-	// Handle registry selection mode
 	if m.registryMode {
 		return handleRegistryKeyMsg(m, msg)
 	}
 
-	switch msg.String() {
-	case "ctrl+c", "q":
+	switch msg.Type {
+	case tea.KeyCtrlC, tea.KeyEsc:
 		return m, tea.Quit
-	case "esc":
-		return m, tea.Quit
-	case "enter":
-		if len(m.results) > 0 && m.cursor < len(m.results) {
-			selected := m.results[m.cursor]
-			return enterInstallMode(m, selected)
+	case tea.KeyEnter:
+		if m.cursor < len(m.results) {
+			return enterInstallMode(m, m.results[m.cursor])
 		}
 		return m, nil
-	case "up", "k":
+	case tea.KeyUp, tea.KeyCtrlP:
 		if m.cursor > 0 {
 			m.cursor--
 			m = adjustScrollOffset(m)
 		}
 		return m, nil
-	case "down", "j":
+	case tea.KeyDown, tea.KeyCtrlN:
 		if m.cursor < len(m.results)-1 {
 			m.cursor++
 			m = adjustScrollOffset(m)
 		}
 		return m, nil
-	case "pgup", "ctrl+u":
-		m = pageUp(m)
-		return m, nil
-	case "pgdown", "ctrl+d":
-		m = pageDown(m)
-		return m, nil
-	default:
-		// Typing - update query
-		if msg.Type == tea.KeyRunes {
-			m.query += string(msg.Runes)
-			m.cursor = 0
-			m.scrollOffset = 0
-			m.loading = true
-			return m, debounceSearchCmd(m.query, m.searchOpts, 200*time.Millisecond)
-		} else if msg.Type == tea.KeyBackspace || msg.Type == tea.KeyDelete {
-			if len(m.query) > 0 {
-				m.query = m.query[:len(m.query)-1]
-				m.cursor = 0
-				m.scrollOffset = 0
-				m.loading = true
-				return m, debounceSearchCmd(m.query, m.searchOpts, 200*time.Millisecond)
-			}
+	case tea.KeyPgUp, tea.KeyCtrlU:
+		return pageUp(m), nil
+	case tea.KeyPgDown, tea.KeyCtrlD:
+		return pageDown(m), nil
+	case tea.KeyRunes:
+		m.query += string(msg.Runes)
+		return queryChanged(m)
+	case tea.KeyBackspace, tea.KeyDelete:
+		if m.query == "" {
+			return m, nil
 		}
-		return m, nil
+		m.query = dropLastRune(m.query)
+		return queryChanged(m)
 	}
+	return m, nil
 }
 
 // handleInstallKeyMsg handles keyboard input in install mode.
@@ -120,8 +125,11 @@ func handleInstallKeyMsg(m model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// handleSearchMsg handles search results.
+// handleSearchMsg applies search results, dropping those of an older query.
 func handleSearchMsg(m model, msg searchMsg) (tea.Model, tea.Cmd) {
+	if msg.seq != m.seq {
+		return m, nil
+	}
 	m.loading = false
 	if msg.err != nil {
 		m.err = msg.err
@@ -134,13 +142,6 @@ func handleSearchMsg(m model, msg searchMsg) (tea.Model, tea.Cmd) {
 		m.cursor = 0
 	}
 	m.scrollOffset = 0
-	return m, nil
-}
-
-// handleErrMsg handles errors.
-func handleErrMsg(m model, msg errMsg) (tea.Model, tea.Cmd) {
-	m.loading = false
-	m.err = msg.err
 	return m, nil
 }
 
@@ -166,11 +167,7 @@ func adjustScrollOffset(m model) model {
 		return m
 	}
 
-	// Calculate available height
-	availableHeight := m.height - 5 // Header + query + separator + footer
-	if availableHeight < 1 {
-		availableHeight = 1
-	}
+	availableHeight := m.visibleRows()
 
 	// Calculate visible range
 	visibleCount := availableHeight
@@ -202,10 +199,7 @@ func pageUp(m model) model {
 		return m
 	}
 
-	availableHeight := m.height - 5
-	if availableHeight < 1 {
-		availableHeight = 1
-	}
+	availableHeight := m.visibleRows()
 
 	// Scroll up by one page
 	m.scrollOffset -= availableHeight
@@ -235,10 +229,7 @@ func pageDown(m model) model {
 		return m
 	}
 
-	availableHeight := m.height - 5
-	if availableHeight < 1 {
-		availableHeight = 1
-	}
+	availableHeight := m.visibleRows()
 
 	// Calculate max offset
 	visibleCount := availableHeight
@@ -268,110 +259,75 @@ func pageDown(m model) model {
 	return m
 }
 
-// handleRegistryKeyMsg handles keyboard input in registry selection mode.
-func handleRegistryKeyMsg(m model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	availableRegistries := []struct {
-		id   pm.ID
-		name string
-	}{
-		{pm.Npm, "npm (Node.js)"},
-		{pm.Pip, "pip (Python)"},
-		{pm.Composer, "composer (PHP)"},
-		{pm.Cargo, "cargo (Rust)"},
-		{pm.Maven, "maven (Java)"},
-		{pm.ID("all"), "All Registries"},
-	}
+// registryChoices are the rows of the registry selection screen.
+var registryChoices = []struct {
+	id   pm.ID
+	name string
+}{
+	{pm.Npm, "npm (Node.js)"},
+	{pm.Pip, "pip (Python)"},
+	{pm.Composer, "composer (PHP)"},
+	{pm.Cargo, "cargo (Rust)"},
+	{pm.Maven, "maven (Java)"},
+	{pm.ID("all"), "All Registries"},
+}
 
-	switch msg.String() {
-	case "ctrl+c", "q":
+// applyRegistrySelection copies the checked registries into searchOpts.
+func applyRegistrySelection(m model) model {
+	enable := make(map[pm.ID]bool, len(search.Registries))
+	for _, id := range search.Registries {
+		enable[id] = m.selectedRegistries[id]
+	}
+	m.searchOpts.Enable = enable
+	m.registryMode = false
+	return m
+}
+
+// handleRegistryKeyMsg handles keyboard input in registry selection mode.
+// Typing a printable key (q/j/k included) starts the query.
+func handleRegistryKeyMsg(m model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyCtrlC, tea.KeyEsc:
 		return m, tea.Quit
-	case "esc":
-		return m, tea.Quit
-	case "enter":
-		// Confirm selection and start search
-		m.registryMode = false
-		// Update search options based on selected registries
-		if m.searchOpts.Enable == nil {
-			m.searchOpts.Enable = make(map[pm.ID]bool)
-		}
-		for id := range m.searchOpts.Enable {
-			m.searchOpts.Enable[id] = m.selectedRegistries[id]
-		}
-		// Set all registries based on selection
-		for _, reg := range availableRegistries {
-			if reg.id != "all" {
-				m.searchOpts.Enable[reg.id] = m.selectedRegistries[reg.id]
-			}
-		}
-		// If query is already set, start searching
+	case tea.KeyEnter:
+		m = applyRegistrySelection(m)
 		if m.query != "" {
-			m.loading = true
-			return m, debounceSearchCmd(m.query, m.searchOpts, 200*time.Millisecond)
+			return queryChanged(m)
 		}
 		return m, nil
-	case "up", "k":
+	case tea.KeyUp, tea.KeyCtrlP:
 		if m.registryCursor > 0 {
 			m.registryCursor--
 		}
 		return m, nil
-	case "down", "j":
-		if m.registryCursor < len(availableRegistries)-1 {
+	case tea.KeyDown, tea.KeyCtrlN:
+		if m.registryCursor < len(registryChoices)-1 {
 			m.registryCursor++
 		}
 		return m, nil
-	case " ":
-		// Toggle selection
-		if m.registryCursor < len(availableRegistries) {
-			reg := availableRegistries[m.registryCursor]
-			if reg.id == "all" {
-				// Toggle all
-				allSelected := true
-				for _, r := range availableRegistries {
-					if r.id != "all" {
-						if !m.selectedRegistries[r.id] {
-							allSelected = false
-							break
-						}
-					}
-				}
-				// If all selected, deselect all. Otherwise, select all.
-				newState := !allSelected
-				for _, r := range availableRegistries {
-					if r.id != "all" {
-						m.selectedRegistries[r.id] = newState
-					}
-				}
-			} else {
-				// Toggle individual registry
-				m.selectedRegistries[reg.id] = !m.selectedRegistries[reg.id]
-			}
-		}
-		return m, nil
-	default:
-		// Typing - update query (exit registry mode and start searching)
-		if msg.Type == tea.KeyRunes {
-			m.query = string(msg.Runes)
-			m.registryMode = false
-			// Update search options
-			if m.searchOpts.Enable == nil {
-				m.searchOpts.Enable = make(map[pm.ID]bool)
-			}
-			for _, reg := range availableRegistries {
-				if reg.id != "all" {
-					m.searchOpts.Enable[reg.id] = m.selectedRegistries[reg.id]
-				}
-			}
-			m.cursor = 0
-			m.scrollOffset = 0
-			m.loading = true
-			return m, debounceSearchCmd(m.query, m.searchOpts, 200*time.Millisecond)
-		} else if msg.Type == tea.KeyBackspace || msg.Type == tea.KeyDelete {
-			// Exit registry mode if backspace is pressed
-			m.registryMode = false
+	case tea.KeySpace:
+		reg := registryChoices[m.registryCursor]
+		if reg.id != "all" {
+			m.selectedRegistries[reg.id] = !m.selectedRegistries[reg.id]
 			return m, nil
 		}
+		allSelected := true
+		for _, id := range search.Registries {
+			allSelected = allSelected && m.selectedRegistries[id]
+		}
+		for _, id := range search.Registries {
+			m.selectedRegistries[id] = !allSelected
+		}
+		return m, nil
+	case tea.KeyRunes:
+		m = applyRegistrySelection(m)
+		m.query = string(msg.Runes)
+		return queryChanged(m)
+	case tea.KeyBackspace, tea.KeyDelete:
+		m.registryMode = false
 		return m, nil
 	}
+	return m, nil
 }
 
 // installManagersFor lists the tools that can install a hit from registry
