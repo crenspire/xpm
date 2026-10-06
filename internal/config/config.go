@@ -9,6 +9,7 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -253,27 +254,27 @@ func configPath() string {
 }
 
 // Load reads the configuration file and returns the Config.
-// If the file doesn't exist or is invalid, default configuration is returned.
-// Missing fields in the config file are filled with default values.
+// Fields missing from the file keep their default values.
+// If the file doesn't exist, defaults are returned; if it is invalid,
+// a warning is printed to stderr and defaults are returned.
 func Load() Config {
-	path := configPath()
-	if path == "" {
-		return defaultConfig()
-	}
+	return loadFrom(configPath())
+}
 
+func loadFrom(path string) Config {
+	c := defaultConfig()
+	if path == "" {
+		return c
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return defaultConfig()
+		return c
 	}
-	var c Config
+	// Unmarshal on top of the defaults: absent keys keep their default,
+	// and map fields (Search) merge key-by-key.
 	if err := json.Unmarshal(data, &c); err != nil {
+		fmt.Fprintf(os.Stderr, "xpm: ignoring invalid config %s: %v\n", path, err)
 		return defaultConfig()
-	}
-
-	// Merge with defaults for missing fields
-	def := defaultConfig()
-	if c.Search == nil {
-		c.Search = def.Search
 	}
 	return c
 }
