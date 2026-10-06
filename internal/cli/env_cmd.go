@@ -1,210 +1,305 @@
 package cli
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
+	"os/signal"
+	goruntime "runtime"
 	"strings"
+	"syscall"
 
 	"github.com/crenspire/xpm/internal/config"
 	"github.com/crenspire/xpm/internal/env"
-	_ "github.com/crenspire/xpm/internal/env/runtimes" // Import to register runtime installers
+	_ "github.com/crenspire/xpm/internal/env/runtimes" // register runtime installers
 )
+
+// Seams for tests.
+var (
+	envGOOS       = goruntime.GOOS
+	newEnvManager = env.NewManager
+)
+
+const envUsage = `Usage: xpm env <command>
+
+Commands:
+  install <runtime>@<version>          Install a version (does not touch .xpm-env)
+  use <runtime>@<version> [--global]   Pin a version here (.xpm-env) or globally
+  list                                 List installed versions
+  ls-remote <runtime>                  List available versions (newest 20)
+  current                              Show the version in effect for each runtime
+  remove <runtime>@<version>           Remove an installed version
+  reshim                               Recreate the shims (links to xpm)
+  setup-path                           Put the shims directory on your shell's PATH
+
+Runtimes: node, go, python, java, rust, bun, deno, php
+Versions: exact (20.11.0), partial (20), latest, lts (node, java)
+`
 
 // cmdEnv handles the `xpm env` command group.
 func cmdEnv(args []string) int {
-	if len(args) == 0 {
-		fmt.Println("Usage: xpm env <command>")
-		fmt.Println("\nCommands:")
-		fmt.Println("  install <runtime>@<version>  Install a runtime version")
-		fmt.Println("  use <runtime>@<version>       Switch to a runtime version")
-		fmt.Println("  list                          List installed versions")
-		fmt.Println("  ls-remote <runtime>          List available remote versions")
-		fmt.Println("  current                      Show active versions")
-		fmt.Println("  remove <runtime>@<version>    Remove a runtime version")
+	if envGOOS == "windows" {
+		fmt.Fprintln(os.Stderr, "xpm env is not supported on Windows yet: runtime downloads, shims and PATH setup are Unix-only (macOS, Linux).")
 		return 1
+	}
+	if len(args) == 0 {
+		fmt.Fprint(os.Stderr, envUsage)
+		return 1
+	}
+	if args[0] == "help" || args[0] == "-h" || args[0] == "--help" {
+		fmt.Print(envUsage)
+		return 0
 	}
 
 	cfg := config.Load()
 	if !cfg.Env.Enabled {
-		fmt.Println("Runtime version management is disabled. Enable it in your config.")
+		fmt.Fprintln(os.Stderr, "Runtime version management is disabled (env.enabled is false in your xpm config).")
 		return 1
 	}
-
-	manager, err := env.NewManager(cfg)
+	m, err := newEnvManager(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return 1
 	}
 
-	subcmd := args[0]
-	rest := args[1:]
-
-	switch subcmd {
+	sub, rest := args[0], args[1:]
+	switch sub {
 	case "install":
-		return cmdEnvInstall(manager, rest)
+		return cmdEnvInstall(m, rest)
 	case "use":
-		return cmdEnvUse(manager, rest)
+		return cmdEnvUse(m, rest)
 	case "list", "ls":
-		return cmdEnvList(manager)
+		return cmdEnvList(m, rest)
 	case "ls-remote":
-		return cmdEnvListRemote(manager, rest)
+		return cmdEnvListRemote(rest)
 	case "current":
-		return cmdEnvCurrent(manager)
-	case "remove", "rm":
-		return cmdEnvRemove(manager, rest)
+		return cmdEnvCurrent(m, rest)
+	case "remove", "rm", "uninstall":
+		return cmdEnvRemove(m, rest)
+	case "reshim":
+		return cmdEnvReshim(m, rest)
 	case "setup-path":
-		return cmdEnvSetupPath(manager)
-	default:
-		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", subcmd)
-		return 1
+		return cmdEnvSetupPath(m, rest)
+	}
+	fmt.Fprintf(os.Stderr, "Unknown env command: %s\n\n%s", sub, envUsage)
+	return 1
+}
+
+// envUsageError prints a one-line usage for a subcommand.
+func envUsageError(usage string) int {
+	fmt.Fprintf(os.Stderr, "Usage: xpm env %s\n", usage)
+	return 1
+}
+
+// interruptible returns a context cancelled by Ctrl-C or SIGTERM.
+func interruptible() (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+}
+
+// reshim recreates the shim set; a failure is a warning, not a failed command.
+func reshim(m *env.Manager) {
+	if err := env.CreateShims(m); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not update shims: %v\n", err)
 	}
 }
 
-// cmdEnvInstall handles `xpm env install <runtime>@<version>`.
-func cmdEnvInstall(manager *env.Manager, args []string) int {
-	if len(args) == 0 {
-		fmt.Fprintf(os.Stderr, "Usage: xpm env install <runtime>@<version>\n")
-		fmt.Fprintf(os.Stderr, "\nAvailable runtimes: node, python, php, go, java, rust, bun, deno\n")
-		fmt.Fprintf(os.Stderr, "\nSpecial version aliases:\n")
-		fmt.Fprintf(os.Stderr, "  - latest: Install the latest version (node, python, php, go)\n")
-		fmt.Fprintf(os.Stderr, "  - lts: Install the latest LTS version (node only)\n")
-		fmt.Fprintf(os.Stderr, "\nExamples:\n")
-		fmt.Fprintf(os.Stderr, "  xpm env install node@latest\n")
-		fmt.Fprintf(os.Stderr, "  xpm env install node@lts\n")
-		fmt.Fprintf(os.Stderr, "  xpm env install python@latest\n")
-		fmt.Fprintf(os.Stderr, "  xpm env install php@latest\n")
-		fmt.Fprintf(os.Stderr, "  xpm env install go@latest\n")
-		fmt.Fprintf(os.Stderr, "\nNote: Package managers (npm, pip, composer, etc.) are not runtimes.\n")
-		fmt.Fprintf(os.Stderr, "      Install the runtime instead (e.g., 'node' includes npm, 'python' includes pip).\n")
-		return 1
+// pathHint tells the user to run setup-path while shims are not on PATH.
+func pathHint(m *env.Manager) {
+	if !env.CheckPATH(m) {
+		fmt.Printf("\nShims are not on your PATH yet. Run: xpm env setup-path\n")
 	}
+}
 
-	spec := args[0]
-	runtime, version, err := parseRuntimeVersion(spec)
+func cmdEnvInstall(m *env.Manager, args []string) int {
+	if len(args) != 1 {
+		return envUsageError("install <runtime>@<version>   (e.g. node@20, go@latest, java@lts)")
+	}
+	rt, spec, err := parseRuntimeVersion(args[0])
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return 1
 	}
-
-	// Detect if an alias was used
-	var alias string
-	if version == "latest" || version == "lts" {
-		alias = version
+	ctx, stop := interruptible()
+	defer stop()
+	go func() { <-ctx.Done(); stop() }() // a second Ctrl-C kills the process
+	_, err = env.InstallRuntime(ctx, m, rt, spec)
+	var post *env.PostInstallError
+	if errors.As(err, &post) { // the version is installed; only recording it failed
+		fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+		err = nil
 	}
-
-	if err := env.InstallRuntimeWithAlias(manager, runtime, version, alias); err != nil {
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			fmt.Fprintln(os.Stderr, "Cancelled; nothing was installed.")
+			return 130
+		}
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return 1
 	}
-
+	reshim(m)
+	pathHint(m)
 	return 0
 }
 
-// cmdEnvUse handles `xpm env use <runtime>@<version>`.
-func cmdEnvUse(manager *env.Manager, args []string) int {
-	if len(args) == 0 {
-		fmt.Fprintf(os.Stderr, "Usage: xpm env use <runtime>@<version> [--global]\n")
-		return 1
+// parseUseArgs accepts --global/-g anywhere and exactly one runtime@version.
+func parseUseArgs(args []string) (spec string, global bool, err error) {
+	var specs []string
+	for _, a := range args {
+		switch {
+		case a == "--global" || a == "-g":
+			global = true
+		case strings.HasPrefix(a, "-"):
+			return "", false, fmt.Errorf("unknown flag %s", a)
+		default:
+			specs = append(specs, a)
+		}
 	}
-
-	spec := args[0]
-	global := false
-	if len(args) > 1 && args[1] == "--global" {
-		global = true
+	if len(specs) != 1 {
+		return "", false, errors.New("expected exactly one <runtime>@<version>")
 	}
+	return specs[0], global, nil
+}
 
-	runtime, version, err := parseRuntimeVersion(spec)
+func cmdEnvUse(m *env.Manager, args []string) int {
+	arg, global, err := parseUseArgs(args)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		return envUsageError("use <runtime>@<version> [--global]")
+	}
+	rt, spec, err := parseRuntimeVersion(arg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return 1
 	}
-
-	if err := env.UseVersion(manager, runtime, version, global); err != nil {
+	a, err := env.UseVersion(m, rt, spec, global)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return 1
 	}
-
+	fmt.Printf("Using %s@%s (%s)\n", rt, a.Version, a.Source)
+	if global {
+		if here, err := m.ActiveVersion(rt); err == nil && !here.Global {
+			fmt.Printf("Note: %s pins %s@%s in this directory\n", here.Source, rt, here.Version)
+		}
+	}
+	reshim(m)
+	pathHint(m)
 	return 0
 }
 
-// cmdEnvList handles `xpm env list`.
-func cmdEnvList(manager *env.Manager) int {
-	installed, err := env.ListInstalled(manager)
+func cmdEnvList(m *env.Manager, args []string) int {
+	if len(args) != 0 {
+		return envUsageError("list")
+	}
+	installed, err := env.ListInstalled(m)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return 1
 	}
-
 	fmt.Print(env.FormatInstalled(installed))
 	return 0
 }
 
-// cmdEnvListRemote handles `xpm env ls-remote <runtime>`.
-func cmdEnvListRemote(manager *env.Manager, args []string) int {
-	if len(args) == 0 {
-		fmt.Fprintf(os.Stderr, "Usage: xpm env ls-remote <runtime>\n")
+func cmdEnvListRemote(args []string) int {
+	if len(args) != 1 {
+		return envUsageError("ls-remote <runtime>")
+	}
+	if err := env.ValidateRuntimeName(args[0]); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return 1
 	}
-
-	runtime := args[0]
-	versions, err := env.ListRemote(manager, runtime)
+	ctx, stop := interruptible()
+	defer stop()
+	versions, err := env.ListRemote(ctx, args[0])
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return 1
 	}
-
-	fmt.Print(env.FormatRemote(runtime, versions))
+	fmt.Print(env.FormatRemote(args[0], versions))
 	return 0
 }
 
-// cmdEnvCurrent handles `xpm env current`.
-func cmdEnvCurrent(manager *env.Manager) int {
-	runtimes := env.ListRuntimes()
+// writeCurrent prints "<rt> <version> (<source>)" per configured runtime,
+// sorted by runtime; problems go to errOut as warnings.
+func writeCurrent(m *env.Manager, out, errOut io.Writer) {
 	found := false
-
-	for _, runtime := range runtimes {
-		version, err := manager.GetActiveVersion(runtime)
-		if err == nil {
-			fmt.Printf("%s: %s\n", runtime, version)
-			found = true
+	for _, rt := range env.ListRuntimes() {
+		a, err := m.ActiveVersion(rt)
+		switch {
+		case errors.Is(err, env.ErrNoVersion):
+			continue
+		case errors.Is(err, env.ErrNotInstalled):
+			_, _ = fmt.Fprintf(out, "%s %s (%s)\n", rt, a.Version, a.Source)
+			_, _ = fmt.Fprintf(errOut, "warning: %v; run: xpm env install %s@%s\n", err, rt, a.Version)
+		case err != nil:
+			_, _ = fmt.Fprintf(errOut, "warning: %v\n", err)
+			continue
+		default:
+			_, _ = fmt.Fprintf(out, "%s %s (%s)\n", rt, a.Version, a.Source)
 		}
+		found = true
 	}
-
 	if !found {
-		fmt.Println("No active runtime versions found.")
+		_, _ = fmt.Fprintln(out, "No runtime versions configured. Install one: xpm env install <runtime>@<version>")
 	}
+}
 
+func cmdEnvCurrent(m *env.Manager, args []string) int {
+	if len(args) != 0 {
+		return envUsageError("current")
+	}
+	writeCurrent(m, os.Stdout, os.Stderr)
 	return 0
 }
 
-// cmdEnvRemove handles `xpm env remove <runtime>@<version>`.
-func cmdEnvRemove(manager *env.Manager, args []string) int {
-	if len(args) == 0 {
-		fmt.Fprintf(os.Stderr, "Usage: xpm env remove <runtime>@<version>\n")
-		return 1
+func cmdEnvRemove(m *env.Manager, args []string) int {
+	if len(args) != 1 {
+		return envUsageError("remove <runtime>@<version>")
 	}
-
-	spec := args[0]
-	runtime, version, err := parseRuntimeVersion(spec)
+	rt, version, err := parseRuntimeVersion(args[0])
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return 1
 	}
-
-	if err := env.RemoveVersion(manager, runtime, version); err != nil {
+	ctx, stop := interruptible()
+	defer stop()
+	if err := env.RemoveVersion(ctx, m, rt, version); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return 1
 	}
-
+	fmt.Printf("Removed %s@%s\n", rt, version)
+	reshim(m)
 	return 0
 }
 
-// cmdEnvSetupPath handles `xpm env setup-path`.
-func cmdEnvSetupPath(manager *env.Manager) int {
-	if err := env.UpdatePATH(manager); err != nil {
+func cmdEnvReshim(m *env.Manager, args []string) int {
+	if len(args) != 0 {
+		return envUsageError("reshim")
+	}
+	if err := env.CreateShims(m); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return 1
 	}
+	fmt.Printf("Shims updated in %s\n", m.GetShimsPath())
+	return 0
+}
+
+func cmdEnvSetupPath(m *env.Manager, args []string) int {
+	if len(args) != 0 {
+		return envUsageError("setup-path")
+	}
+	edit, err := env.SetupPATH(m)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		return 1
+	}
+	if !edit.Changed {
+		fmt.Printf("PATH already configured in %s\n", edit.File)
+		return 0
+	}
+	fmt.Printf("Added %s to PATH in %s\nRestart your shell or run: source %s\n", m.GetShimsPath(), edit.File, edit.File)
 	return 0
 }
 

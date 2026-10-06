@@ -53,7 +53,7 @@ xpm is young. The core commands are solid; the bigger subsystems are being rebui
 | Install / update / remove | `install`, `ci`, `update`, `remove`, `list` | ✅ Stable (Go modules and Gradle included) |
 | Project scripts | `run` | ✅ Stable |
 | Diagnostics | `doctor` | ✅ Stable |
-| Runtime versions (node, go, …) | `env` | 🧪 Experimental: Node and Go are checksum-verified; Rust needs rustup; others in progress |
+| Runtime versions (node, go, …) | `env` | 🧪 Experimental (macOS and Linux): node, go, python, java, bun and deno are checksum-verified; rust uses a private rustup; php uses Homebrew on macOS only |
 | Dependency graph | `graph` | 🧪 Experimental: parses npm, pnpm, yarn, Cargo, Go, Poetry, pyproject.toml, requirements.txt, Composer, Maven and Gradle files; runs build tools only with `--exec` |
 | Unified lockfile | `lock` | 🧪 Experimental: records lockfile hashes in `xpm-lock.yaml`; `--verify` detects changed, added and removed lockfiles and fails on entries it cannot check |
 | Monorepos | `workspaces`, `run --workspace`, `graph --workspace` | 🧪 Experimental: `xpm install --workspace` is not wired yet |
@@ -87,9 +87,9 @@ sudo mv xpm /usr/local/bin/
 
 | OS | Core commands (`which`, `search`, `info`, `install`, `ci`, `list`, `update`, `remove`, `config`) | `run` | `search` TUI | `env` (experimental) |
 |---|---|---|---|---|
-| Linux | Yes, tested in CI | Yes (`sh -c` for pyproject/Cargo scripts) | Yes | Experimental: Node and Go verified; shims need `go` on PATH |
-| macOS | Yes, tested in CI | Yes (`sh -c` for pyproject/Cargo scripts) | Yes | Experimental: Node and Go verified; shims need `go` on PATH |
-| Windows | Yes, tested in CI | Needs `sh` on PATH (Git for Windows or WSL) for pyproject/Cargo scripts; package.json and composer.json scripts do not | Yes, in Windows Terminal or another modern console | Untested (see roadmap P5) |
+| Linux | Yes, tested in CI | Yes (`sh -c` for pyproject/Cargo scripts) | Yes | Experimental: node, go, python, java, bun, deno checksum-verified; rust via a private rustup; php via Homebrew on macOS only; shims are links to xpm (no Go toolchain needed) |
+| macOS | Yes, tested in CI | Yes (`sh -c` for pyproject/Cargo scripts) | Yes | Experimental: node, go, python, java, bun, deno checksum-verified; rust via a private rustup; php via Homebrew on macOS only; shims are links to xpm (no Go toolchain needed) |
+| Windows | Yes, tested in CI | Needs `sh` on PATH (Git for Windows or WSL) for pyproject/Cargo scripts; package.json and composer.json scripts do not | Yes, in Windows Terminal or another modern console | Not supported: `xpm env` exits with a message |
 
 Windows support for the core commands is covered by CI but is used less in practice than Linux and macOS. The TUI needs a terminal; without one `xpm search` prints plain output.
 
@@ -180,13 +180,40 @@ The dependency cache (`xpm cache`) was removed: npm, pip, Cargo, Go and the othe
 
 ### Runtime versions (experimental)
 
+macOS and Linux only; on Windows `xpm env` exits with an error.
+
 ```bash
-xpm env install node@20.11.0   # verified against nodejs.org SHASUMS256
-xpm env install go@latest      # newest *stable* Go, verified against go.dev
-xpm env use node@20.11.0       # pin for this directory (.xpm-env)
-xpm env setup-path             # add xpm's shims to your shell PATH
-xpm env list
+xpm env install node@20        # newest 20.x; also node@20.11.0, node@lts, node@latest
+xpm env use node@20            # pin in ./.xpm-env (exact installed version written)
+xpm env use --global go@1.26   # default everywhere else (~/.xpm/env/active.json)
+xpm env setup-path             # put ~/.xpm/env/shims first on PATH (one shell file)
+xpm env current                # version in effect here, and which file set it
+xpm env list                   # installed versions, newest first
+xpm env ls-remote python       # newest 20 available versions
+xpm env remove node@20.11.0
+xpm env reshim                 # recreate the shims (e.g. after moving the xpm binary)
 ```
+
+| Runtime | Source | Verified with |
+|---|---|---|
+| node | nodejs.org | `SHASUMS256.txt` |
+| go | go.dev | SHA-256 from the go.dev release feed |
+| python | [python-build-standalone](https://github.com/astral-sh/python-build-standalone) (newest release only) | `SHA256SUMS` |
+| java | Eclipse Temurin (Adoptium API); `java@21`, `java@lts` | Adoptium package checksum |
+| bun | GitHub releases | `SHASUMS256.txt` |
+| deno | GitHub releases (2.0.6+) | per-file `.sha256sum` |
+| rust | a private rustup in `~/.xpm/env` (never touches `~/.cargo` or your shell profile); `rust@stable`, `rust@1.80` | rustup-init `.sha256`, then rustup |
+| php | Homebrew `shivammathur/php` on macOS, per minor version (`php@8.3`) | Homebrew |
+
+How it works:
+- **Install never pins.** `install` downloads, verifies and unpacks into a staging directory, then renames it into place, so an interrupted install (Ctrl-C exits 130) leaves no partial version directory behind. Two runtimes keep files outside the version directory: rust toolchains live in xpm's private rustup (`remove rust@<v>` runs `rustup toolchain uninstall`), and PHP is a Homebrew `php@X.Y` formula (`remove php@X.Y` leaves the formula installed). The first version of a runtime becomes the global default; `install` never writes `.xpm-env`.
+- **`use` vs `use --global`.** `use` writes `.xpm-env` in the current directory (comments and order are kept); `--global` writes `active.json`. Lookup order: the nearest `.xpm-env` up from the current directory that names the runtime, then `active.json`. Values may be exact (`20.11.0`), partial (`20`), `latest` or `lts`, matched against installed versions; `lts` matches only versions installed via `@lts`.
+- **`.xpm-env` format.** One `runtime=version` per line. `#` starts a comment only at the start of a line; an inline comment (`node=20 # app`) makes the value an invalid version.
+- **`remove`** refuses a version pinned by the `.xpm-env` in effect in the current directory. Removing the global default clears it from `active.json` (`Cleared the global <runtime> default`).
+- **Shims are links to xpm itself** (`~/.xpm/env/shims/node -> xpm`): no Go toolchain needed. A shim runs the version in effect, with that version's `bin` first on `PATH`. If nothing is configured it runs the system binary from `PATH`; if `.xpm-env` names a version that is not installed it fails (exit 127) and tells you what to install. After upgrading or moving the xpm binary, run `xpm env reshim`.
+- **Globally installed tools are not shimmed.** Only the runtime's own binaries get shims. `npm -g` packages and pip console scripts land in the version's `bin`, which is on `PATH` only inside a shimmed process (e.g. `npm run`); `go install` and `cargo install` write to your own `GOBIN`/`~/go/bin` and `CARGO_HOME`/`~/.cargo/bin`, which xpm does not add to `PATH`.
+- **`setup-path`** appends one line to one file for your `$SHELL`: `~/.zshrc` (or `$ZDOTDIR/.zshrc`), `~/.bashrc` (Linux) / `~/.bash_profile` (macOS), `~/.config/fish/conf.d/xpm.fish`, or `~/.profile`. Running it again changes nothing.
+- GitHub API calls (bun, deno version lists) use `GITHUB_TOKEN` when set; partial versions match the 100 most recent releases.
 
 ### Global flags
 

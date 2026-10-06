@@ -3,6 +3,9 @@
 // XPM provides a unified interface for managing packages across multiple ecosystems
 // including npm, pip, composer, cargo, maven, gradle, and go modules.
 //
+// When started through a runtime shim (a symlink named node, python, go, ...
+// pointing at xpm), it runs that runtime's active version instead.
+//
 // Usage:
 //
 //	xpm install <package>     Install a package (searches all ecosystems)
@@ -17,9 +20,13 @@ import (
 	"os"
 
 	"github.com/crenspire/xpm/internal/cli"
+	"github.com/crenspire/xpm/internal/env"
+	_ "github.com/crenspire/xpm/internal/env/runtimes" // register runtime installers for shim dispatch
 )
 
 func main() {
-	code := cli.Run()
-	os.Exit(code)
+	if name, ok := env.ShimName(os.Args[0]); ok {
+		os.Exit(env.RunShim(name, os.Args[1:]))
+	}
+	os.Exit(cli.Run())
 }
