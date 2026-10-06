@@ -30,8 +30,8 @@ xpm {{.Command}} \- {{.Description}}
 .SH EXIT STATUS
 0 on success; 1 on errors, invalid arguments, cancelled install prompts, no matches, or a refused non-interactive choice.
 2 on a usage error (bad flag or argument) of \fBgraph\fR, \fBcompletion\fR, \fBoutdated\fR, \fBaudit\fR or \fBwhy\fR.
-\fBoutdated\fR: 0 all current, 1 some outdated, 2 usage error or incomplete check.
-\fBaudit\fR: 0 no known vulnerabilities, 1 vulnerabilities found, 2 usage error or the check could not be completed.
+\fBoutdated\fR: 0 all current, 1 some outdated, 2 usage error or incomplete check (a lookup failed and nothing is outdated, or no dependency could be checked).
+\fBaudit\fR: 0 no known vulnerabilities, 1 vulnerabilities found, 2 usage error or the check could not be completed (OSV.dev unreachable, or no dependency could be checked).
 \fBwhy\fR: 0 package found and paths printed, 1 package not in the dependency graph, 2 usage error or unreadable project.
 \fBinstall\fR (without packages), \fBci\fR, \fBlist\fR, \fBupdate\fR, \fBremove\fR and \fBrun\fR pass through the underlying tool's exit code; \fBrun -w\fR exits 1 if any project fails.
 .SH ENVIRONMENT
@@ -205,9 +205,10 @@ List all installed packages`
 [\fB--json\fR] [\fB--all\fR] [\fB--workspace\fR|\fB-w\fR]`
 		data.FullDescription = `Show which of the project's dependencies have a newer version in their registry, across ecosystems.
 Versions come from the lockfiles; only dependencies with a locked version are checked, the rest are counted in a note on stderr (add a lockfile).
-Registries used: npm, PyPI, Packagist, the crates.io sparse index, Maven Central and proxy.golang.org. Go modules matched by GOPRIVATE or GONOPROXY are not looked up, nor are registries turned off in the config. Lookups use the registry lookup cache and the registry timeouts from the config.
+Registries used: npm, PyPI, Packagist, the crates.io sparse index, Maven Central and the Go module proxy (proxy.golang.org, or the first entry of GOPROXY). Go modules matched by GOPRIVATE or GONOPROXY are not looked up, nor are Go modules when GOPROXY's first entry is off, direct or not an http(s) URL, nor registries turned off in the config. GOPRIVATE, GONOPROXY and GOPROXY are read from the environment or, when unset there, from the go env file written by \fBgo env -w\fR (\fB$GOENV\fR); the go command is not run. Lookups use the registry lookup cache and the registry timeouts from the config.
 The table lists every dependency that is not current, with a summary line. With \fB--json\fR, stdout is one JSON document with \fBdependencies\fR and \fBunchecked\fR arrays.
-A package a registry does not know (for example a private package) is shown as \fBnot found\fR and does not change the exit status; a lookup that failed is shown as \fBunavailable\fR.
+A package a registry does not know (for example a private package) is shown as \fBnot found\fR, counted separately in the summary, and does not change the exit status; a lookup that failed is shown as \fBunavailable\fR.
+If the project has dependencies but none of them could be checked (no locked versions, no lookup, or all skipped), an error on stderr says so and the exit status is 2.
 Takes no arguments; an unknown flag or an argument is a usage error (exit status 2).`
 		data.Options = `.TP
 \fB--json\fR
@@ -230,8 +231,8 @@ Check every locked package and print JSON`
 		data.Synopsis = `.B xpm audit
 [\fB--json\fR] [\fB--timeout\fR \fIduration\fR] [\fB--workspace\fR|\fB-w\fR]`
 		data.FullDescription = `Check the project's locked dependencies against the OSV.dev vulnerability database, across ecosystems (npm, PyPI, Packagist, crates.io, Go and Maven).
-Only dependencies with a locked version are checked; the rest are counted in a note on stderr, and listed with a reason under \fBunchecked\fR in the JSON output.
-Privacy: package names and versions from the lockfiles are sent to api.osv.dev, one batch request per 1000 packages plus one details request per distinct vulnerability found. Nothing else is sent.
+Only dependencies with a locked version are checked; the rest are counted in a note on stderr, and listed with a reason under \fBunchecked\fR in the JSON output. If the project has dependencies but none of them could be checked, an error on stderr says so and the exit status is 2.
+Privacy: package names and versions from the lockfiles are sent to api.osv.dev, one batch request per 1000 packages plus one details request per distinct vulnerability found. Nothing else is sent. Go modules matched by GOPRIVATE or GONOPROXY (from the environment or, when unset there, from the go env file written by \fBgo env -w\fR) are never sent; they are listed under \fBunchecked\fR as private modules.
 \fBxpm doctor\fR is separate: it keeps running the ecosystems' own audit tools (npm audit, pip-audit and so on), which do not go through OSV.
 Each vulnerable package is listed with its vulnerabilities, severity and fixed versions. With \fB--json\fR, stdout is one JSON document with \fBscanned\fR, \fBvulnerable\fR and \fBunchecked\fR.
 Takes no arguments; an unknown flag or an argument is a usage error (exit status 2).`
@@ -240,7 +241,7 @@ Takes no arguments; an unknown flag or an argument is a usage error (exit status
 Print the result as JSON
 .TP
 \fB--timeout\fR \fIduration\fR
-Time limit for the OSV.dev queries (default 30s; a bare number is seconds)
+Time limit for the OSV.dev queries (default 30s, at most 1h; a bare number is seconds)
 .TP
 \fB--workspace\fR, \fB-w\fR
 Combine all workspace projects`

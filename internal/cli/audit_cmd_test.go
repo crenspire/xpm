@@ -5,6 +5,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -71,6 +73,10 @@ func (f *osvFake) handler(w http.ResponseWriter, r *http.Request) {
 
 func newOSVFake(t *testing.T, f *osvFake) {
 	t.Helper()
+	// Pin the Go privacy settings: never read the user's go env file.
+	t.Setenv("GOPRIVATE", "")
+	t.Setenv("GONOPROXY", "")
+	t.Setenv("GOENV", filepath.Join(t.TempDir(), "no-go-env"))
 	srv := httptest.NewServer(http.HandlerFunc(f.handler))
 	old := osvBaseURL
 	osvBaseURL = srv.URL
@@ -98,12 +104,12 @@ func TestAuditVulnerableExit1(t *testing.T) {
 		t.Fatalf("exit %d, stderr %q", code, stderr)
 	}
 	for _, want := range []string{"debug@2.6.9 (node)", "GHSA-aaaa-bbbb-cccc", "(CVE-2017-16137)", "[HIGH]", "ReDoS in debug", "(fixed in: 2.6.10)",
-		"Found 1 vulnerabilities in 1 packages (3 packages scanned)."} {
+		"Found 1 vulnerability in 1 package (3 packages scanned)."} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("stdout lacks %q:\n%s", want, stdout)
 		}
 	}
-	if !strings.Contains(stderr, "note: 1 dependency was not checked") {
+	if !strings.Contains(stderr, "note: 1 dependency was not checked (no locked version, no OSV ecosystem, or a private Go module; --json lists the reasons)") {
 		t.Errorf("stderr = %q", stderr)
 	}
 	// Only pinned packages are queried, node maps to npm.
@@ -160,14 +166,18 @@ func TestAuditTimeout(t *testing.T) {
 func TestAuditBadTimeoutAndUsage(t *testing.T) {
 	graphProject(t, map[string]string{"package-lock.json": demoLock})
 	newOSVFake(t, &osvFake{})
-	for _, args := range [][]string{{"--timeout", "0"}, {"--timeout", "abc"}, {"--timeout", "-5s"}, {"extra"}, {"--bogus"}} {
+	for _, args := range [][]string{{"--timeout", "0"}, {"--timeout", "abc"}, {"--timeout", "-5s"}, {"--timeout", "-3"},
+		{"--timeout", "NaN"}, {"--timeout", "Inf"}, {"--timeout", "+Inf"}, {"--timeout", "-Inf"}, {"--timeout", "1e300"},
+		{"--timeout", "3601"}, {"--timeout", "61m"}, {"--timeout", "2h"}, {"extra"}, {"--bogus"}} {
 		if code, stdout, _ := runAudit(t, args...); code != 2 || stdout != "" {
 			t.Errorf("%v: exit %d stdout %q", args, code, stdout)
 		}
 	}
 	// A bare number is seconds, and flags may follow no positionals only.
-	if code, _, stderr := runAudit(t, "--timeout", "20"); code != 0 {
-		t.Errorf("--timeout 20: exit %d stderr %q", code, stderr)
+	for _, ok := range []string{"20", "1h", "3600", "0.5"} {
+		if code, _, stderr := runAudit(t, "--timeout", ok); code != 0 {
+			t.Errorf("--timeout %s: exit %d stderr %q", ok, code, stderr)
+		}
 	}
 }
 
@@ -231,14 +241,96 @@ func TestAuditDetailsWarning(t *testing.T) {
 	graphProject(t, map[string]string{"package-lock.json": demoLock})
 	newOSVFake(t, &osvFake{vulns: map[string][]string{"debug": {"GHSA-gone"}}})
 	code, stdout, stderr := runAudit(t)
-	if code != 1 || !strings.Contains(stdout, "GHSA-gone") || !strings.Contains(stderr, "warning: details for 1 vulnerabilities could not be fetched; IDs are listed") {
+	if code != 1 || !strings.Contains(stdout, "GHSA-gone") || !strings.Contains(stderr, "warning: details for 1 vulnerability could not be fetched; IDs are listed") {
 		t.Fatalf("exit %d stdout %q stderr %q", code, stdout, stderr)
 	}
 }
 
 func TestNoteUncheckedPlural(t *testing.T) {
-	got := captureStderr(t, func() { noteUnchecked(3); noteUnchecked(0) })
-	if got != "note: 3 dependencies were not checked (no locked version, or no registry/OSV lookup for it; --json lists the reasons)\n" {
+	got := captureStderr(t, func() { noteUnchecked(3, "some reason"); noteUnchecked(0, "x") })
+	if got != "note: 3 dependencies were not checked (some reason; --json lists the reasons)\n" {
 		t.Errorf("got %q", got)
+	}
+}
+
+func TestAuditSummaryGrammar(t *testing.T) {
+	graphProject(t, map[string]string{"package-lock.json": demoLock})
+	newOSVFake(t, &osvFake{vulns: map[string][]string{"debug": {"GHSA-1", "GHSA-2"}, "ms": {"GHSA-3"}}}) // ms is locked twice
+	_, stdout, _ := runAudit(t)
+	if !strings.Contains(stdout, "Found 4 vulnerabilities in 3 packages (3 packages scanned).") {
+		t.Errorf("stdout:\n%s", stdout)
+	}
+	graphProject(t, map[string]string{"package-lock.json": singleDepLock("demo", "left-pad", "1.3.0")})
+	newOSVFake(t, &osvFake{})
+	if _, stdout, _ := runAudit(t); stdout != "No known vulnerabilities in 1 package.\n" {
+		t.Errorf("stdout %q", stdout)
+	}
+}
+
+// goModAudit is a go.mod with a public and a private module.
+const goModAudit = "module example.com/app\n\ngo 1.22\n\nrequire (\n\tgolang.org/x/text v0.3.0\n\tcorp.example/secret v1.2.3\n)\n"
+
+func TestAuditNeverSendsPrivateGoModules(t *testing.T) {
+	graphProject(t, map[string]string{"go.mod": goModAudit})
+	f := &osvFake{}
+	newOSVFake(t, f)
+	envFile := filepath.Join(t.TempDir(), "env")
+	if err := os.WriteFile(envFile, []byte("GOPRIVATE=corp.example\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GOENV", envFile) // go env -w GOPRIVATE=corp.example
+	code, stdout, stderr := runAudit(t, "--json")
+	if code != 0 {
+		t.Fatalf("exit %d stderr %q", code, stderr)
+	}
+	for _, q := range f.queries {
+		if pkg := q["package"].(map[string]any); strings.Contains(pkg["name"].(string), "corp.example") {
+			t.Errorf("private module sent to OSV: %v", q)
+		}
+	}
+	if len(f.queries) != 1 {
+		t.Errorf("queries = %v, want only golang.org/x/text", f.queries)
+	}
+	var out struct {
+		Scanned   int
+		Unchecked []struct{ Ecosystem, Name, Version, Reason string }
+	}
+	if err := json.Unmarshal([]byte(stdout), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Scanned != 1 || len(out.Unchecked) != 1 || out.Unchecked[0].Name != "corp.example/secret" ||
+		out.Unchecked[0].Reason != "private module (GOPRIVATE/GONOPROXY)" {
+		t.Errorf("out = %+v", out)
+	}
+
+	// Process GONOPROXY works too.
+	f2 := &osvFake{}
+	newOSVFake(t, f2)
+	t.Setenv("GONOPROXY", "corp.example")
+	if _, _, _ = runAudit(t); len(f2.queries) != 1 {
+		t.Errorf("GONOPROXY: queries = %v", f2.queries)
+	}
+}
+
+func TestAuditNothingCheckedExit2(t *testing.T) {
+	graphProject(t, map[string]string{"requirements.txt": "requests>=2.0\nflask\n"})
+	f := &osvFake{}
+	newOSVFake(t, f)
+	code, stdout, stderr := runAudit(t)
+	if code != 2 {
+		t.Fatalf("exit %d stdout %q stderr %q", code, stdout, stderr)
+	}
+	if stdout != "" || !strings.Contains(stderr, "error: nothing could be checked: 2 dependencies were not checked (no locked version, no OSV ecosystem, or a private Go module); see --json") {
+		t.Errorf("stdout %q stderr %q", stdout, stderr)
+	}
+	if strings.Contains(stderr, "note:") {
+		t.Errorf("note repeated: %q", stderr)
+	}
+	if len(f.queries) != 0 {
+		t.Errorf("queries = %v", f.queries)
+	}
+	code, stdout, _ = runAudit(t, "--json")
+	if code != 2 || !strings.Contains(stdout, `"scanned": 0`) {
+		t.Errorf("--json: exit %d stdout %s", code, stdout)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"math"
 	"os"
 	"sort"
 	"strconv"
@@ -20,7 +21,13 @@ import (
 // osvBaseURL is the OSV.dev API root; a seam for tests.
 var osvBaseURL = osv.DefaultBaseURL
 
-const defaultAuditTimeout = 30 * time.Second
+const (
+	defaultAuditTimeout = 30 * time.Second
+	maxAuditTimeout     = time.Hour
+)
+
+// auditPrivateReason is the unchecked reason of a private Go module.
+const auditPrivateReason = "private module (GOPRIVATE/GONOPROXY)"
 
 // auditArgs is `xpm audit`'s command line.
 type auditArgs struct {
@@ -29,18 +36,28 @@ type auditArgs struct {
 }
 
 // parseAuditTimeout accepts a Go duration ("30s", "2m") or a bare number of
-// seconds, and requires a positive result.
+// seconds, and requires a result greater than zero and at most an hour.
 func parseAuditTimeout(s string) (time.Duration, error) {
 	d, err := time.ParseDuration(s)
 	if err != nil {
 		n, nerr := strconv.ParseFloat(s, 64)
-		if nerr != nil {
+		if nerr != nil || math.IsNaN(n) || math.IsInf(n, 0) {
 			return 0, fmt.Errorf("invalid --timeout %q: use a duration such as 30s or a number of seconds", s)
+		}
+		// Range-check before converting: huge floats overflow a Duration.
+		switch {
+		case n <= 0:
+			return 0, fmt.Errorf("invalid --timeout %q: must be greater than zero", s)
+		case n > maxAuditTimeout.Seconds():
+			return 0, fmt.Errorf("invalid --timeout %q: must be at most %v", s, maxAuditTimeout)
 		}
 		d = time.Duration(n * float64(time.Second))
 	}
-	if d <= 0 {
+	switch {
+	case d <= 0:
 		return 0, fmt.Errorf("invalid --timeout %q: must be greater than zero", s)
+	case d > maxAuditTimeout:
+		return 0, fmt.Errorf("invalid --timeout %q: must be at most %v", s, maxAuditTimeout)
 	}
 	return d, nil
 }
@@ -112,9 +129,11 @@ func cleanStrings(in []string) []string {
 	return out
 }
 
-// cmdAudit checks the locked dependencies against OSV.dev.
+// cmdAudit checks the locked dependencies against OSV.dev. Go modules matched
+// by GOPRIVATE or GONOPROXY (environment or go env file) are never sent.
 // Exit status: 1 if any vulnerability is found, 0 if none; usage errors, an
-// unreadable project and an OSV failure exit 2.
+// unreadable project, an OSV failure and a project of which no dependency
+// could be checked exit 2.
 func cmdAudit(args []string) int {
 	a, err := parseAuditArgs(args)
 	if errors.Is(err, flag.ErrHelp) {
@@ -143,6 +162,8 @@ func cmdAudit(args []string) int {
 			rep.Unchecked = append(rep.Unchecked, auditUnchecked{d.Ecosystem, d.Name, d.Version, "no OSV ecosystem for this ecosystem"})
 		case !deps.Pinned(d.Version):
 			rep.Unchecked = append(rep.Unchecked, auditUnchecked{d.Ecosystem, d.Name, d.Version, "no locked version"})
+		case eco == "Go" && search.GoModuleIsPrivate(d.Name):
+			rep.Unchecked = append(rep.Unchecked, auditUnchecked{d.Ecosystem, d.Name, d.Version, auditPrivateReason})
 		default:
 			pkgs = append(pkgs, osv.Package{Ecosystem: eco, Name: d.Name, Version: d.Version})
 			checked = append(checked, d)
@@ -160,7 +181,7 @@ func cmdAudit(args []string) int {
 			return 2
 		}
 		if detailsErrs > 0 {
-			fmt.Fprintf(os.Stderr, "warning: details for %d vulnerabilities could not be fetched; IDs are listed\n", detailsErrs)
+			fmt.Fprintf(os.Stderr, "warning: details for %d %s could not be fetched; IDs are listed\n", detailsErrs, plural(detailsErrs, "vulnerability", "vulnerabilities"))
 		}
 		for i, d := range checked {
 			if i >= len(results) || len(results[i]) == 0 {
@@ -207,10 +228,15 @@ func cmdAudit(args []string) int {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			return 2
 		}
-	} else {
+	}
+	if len(list) > 0 && rep.Scanned == 0 {
+		noteNothingChecked(len(rep.Unchecked), auditUncheckedWhy)
+		return 2
+	}
+	if !a.JSON {
 		printAudit(rep, len(list))
 	}
-	noteUnchecked(len(rep.Unchecked))
+	noteUnchecked(len(rep.Unchecked), auditUncheckedWhy)
 	if len(rep.Vulnerable) > 0 {
 		return 1
 	}
@@ -225,7 +251,7 @@ func printAudit(rep auditReport, total int) {
 		fmt.Println("No dependencies found.")
 		return
 	case len(rep.Vulnerable) == 0:
-		fmt.Printf("No known vulnerabilities in %d packages.\n", rep.Scanned)
+		fmt.Printf("No known vulnerabilities in %d %s.\n", rep.Scanned, plural(rep.Scanned, "package", "packages"))
 		return
 	}
 	vulns := 0
@@ -253,5 +279,8 @@ func printAudit(rep auditReport, total int) {
 			fmt.Println(line)
 		}
 	}
-	fmt.Printf("Found %d vulnerabilities in %d packages (%d packages scanned).\n", vulns, len(rep.Vulnerable), rep.Scanned)
+	fmt.Printf("Found %d %s in %d %s (%d %s scanned).\n",
+		vulns, plural(vulns, "vulnerability", "vulnerabilities"),
+		len(rep.Vulnerable), plural(len(rep.Vulnerable), "package", "packages"),
+		rep.Scanned, plural(rep.Scanned, "package", "packages"))
 }

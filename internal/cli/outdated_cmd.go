@@ -77,8 +77,9 @@ type outdatedReport struct {
 }
 
 // cmdOutdated lists dependencies whose registry has a newer version.
-// Exit status: 1 if any is outdated, else 2 if a lookup failed, else 0;
-// usage errors and an unreadable project exit 2.
+// Exit status: 1 if any is outdated, else 2 if a lookup failed or no
+// dependency could be checked at all, else 0; usage errors and an unreadable
+// project exit 2.
 func cmdOutdated(args []string) int {
 	a, err := parseOutdatedArgs(args)
 	if errors.Is(err, flag.ErrHelp) {
@@ -140,15 +141,32 @@ func loadDepGraph(workspace bool) (*graph.DepGraph, error) {
 	return g, nil
 }
 
-// noteUnchecked prints the stderr note shared by outdated and audit for n
-// dependencies that were not looked up.
-func noteUnchecked(n int) {
-	switch {
-	case n == 1:
-		fmt.Fprintln(os.Stderr, "note: 1 dependency was not checked (no locked version, or no registry/OSV lookup for it; --json lists the reasons)")
-	case n > 1:
-		fmt.Fprintf(os.Stderr, "note: %d dependencies were not checked (no locked version, or no registry/OSV lookup for it; --json lists the reasons)\n", n)
+// Why dependencies end up in "unchecked", per command.
+const (
+	outdatedUncheckedWhy = "no locked version, or no registry lookup for it"
+	auditUncheckedWhy    = "no locked version, no OSV ecosystem, or a private Go module"
+)
+
+// plural returns one when n is 1, else many.
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
 	}
+	return many
+}
+
+// noteUnchecked prints the stderr note shared by outdated and audit for n
+// dependencies that were not looked up; why lists the command's reasons.
+func noteUnchecked(n int, why string) {
+	if n > 0 {
+		fmt.Fprintf(os.Stderr, "note: %d %s not checked (%s; --json lists the reasons)\n", n, plural(n, "dependency was", "dependencies were"), why)
+	}
+}
+
+// noteNothingChecked reports on stderr that the project has n dependencies
+// and none of them could be checked (the command then exits 2).
+func noteNothingChecked(n int, why string) {
+	fmt.Fprintf(os.Stderr, "error: nothing could be checked: %d %s not checked (%s); see --json for the reasons\n", n, plural(n, "dependency was", "dependencies were"), why)
 }
 
 // checkOutdated looks up the latest version of every checkable dependency in
@@ -235,15 +253,22 @@ func checkOutdated(list []deps.Dep) (outdatedReport, int) {
 // finishOutdated prints the human report (unless asJSON), the stderr note,
 // and returns the exit status.
 func finishOutdated(rep outdatedReport, total int, asJSON bool) int {
-	var outdated, current, unanswered int
+	if total > 0 && len(rep.Dependencies) == 0 {
+		// The project has dependencies but none got a registry answer.
+		noteNothingChecked(len(rep.Unchecked), outdatedUncheckedWhy)
+		return 2
+	}
+	var outdated, current, unavailable, notFound int
 	for _, r := range rep.Dependencies {
 		switch r.Status {
 		case statusOutdated:
 			outdated++
 		case statusCurrent:
 			current++
+		case statusNotFound:
+			notFound++
 		default:
-			unanswered++
+			unavailable++
 		}
 	}
 
@@ -251,9 +276,7 @@ func finishOutdated(rep outdatedReport, total int, asJSON bool) int {
 		switch {
 		case total == 0:
 			fmt.Println("No dependencies found.")
-		case len(rep.Dependencies) == 0:
-			fmt.Println("No dependencies could be checked.")
-		case outdated == 0 && unanswered == 0:
+		case outdated == 0 && unavailable == 0 && notFound == 0:
 			fmt.Printf("All %d dependencies are up to date.\n", len(rep.Dependencies))
 		default:
 			tw := tabwriter.NewWriter(os.Stdout, 0, 8, 2, ' ', 0)
@@ -270,20 +293,17 @@ func finishOutdated(rep outdatedReport, total int, asJSON bool) int {
 			}
 			_ = tw.Flush()
 			summary := fmt.Sprintf("%d outdated, %d up to date", outdated, current)
-			if unanswered > 0 {
-				summary += fmt.Sprintf(", %d could not be checked", unanswered)
+			if notFound > 0 {
+				summary += fmt.Sprintf(", %d not found", notFound)
+			}
+			if unavailable > 0 {
+				summary += fmt.Sprintf(", %d could not be checked", unavailable)
 			}
 			fmt.Println(summary)
 		}
 	}
-	noteUnchecked(len(rep.Unchecked))
+	noteUnchecked(len(rep.Unchecked), outdatedUncheckedWhy)
 
-	unavailable := 0
-	for _, r := range rep.Dependencies {
-		if r.Status == statusUnavailable {
-			unavailable++
-		}
-	}
 	switch {
 	case outdated > 0:
 		return 1

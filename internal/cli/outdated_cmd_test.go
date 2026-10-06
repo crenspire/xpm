@@ -131,7 +131,7 @@ func TestOutdatedNotFoundKeepsExit0(t *testing.T) {
 	graphProject(t, map[string]string{"package-lock.json": singleDepLock("demo", "secret-pkg", "1.0.0")})
 	fakeLatest(t, nil, nil)
 	code, stdout, _ := runOutdated(t)
-	if code != 0 || !strings.Contains(stdout, "not found") || !strings.Contains(stdout, "1 could not be checked") {
+	if code != 0 || !strings.Contains(stdout, "not found") || !strings.Contains(stdout, "0 outdated, 0 up to date, 1 not found\n") || strings.Contains(stdout, "could not be checked") {
 		t.Errorf("exit %d, stdout:\n%s", code, stdout)
 	}
 }
@@ -211,7 +211,7 @@ func TestOutdatedUnpinnedIsUnchecked(t *testing.T) {
 	if len(out.Unchecked) != 1 || out.Unchecked[0].Name != "requests" || out.Unchecked[0].Ecosystem != "python" {
 		t.Errorf("unchecked = %+v", out.Unchecked)
 	}
-	if !strings.Contains(stderr, "note: 1 dependency was not checked (no locked version, or no registry/OSV lookup for it; --json lists the reasons)") {
+	if !strings.Contains(stderr, "note: 1 dependency was not checked (no locked version, or no registry lookup for it; --json lists the reasons)") || strings.Contains(stderr, "OSV") {
 		t.Errorf("stderr = %q", stderr)
 	}
 }
@@ -249,5 +249,39 @@ func TestOutdatedExtractionErrorExit2(t *testing.T) {
 	code, _, stderr := runOutdated(t)
 	if code != 2 || !strings.Contains(stderr, "unreadable") {
 		t.Errorf("exit %d, stderr %q", code, stderr)
+	}
+}
+
+func TestOutdatedNothingCheckedExit2(t *testing.T) {
+	graphProject(t, map[string]string{"requirements.txt": "requests>=2.0\nflask\n"})
+	calls := fakeLatest(t, nil, nil)
+	code, stdout, stderr := runOutdated(t)
+	if code != 2 {
+		t.Fatalf("exit %d stdout %q stderr %q", code, stdout, stderr)
+	}
+	if stdout != "" || !strings.Contains(stderr, "error: nothing could be checked: 2 dependencies were not checked (no locked version, or no registry lookup for it); see --json") {
+		t.Errorf("stdout %q stderr %q", stdout, stderr)
+	}
+	if strings.Contains(stderr, "note:") {
+		t.Errorf("note repeated: %q", stderr)
+	}
+	if len(*calls) != 0 {
+		t.Errorf("calls = %v", *calls)
+	}
+	// Lookups skipped on purpose (private Go module) also leave nothing checked.
+	graphProject(t, map[string]string{"go.mod": outdatedGoMod})
+	fakeLatest(t, nil, map[string]error{"golang.org/x/text": fmt.Errorf("%w: private module", search.ErrNotChecked)})
+	code, stdout, _ = runOutdated(t, "--json")
+	if code != 2 || !strings.Contains(stdout, `"unchecked": [`) {
+		t.Errorf("--json: exit %d stdout %s", code, stdout)
+	}
+}
+
+func TestOutdatedSummaryCountsNotFoundSeparately(t *testing.T) {
+	graphProject(t, map[string]string{"package-lock.json": demoLock})
+	fakeLatest(t, map[string]string{"debug": "9.0.0"}, nil) // both ms rows: not found
+	_, stdout, _ := runOutdated(t, "--all")
+	if !strings.Contains(stdout, "1 outdated, 0 up to date, 2 not found\n") {
+		t.Errorf("stdout:\n%s", stdout)
 	}
 }
