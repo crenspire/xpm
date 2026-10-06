@@ -15,6 +15,12 @@ func InstallRuntime(manager *Manager, runtime, version string) error {
 
 // InstallRuntimeWithAlias installs a specific version of a runtime and stores the alias used.
 func InstallRuntimeWithAlias(manager *Manager, runtime, version, alias string) error {
+	if err := ValidateRuntimeName(runtime); err != nil {
+		return err
+	}
+	if err := ValidateVersionSpec(version); err != nil {
+		return err
+	}
 	installer, err := GetInstaller(runtime)
 	if err != nil {
 		return err
@@ -79,7 +85,10 @@ func InstallRuntimeWithAlias(manager *Manager, runtime, version, alias string) e
 	}
 
 	// Use resolved version for destination
-	dest := filepath.Join(manager.GetRuntimesPath(), runtime, resolvedVersion)
+	dest, err := manager.versionDir(runtime, resolvedVersion)
+	if err != nil {
+		return err
+	}
 	if _, err := os.Stat(dest); err == nil {
 		// Verify installation
 		binaryPaths := installer.BinaryPaths(resolvedVersion, dest)

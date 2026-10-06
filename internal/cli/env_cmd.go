@@ -208,11 +208,17 @@ func cmdEnvSetupPath(manager *env.Manager) int {
 	return 0
 }
 
-// parseRuntimeVersion parses a runtime@version specification.
+// parseRuntimeVersion parses and validates a runtime@version specification.
 func parseRuntimeVersion(spec string) (runtime, version string, err error) {
-	parts := strings.Split(spec, "@")
-	if len(parts) != 2 {
-		return "", "", fmt.Errorf("invalid format: expected <runtime>@<version>")
+	runtime, version, ok := strings.Cut(spec, "@")
+	if !ok {
+		return "", "", fmt.Errorf("invalid format %q: expected <runtime>@<version>", spec)
 	}
-	return parts[0], parts[1], nil
+	if err := env.ValidateRuntimeName(runtime); err != nil {
+		return "", "", err
+	}
+	if err := env.ValidateVersionSpec(version); err != nil {
+		return "", "", err
+	}
+	return runtime, version, nil
 }

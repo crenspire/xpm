@@ -224,7 +224,11 @@ func (m *Manager) getLocalVersion(runtime string) string {
 		return ""
 	}
 
-	return versions[runtime]
+	v := versions[runtime]
+	if ValidateVersionSpec(v) != nil {
+		return "" // ignore malformed or path-like entries from untrusted .xpm-env files
+	}
+	return v
 }
 
 // loadActiveVersions loads global active versions.

@@ -38,6 +38,9 @@ func FindXpmEnv(dir string) (string, error) {
 // ActivateVersions activates the specified versions.
 func ActivateVersions(manager *Manager, versions map[string]string) error {
 	for runtime, version := range versions {
+		if ValidateRuntimeName(runtime) != nil || ValidateVersionSpec(version) != nil {
+			continue
+		}
 		// Verify version is installed
 		versionPath := filepath.Join(manager.GetRuntimesPath(), runtime, version)
 		if _, err := os.Stat(versionPath); err != nil {
