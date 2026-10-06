@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	"github.com/crenspire/xpm/internal/graph"
+	"github.com/crenspire/xpm/internal/pm"
 	"github.com/crenspire/xpm/internal/workspace"
 )
 
@@ -28,8 +29,16 @@ type graphArgs struct {
 	Package                    string
 }
 
+// errFlagReported wraps a flag parse error that the flag package has already
+// printed, with the usage, to stderr.
+type errFlagReported struct{ err error }
+
+func (e errFlagReported) Error() string { return e.err.Error() }
+func (e errFlagReported) Unwrap() error { return e.err }
+
 // parseGraphArgs parses flags anywhere on the line (`xpm graph react --json`).
-// The depth default comes from the config. Errors are usage errors (exit 2).
+// The depth default comes from the config. Errors are usage errors (exit 2);
+// flag parse errors come back as errFlagReported.
 func parseGraphArgs(args []string, defaultDepth int) (graphArgs, error) {
 	var a graphArgs
 	fs := flag.NewFlagSet("graph", flag.ContinueOnError)
@@ -44,7 +53,7 @@ func parseGraphArgs(args []string, defaultDepth int) (graphArgs, error) {
 	var positional []string
 	for {
 		if err := fs.Parse(args); err != nil {
-			return graphArgs{}, err
+			return graphArgs{}, errFlagReported{err}
 		}
 		rest := fs.Args()
 		if n := len(args) - len(rest); n > 0 && args[n-1] == "--" {
@@ -60,7 +69,7 @@ func parseGraphArgs(args []string, defaultDepth int) (graphArgs, error) {
 
 	switch {
 	case a.Depth < 0:
-		return graphArgs{}, fmt.Errorf("--depth must be 0 (unlimited) or a positive number, got %d", a.Depth)
+		return graphArgs{}, fmt.Errorf("--depth must be a non-negative number (0 = unlimited), got %d", a.Depth)
 	case a.JSON && a.SVG:
 		return graphArgs{}, errors.New("--json and --svg cannot be combined")
 	case len(positional) > 1:
@@ -81,7 +90,9 @@ func cmdGraph(args []string) int {
 		return 0
 	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		if !errors.As(err, new(errFlagReported)) {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		}
 		return 2
 	}
 
@@ -122,6 +133,11 @@ func cmdGraph(args []string) int {
 
 // workspaceGraph merges the graphs of every workspace root and project
 // under root, after workspace.include / workspace.exclude from the config.
+// A workspace whose root lockfile covers its members (npm/pnpm/yarn/bun
+// workspaces, Cargo workspaces) is extracted at its root only; members have
+// no lockfile of their own. Other workspaces (go.work, Python, Gradle,
+// Composer, and Maven reactors, whose root pom.xml does not list the
+// modules' dependencies) are extracted at the root and at every project.
 // Each directory is extracted once, in detection order, even when it is
 // listed under several ecosystems (one Workspace per ecosystem). A directory
 // that fails to extract is reported as a warning and skipped.
@@ -145,6 +161,9 @@ func workspaceGraph(root string, opts graph.ExtractOptions) (*graph.DepGraph, er
 	}
 	for _, ws := range workspaces {
 		add(ws.Root)
+		if rootCoversMembers(ws) {
+			continue
+		}
 		for _, p := range ws.Projects {
 			add(p.Path)
 		}
@@ -162,6 +181,13 @@ func workspaceGraph(root string, opts graph.ExtractOptions) (*graph.DepGraph, er
 		merged.Merge(g)
 	}
 	return merged, nil
+}
+
+// rootCoversMembers reports whether ws's root lockfile already lists its
+// members' dependencies: a workspace installed once at its root, except a
+// Maven reactor, which has no lockfile.
+func rootCoversMembers(ws workspace.Workspace) bool {
+	return ws.RootPM != "" && ws.RootPM != pm.Maven
 }
 
 // renderGraph writes g to stdout in the requested format and its warnings

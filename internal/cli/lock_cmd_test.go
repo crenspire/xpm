@@ -146,3 +146,36 @@ func TestCmdLockWarningsGoToStderr(t *testing.T) {
 		t.Errorf("stdout carries a warning:\n%s", out)
 	}
 }
+
+func TestCmdLockWarnsAboutStaleLockWhenNoLockfilesRemain(t *testing.T) {
+	dir := lockCmdProject(t, map[string]string{
+		"xpm-lock.yaml": "version: 2\nlocks:\n  package-lock.json:\n    file: package-lock.json\n    hash: 00\n",
+	})
+	var code int
+	var out string
+	errOut := captureStderr(t, func() {
+		out = captureStdout(t, func() { code = cmdLock(nil) })
+	})
+	if code != 0 {
+		t.Fatalf("cmdLock = %d, want 0", code)
+	}
+	if !strings.Contains(out, "No lockfiles found") {
+		t.Errorf("stdout = %q, want the no-lockfiles message", out)
+	}
+	if !strings.Contains(errOut, "warning: xpm-lock.yaml is stale") {
+		t.Errorf("stderr = %q, want a stale xpm-lock.yaml warning", errOut)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "xpm-lock.yaml")); err != nil {
+		t.Errorf("xpm-lock.yaml was removed: %v", err)
+	}
+}
+
+func TestCmdLockNoLockfilesAndNoLockIsQuiet(t *testing.T) {
+	lockCmdProject(t, nil)
+	errOut := captureStderr(t, func() {
+		_ = captureStdout(t, func() { _ = cmdLock(nil) })
+	})
+	if errOut != "" {
+		t.Errorf("stderr = %q, want nothing", errOut)
+	}
+}

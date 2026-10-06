@@ -57,6 +57,9 @@ func generateLock(dir string) int {
 		for _, file := range lock.ListSupportedFiles() {
 			fmt.Printf("  - %s\n", file)
 		}
+		if lock.UnifiedLockExists(dir) {
+			fmt.Fprintf(os.Stderr, "warning: %s is stale: it was left unchanged, but none of the lockfiles it records remain; delete it if the project no longer uses lockfiles\n", lock.LockfileName)
+		}
 		return 0
 	}
 

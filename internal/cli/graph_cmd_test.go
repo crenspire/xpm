@@ -297,33 +297,93 @@ func TestGraphRunsNoToolsWithoutExec(t *testing.T) {
 }
 
 func TestGraphWorkspaceMergesProjects(t *testing.T) {
+	// An npm workspace (its root lockfile covers the members) plus a go.work
+	// whose modules are extracted one by one and share a dependency.
 	graphProject(t, map[string]string{
-		"package.json":                   `{"name": "mono", "version": "1.0.0", "private": true, "workspaces": ["packages/*"]}`,
-		"package-lock.json":              singleDepLock("mono", "typescript", "5.4.5"),
-		"packages/web/package.json":      `{"name": "web", "version": "1.0.0"}`,
-		"packages/web/package-lock.json": singleDepLock("web", "ms", "2.1.3"),
-		"packages/api/package.json":      `{"name": "api", "version": "1.0.0"}`,
-		"packages/api/package-lock.json": singleDepLock("api", "ms", "2.1.3"),
+		"package.json":             `{"name": "mono", "version": "1.0.0", "private": true, "workspaces": ["packages/*"]}`,
+		"package-lock.json":        singleDepLock("mono", "typescript", "5.4.5"),
+		"packages/ui/package.json": `{"name": "ui", "version": "1.0.0"}`,
+		"go.work":                  "go 1.22\n\nuse (\n\t./services/web\n\t./services/api\n)\n",
+		"services/web/go.mod":      "module example.com/web\n\ngo 1.22\n\nrequire example.com/shared v1.0.0\n",
+		"services/api/go.mod":      "module example.com/api\n\ngo 1.22\n\nrequire example.com/shared v1.0.0\n",
 	})
 	noTools(t)
 	code, stdout, stderr := runGraph(t, "-w", "--json")
-	if code != 0 {
+	if code != 0 || stderr != "" {
 		t.Fatalf("exit %d, stderr %q", code, stderr)
 	}
 	var g graph.JSONGraph
 	if err := json.Unmarshal([]byte(stdout), &g); err != nil {
 		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout)
 	}
-	// mono, typescript, web, api, and one shared ms node.
+	// mono, typescript, web, api, and one shared node.
 	if len(g.Nodes) != 5 || len(g.Edges) != 3 || len(g.Roots) != 3 {
 		t.Errorf("got %d nodes, %d edges, roots %v", len(g.Nodes), len(g.Edges), g.Roots)
 	}
 
 	code, stdout, _ = runGraph(t, "--workspace")
-	for _, want := range []string{"mono@1.0.0 (node)", "web@1.0.0 (node)", "api@1.0.0 (node)", "└─ ms@2.1.3 (node)"} {
+	for _, want := range []string{"mono@1.0.0 (node)", "example.com/web (go)", "example.com/api (go)", "└─ example.com/shared@1.0.0 (go)"} {
 		if code != 0 || !strings.Contains(stdout, want) {
 			t.Errorf("exit %d, tree lacks %q:\n%s", code, want, stdout)
 		}
+	}
+}
+
+func TestGraphWorkspaceRootLockfileCoversMembers(t *testing.T) {
+	// npm workspace members have no lockfile of their own: the root one
+	// lists them. Real detection and extraction, no per-member warnings.
+	graphProject(t, map[string]string{
+		"package.json":               `{"name": "mono", "version": "1.0.0", "private": true, "workspaces": ["packages/*"]}`,
+		"package-lock.json":          singleDepLock("mono", "typescript", "5.4.5"),
+		"packages/cli/package.json":  `{"name": "cli", "version": "1.0.0"}`,
+		"packages/core/package.json": `{"name": "core", "version": "1.0.0"}`,
+	})
+	noTools(t)
+	code, stdout, stderr := runGraph(t, "-w")
+	if code != 0 || !strings.Contains(stdout, "typescript@5.4.5 (node)") {
+		t.Fatalf("exit %d, stdout:\n%s\nstderr %q", code, stdout, stderr)
+	}
+	if strings.Contains(stderr, "skipping") || strings.Contains(stderr, "no package-lock.json") {
+		t.Errorf("stderr warns about members covered by the root lockfile:\n%s", stderr)
+	}
+}
+
+func TestGraphWorkspaceExtractsRootOnlyWhenItCoversMembers(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		files map[string]string
+		want  string
+	}{
+		{"npm", map[string]string{
+			"package.json":              `{"name": "mono", "private": true, "workspaces": ["packages/*"]}`,
+			"packages/web/package.json": `{"name": "web"}`,
+			"packages/api/package.json": `{"name": "api"}`,
+		}, "."},
+		{"cargo", map[string]string{
+			"Cargo.toml":          "[workspace]\nmembers = [\"crates/*\"]\n",
+			"crates/a/Cargo.toml": "[package]\nname = \"a\"\nversion = \"0.1.0\"\n",
+			"crates/b/Cargo.toml": "[package]\nname = \"b\"\nversion = \"0.1.0\"\n",
+		}, "."},
+		{"maven reactor still extracts each module", map[string]string{
+			"pom.xml":   "<project><modules><module>a</module><module>b</module></modules></project>",
+			"a/pom.xml": "<project><artifactId>a</artifactId></project>",
+			"b/pom.xml": "<project><artifactId>b</artifactId></project>",
+		}, ".,a,b"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			graphProject(t, c.files)
+			root, err := os.Getwd()
+			if err != nil {
+				t.Fatal(err)
+			}
+			dirs := recordExtracts(t, root)
+			if code, _, stderr := runGraph(t, "-w"); code != 0 {
+				t.Fatalf("exit %d, stderr %q", code, stderr)
+			}
+			if got := strings.Join(*dirs, ","); got != c.want {
+				t.Errorf("extracted %q, want %q", got, c.want)
+			}
+		})
 	}
 }
 
@@ -378,9 +438,9 @@ func TestGraphWorkspaceExtractsEachDirectoryOnce(t *testing.T) {
 
 func TestGraphWorkspaceAppliesIncludeExclude(t *testing.T) {
 	graphProject(t, map[string]string{
-		"package.json":              `{"name": "mono", "private": true, "workspaces": ["packages/*"]}`,
-		"packages/web/package.json": `{"name": "web", "version": "1.0.0"}`,
-		"packages/api/package.json": `{"name": "api", "version": "1.0.0"}`,
+		"go.work":             "go 1.22\n\nuse (\n\t./packages/web\n\t./packages/api\n)\n",
+		"packages/web/go.mod": "module example.com/web\n\ngo 1.22\n",
+		"packages/api/go.mod": "module example.com/api\n\ngo 1.22\n",
 	})
 	withConfig(t, config.Config{
 		Graph:     config.GraphConfig{ShowVersions: true, ShowEcosystem: true},
@@ -401,8 +461,8 @@ func TestGraphWorkspaceAppliesIncludeExclude(t *testing.T) {
 
 func TestGraphWorkspaceSkipsFailingDirectory(t *testing.T) {
 	graphProject(t, map[string]string{
-		"package.json":              `{"name": "mono", "private": true, "workspaces": ["packages/*"]}`,
-		"packages/web/package.json": `{"name": "web", "version": "1.0.0"}`,
+		"go.work":             "go 1.22\n\nuse ./packages/web\n",
+		"packages/web/go.mod": "module example.com/web\n\ngo 1.22\n",
 	})
 	old := extractGraph
 	extractGraph = func(dir string, _ graph.ExtractOptions) (*graph.DepGraph, error) {
@@ -415,5 +475,17 @@ func TestGraphWorkspaceSkipsFailingDirectory(t *testing.T) {
 	code, stdout, stderr := runGraph(t, "-w")
 	if code != 0 || stdout != "" || !strings.Contains(stderr, "warning: skipping ") || !strings.Contains(stderr, "broken lockfile") {
 		t.Errorf("exit %d, stdout %q, stderr %q", code, stdout, stderr)
+	}
+}
+
+func TestGraphUsageErrorPrintedOnce(t *testing.T) {
+	graphProject(t, nil)
+	_, _, stderr := runGraph(t, "--bogus")
+	if n := strings.Count(stderr, "flag provided but not defined: -bogus"); n != 1 {
+		t.Errorf("flag error printed %d times, want once:\n%s", n, stderr)
+	}
+	_, _, stderr = runGraph(t, "--depth", "-1")
+	if !strings.Contains(stderr, "non-negative") || !strings.Contains(stderr, "0 = unlimited") {
+		t.Errorf("--depth -1 stderr = %q, want it to say non-negative (0 = unlimited)", stderr)
 	}
 }
