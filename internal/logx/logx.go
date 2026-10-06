@@ -1,4 +1,4 @@
-// Package logx provides logging utilities for upm.
+// Package logx provides logging utilities for xpm.
 //
 // The package supports multiple log levels, optional structured logging,
 // and configurable output destinations including file output.

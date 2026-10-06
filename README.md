@@ -137,6 +137,8 @@ xpm run build
 xpm run test -- --watch # everything after -- goes to the script untouched
 ```
 
+Scripts come from `package.json` `scripts`, `composer.json` `scripts`, `pyproject.toml` `[tool.xpm.scripts]` (falls back to `[tool.upm.scripts]`, then `[tool.poetry.scripts]`, then `[project.scripts]`) and `Cargo.toml` `[package.metadata.xpm.scripts]`. `package.json` and `composer.json` scripts run through the project's package manager (`npm`/`yarn`/`pnpm`/`bun run`, `composer run-script`); `pyproject.toml` and `Cargo.toml` scripts run through `sh -c` (on Windows `sh` must be on PATH, e.g. Git for Windows).
+
 ### Diagnose
 
 ```bash

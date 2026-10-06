@@ -217,7 +217,7 @@ func TestRunWithNoArgs(t *testing.T) {
 	defer func() { os.Args = origArgs }()
 
 	// Set args to just the program name
-	os.Args = []string{"upm"}
+	os.Args = []string{"xpm"}
 
 	// Redirect stdout/stderr
 	oldStdout := os.Stdout
@@ -237,7 +237,7 @@ func TestRunVersion(t *testing.T) {
 	defer func() { os.Args = origArgs }()
 
 	// Test version command
-	os.Args = []string{"upm", "version"}
+	os.Args = []string{"xpm", "version"}
 
 	// Redirect stdout
 	oldStdout := os.Stdout
@@ -257,7 +257,7 @@ func TestRunHelp(t *testing.T) {
 	defer func() { os.Args = origArgs }()
 
 	// Test help command
-	os.Args = []string{"upm", "help"}
+	os.Args = []string{"xpm", "help"}
 
 	// Redirect stdout
 	oldStdout := os.Stdout
@@ -276,7 +276,7 @@ func TestRunUnknownCommand(t *testing.T) {
 	origArgs := os.Args
 	defer func() { os.Args = origArgs }()
 
-	os.Args = []string{"upm", "unknown-command"}
+	os.Args = []string{"xpm", "unknown-command"}
 
 	// Redirect stdout/stderr
 	oldStdout := os.Stdout
@@ -304,7 +304,7 @@ func TestVerboseFlag(t *testing.T) {
 
 	for _, flag := range tests {
 		t.Run(flag, func(t *testing.T) {
-			os.Args = []string{"upm", flag, "version"}
+			os.Args = []string{"xpm", flag, "version"}
 
 			// Redirect stdout
 			oldStdout := os.Stdout
