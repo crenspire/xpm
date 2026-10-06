@@ -319,6 +319,10 @@ func TestIsExact(t *testing.T) {
 		{"maven artifactId differs", "axios", candidate{Result: axiosRetry}, false},
 		{"maven full coordinate", "com.google.guava:guava", candidate{Result: guava}, true},
 		{"gradle uses the artifactId too", "guava", candidate{Result: search.Result{Manager: pm.Gradle, Name: "com.google.guava:guava"}}, true},
+		{"mvnpm repackage of an npm name", "axios", candidate{Result: nestAxios}, false},
+		{"webjars repackage of an npm name", "lodash", candidate{Result: search.Result{Manager: pm.Maven, Name: "org.webjars.npm:lodash"}}, false},
+		{"webjars by full coordinate", "org.webjars:jquery", candidate{Result: search.Result{Manager: pm.Maven, Name: "org.webjars:jquery"}}, true},
+		{"gradle mvnpm repackage", "axios", candidate{Result: search.Result{Manager: pm.Gradle, Name: "org.mvnpm.at.nestjs:axios"}}, false},
 		{"gradle unrelated", "requests", candidate{Result: search.Result{Manager: pm.Gradle, Name: "org.webjars.npm:axios-retry"}}, false},
 	}
 	for _, tc := range cases {
@@ -343,6 +347,7 @@ func TestDecideNonInteractive(t *testing.T) {
 	}{
 		{"node project, fuzzy composer and maven dropped", "axios", []search.Result{npmAxios, saber, axiosRetry}, nodeLock, nil, nil, "npm:package-lock.json", ""},
 		{"node project beats an artifactId-equal maven hit", "axios", []search.Result{npmAxios, saber, nestAxios}, nodeLock, nil, nil, "npm:package-lock.json", ""},
+		{"empty dir, mvnpm repackage is not exact", "axios", []search.Result{npmAxios, saber, nestAxios}, nil, nil, nil, "npm:", ""},
 		{"node project, maven down outside the ecosystem", "axios", []search.Result{npmAxios, saber}, nodeLock, nil, []pm.ID{pm.Maven}, "npm:package-lock.json", ""},
 		{"empty dir, one exact among fuzzy", "axios", []search.Result{npmAxios, saber, axiosRetry}, nil, nil, nil, "npm:", ""},
 		{"empty dir, one exact but a registry was down", "axios", []search.Result{npmAxios, saber}, nil, nil, []pm.ID{pm.Maven}, "", "did not answer"},

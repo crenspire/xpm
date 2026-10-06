@@ -160,7 +160,7 @@ func TestREADMEInstallExamples(t *testing.T) {
 		{"empty dir: the one exact hit wins over closest matches", nil, false, "install lodash", 0, []string{"npm install lodash"}, "Will install lodash via npm", fakeWorld{}, ""},
 		{"python project: exact on pip and npm uses pip", []string{"requirements.txt"}, false, "install keyring", 0, []string{"pip install keyring"}, "", fakeWorld{}, ""},
 		{"empty dir: exact on npm and pip is refused", nil, false, "install keyring", 1, nil, "", fakeWorld{}, "keyring exists in several ecosystems: npm (Node), pip (Python)."},
-		{"empty dir: a maven artifactId equal to the name is exact too", nil, false, "install axios", 1, nil, "", fakeWorld{mavenAxios: "org.mvnpm.at.nestjs:axios"}, "npm (Node), maven (Java)"},
+		{"empty dir: an mvnpm repackage of the npm name is only a closest match", nil, false, "install axios", 0, []string{"npm install axios"}, "Will install axios via npm", fakeWorld{mavenAxios: "org.mvnpm.at.nestjs:axios"}, ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			withConfig(t, cfg)

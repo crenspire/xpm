@@ -127,12 +127,21 @@ func pep503Name(name string) string {
 // isExact reports whether c is the package the user typed rather than a
 // registry's closest match (Packagist and Maven searches return their first
 // hit, often unrelated: axios -> swlib/saber). A Maven or Gradle hit is
-// exact when its artifactId (or full coordinate) is the query.
+// exact when its full coordinate is the query, or when its artifactId is
+// the query and it is not an npm/web-asset repackage (org.mvnpm*,
+// org.webjars*), which reuse npm names.
 func isExact(query string, c candidate) bool {
 	if c.Result.Manager == pm.Maven || c.Result.Manager == pm.Gradle {
 		name := c.Result.Name
+		if strings.EqualFold(name, query) {
+			return true
+		}
+		group := strings.ToLower(name[:max(strings.LastIndex(name, ":"), 0)])
+		if strings.HasPrefix(group, "org.mvnpm") || strings.HasPrefix(group, "org.webjars") {
+			return false
+		}
 		artifact := name[strings.LastIndex(name, ":")+1:]
-		return strings.EqualFold(artifact, query) || strings.EqualFold(name, query)
+		return strings.EqualFold(artifact, query)
 	}
 	return !needsRenameConfirmation(query, c)
 }
