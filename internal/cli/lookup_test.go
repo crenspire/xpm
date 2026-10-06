@@ -109,3 +109,21 @@ func TestSearchJoinsSeveralWordsIntoOneQuery(t *testing.T) {
 		t.Fatalf("code=%d queries=%q, want 0 and [\"react router\"]", code, queries)
 	}
 }
+
+func TestSearchWithPipedStdinUsesPlainOutput(t *testing.T) {
+	withConfig(t, config.Config{Interactive: true, SearchUI: config.SearchUIConfig{Enabled: true}})
+	oldTTY := isInteractiveTerminal
+	isInteractiveTerminal = func() bool { return false } // stdin is a pipe
+	t.Cleanup(func() { isInteractiveTerminal = oldTTY })
+	oldSearch := searchReport
+	searchReport = func(string, search.Options) (search.Report, error) {
+		return search.Report{Results: []search.Result{{Manager: pm.Npm, Name: "react"}}}, nil
+	}
+	t.Cleanup(func() { searchReport = oldSearch })
+
+	var code int
+	out := captureStdout(t, func() { code = cmdSearch([]string{"react"}) })
+	if code != 0 || !strings.Contains(out, "react") {
+		t.Fatalf("code=%d out=%q, want plain results", code, out)
+	}
+}

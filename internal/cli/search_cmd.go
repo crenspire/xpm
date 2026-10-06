@@ -15,8 +15,9 @@ func cmdSearch(args []string) int {
 	// Free text: several words are one query.
 	query := strings.Join(args, " ")
 
-	// The TUI needs a terminal; pipes and CI get plain output.
-	if !cfg.SearchUI.Enabled || !stdoutIsTerminal() {
+	// The TUI needs a terminal on both stdin and stdout and interactive mode
+	// on; pipes (`echo q | xpm search`) and CI get plain output.
+	if !cfg.SearchUI.Enabled || !cfg.Interactive || !isInteractiveTerminal() {
 		return cmdSearchNonInteractive(query)
 	}
 
