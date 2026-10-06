@@ -16,6 +16,7 @@ func testGraph() *graph.DepGraph {
 	zed := graph.NewDepNode("node", "zed", "2.0.0")
 	alpha := graph.NewDepNode("node", "alpha", "1.0.0")
 	dupAlpha := graph.NewDepNode("node", "alpha", "1.0.0")
+	dupAlpha.ID = "node:alpha@1.0.0#dup" // same triple, distinct node
 	trans := graph.NewDepNode("node", "trans", "3.0.0")
 	gdep := graph.NewDepNode("go", "golang.org/x/mod", "v0.20.0")
 	for _, n := range []*graph.DepNode{proj, member, goRoot, zed, alpha, dupAlpha, trans, gdep} {
@@ -25,6 +26,7 @@ func testGraph() *graph.DepGraph {
 	g.AddRoot(goRoot.ID)
 	g.AddEdge(graph.NewEdge(proj.ID, zed.ID))
 	g.AddEdge(graph.NewEdge(proj.ID, alpha.ID))
+	g.AddEdge(graph.NewEdge(proj.ID, dupAlpha.ID))
 	g.AddEdge(graph.NewEdge(proj.ID, member.ID))
 	g.AddEdge(graph.NewEdge(member.ID, trans.ID))
 	g.AddEdge(graph.NewEdge(goRoot.ID, gdep.ID))

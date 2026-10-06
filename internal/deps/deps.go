@@ -123,15 +123,25 @@ func OSVEcosystem(ecosystem string) (string, bool) {
 // placeholder or a non-registry reference.
 var pinnedDenied = []string{
 	"${", "*", "^", "~", ">", "<", "=", " ", "||",
-	"x.", ".x", "workspace:", "file:", "link:", "git",
+	"workspace:", "file:", "link:", "git+", "git:",
 }
 
 // Pinned reports whether v is a concrete version usable for lookups:
 // non-empty, contains a digit, and contains none of "${", "*", "^", "~",
-// ">", "<", "=", " ", "||", "x.", ".x", "workspace:", "file:", "link:", "git".
+// ">", "<", "=", " ", "||", "workspace:", "file:", "link:", "git+", "git:",
+// and that neither starts with "git" nor has a dot-separated field that is
+// exactly "x" or "X" (1.x, 1.2.x, x.1).
 func Pinned(v string) bool {
 	if v == "" || !strings.ContainsAny(v, "0123456789") {
 		return false
+	}
+	if strings.HasPrefix(v, "git") {
+		return false
+	}
+	for _, f := range strings.Split(v, ".") {
+		if f == "x" || f == "X" {
+			return false
+		}
 	}
 	for _, s := range pinnedDenied {
 		if strings.Contains(v, s) {

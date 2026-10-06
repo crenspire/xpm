@@ -18,25 +18,72 @@ import (
 // marker directly after a numeric field) sorts before the same release
 // without it. Pre-release identifiers compare dot-separated: numeric
 // identifiers numerically (rc.2 < rc.10), others lexically. Build metadata
-// after "+" is ignored.
+// after "+" is ignored and identifiers are lowercased.
+//
+// For java and python a trailing non-numeric field is a qualifier, ranked
+// dev < alpha(a) < beta(b) < milestone(m) < rc(cr, c, pre, preview) <
+// snapshot < release (final, ga, empty) < sp/post, with numbers compared
+// numerically (Beta1, M2); so 5.3.20.RELEASE == 5.3.20 and
+// 6.0.0.Beta1 < 6.0.0. Any other dotted qualifier sorts above the release.
+//
+// An empty version sorts lowest; callers should filter with Pinned first.
 func Compare(ecosystem, a, b string) int {
+	if a == "" || b == "" {
+		if a == b {
+			return 0
+		}
+		if a == "" {
+			return -1
+		}
+		return 1
+	}
 	if ecosystem == "go" {
 		return semver.Compare(goVersion(a), goVersion(b))
 	}
-	ra, pa := splitVersion(a)
-	rb, pb := splitVersion(b)
-	if c := compareRelease(ra, rb); c != 0 {
+	va, vb := parseVersion(ecosystem, a), parseVersion(ecosystem, b)
+	if c := compareRelease(va.release, vb.release); c != 0 {
 		return c
 	}
-	switch {
-	case pa == "" && pb == "":
-		return 0
-	case pa == "":
-		return 1
-	case pb == "":
-		return -1
+	if va.rank != vb.rank {
+		return cmpInt(va.rank, vb.rank)
 	}
-	return comparePre(pa, pb)
+	return comparePre(va.ids, vb.ids)
+}
+
+// Qualifier ranks, low to high. rankPre is an unrecognised pre-release
+// suffix (compared lexically); rankOther an unrecognised dotted qualifier,
+// which sorts above the plain release.
+const (
+	rankPre = iota
+	rankDev
+	rankAlpha
+	rankBeta
+	rankMilestone
+	rankRC
+	rankSnapshot
+	rankFinal
+	rankPost
+	rankOther
+)
+
+// qualifierRanks maps the Maven/OSGi and PEP 440 qualifier words (java and
+// python only) to their rank. The empty word and final/release/ga are the
+// plain release.
+var qualifierRanks = map[string]int{
+	"dev":   rankDev,
+	"alpha": rankAlpha, "a": rankAlpha,
+	"beta": rankBeta, "b": rankBeta,
+	"milestone": rankMilestone, "m": rankMilestone,
+	"rc": rankRC, "cr": rankRC, "c": rankRC, "pre": rankRC, "preview": rankRC,
+	"snapshot": rankSnapshot,
+	"":         rankFinal, "final": rankFinal, "release": rankFinal, "ga": rankFinal,
+	"sp": rankPost, "post": rankPost,
+}
+
+type version struct {
+	release []string
+	rank    int
+	ids     []string // identifiers after the qualifier word, compared per comparePre
 }
 
 func goVersion(v string) string {
@@ -46,28 +93,68 @@ func goVersion(v string) string {
 	return v
 }
 
-// pepMarker finds a PEP 440 pre-release marker (a, b, rc, dev) directly
-// after the numeric release fields.
-var pepMarker = regexp.MustCompile(`^(\d+(?:\.\d+)*)\.?((?:a|b|rc|dev)(?:\d.*)?)$`)
+// pepMarker finds a PEP 440 pre/post-release marker directly after the
+// numeric release fields.
+var pepMarker = regexp.MustCompile(`^(\d+(?:\.\d+)*)\.?((?:alpha|beta|preview|pre|post|dev|rc|a|b|c)(?:\d.*)?)$`)
 
-// splitVersion drops the leading "v" and build metadata and separates the
-// release part from the pre-release suffix.
-func splitVersion(v string) (release, pre string) {
-	v = strings.TrimPrefix(strings.TrimSpace(v), "v")
+// parseVersion drops the leading "v" and build metadata, lowercases and
+// separates the release fields from the qualifier or pre-release suffix.
+func parseVersion(ecosystem, v string) version {
+	v = strings.ToLower(strings.TrimSpace(v))
+	v = strings.TrimPrefix(v, "v")
 	if i := strings.IndexByte(v, '+'); i >= 0 {
 		v = v[:i]
 	}
+	release, pre := v, ""
 	if i := strings.IndexByte(v, '-'); i >= 0 {
-		return v[:i], v[i+1:]
+		release, pre = v[:i], v[i+1:]
+	} else if m := pepMarker.FindStringSubmatch(v); m != nil && ecosystem != "java" {
+		release, pre = m[1], m[2]
 	}
-	if m := pepMarker.FindStringSubmatch(v); m != nil {
-		return m[1], m[2]
+	fields := strings.Split(release, ".")
+	if ecosystem != "java" && ecosystem != "python" {
+		return version{release: fields, rank: preRank(pre), ids: preIdents(pre)}
 	}
-	return v, ""
+	// A trailing non-numeric field is a qualifier (5.3.20.RELEASE, 6.0.0.Beta1).
+	qual, dotQual := pre, false
+	for k, f := range fields {
+		if _, err := strconv.ParseUint(f, 10, 64); err != nil {
+			qual = strings.Join(fields[k:], ".")
+			if pre != "" {
+				qual += "." + pre
+			}
+			fields, dotQual = fields[:k], true
+			break
+		}
+	}
+	ids := preIdents(qual)
+	word := ""
+	if len(ids) > 0 {
+		word = ids[0]
+	}
+	if r, ok := qualifierRanks[word]; ok {
+		if r == rankFinal {
+			ids = nil
+		} else if len(ids) > 0 {
+			ids = ids[1:]
+		}
+		return version{release: fields, rank: r, ids: ids}
+	}
+	if dotQual {
+		return version{release: fields, rank: rankOther, ids: ids}
+	}
+	return version{release: fields, rank: preRank(pre), ids: ids}
 }
 
-func compareRelease(a, b string) int {
-	fa, fb := strings.Split(a, "."), strings.Split(b, ".")
+// preRank is rankFinal for no suffix and rankPre for any pre-release.
+func preRank(pre string) int {
+	if pre == "" {
+		return rankFinal
+	}
+	return rankPre
+}
+
+func compareRelease(fa, fb []string) int {
 	for i := 0; i < len(fa) || i < len(fb); i++ {
 		x, y := "0", "0"
 		if i < len(fa) {
@@ -99,7 +186,7 @@ func compareIdent(x, y string) int {
 	return strings.Compare(x, y)
 }
 
-func cmpInt(x, y uint64) int {
+func cmpInt[T int | uint64](x, y T) int {
 	switch {
 	case x < y:
 		return -1
@@ -111,14 +198,13 @@ func cmpInt(x, y uint64) int {
 
 // comparePre compares pre-release suffixes identifier by identifier; with
 // all shared identifiers equal, the one with more identifiers is greater.
-func comparePre(a, b string) int {
-	ia, ib := preIdents(a), preIdents(b)
+func comparePre(ia, ib []string) int {
 	for i := 0; i < len(ia) && i < len(ib); i++ {
 		if c := compareIdent(ia[i], ib[i]); c != 0 {
 			return c
 		}
 	}
-	return cmpInt(uint64(len(ia)), uint64(len(ib)))
+	return cmpInt(len(ia), len(ib))
 }
 
 // preIdents splits a pre-release suffix on "." and at letter/digit
