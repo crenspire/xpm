@@ -10,10 +10,14 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
 )
+
+// warnOut receives warnings about an unusable config file. Tests replace it.
+var warnOut io.Writer = os.Stderr
 
 // ScriptsConfig holds configuration for the `xpm run` command.
 type ScriptsConfig struct {
@@ -275,8 +279,12 @@ func loadFrom(path string) Config {
 	// Unmarshal on top of the defaults: absent keys keep their default,
 	// and map fields (Search) merge key-by-key.
 	if err := json.Unmarshal(data, &c); err != nil {
-		fmt.Fprintf(os.Stderr, "xpm: ignoring invalid config %s: %v\n", path, err)
+		_, _ = fmt.Fprintf(warnOut, "xpm: ignoring invalid config %s: %v\n", path, err)
 		return defaultConfig()
+	}
+	// An explicit null replaces a map with nil; treat it as "use the defaults".
+	if c.Search == nil {
+		c.Search = defaultConfig().Search
 	}
 	return c
 }

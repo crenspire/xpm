@@ -176,7 +176,8 @@ func ValidateConfig(prefer []string, search map[string]bool) []error {
 	// Validate prefer list
 	validIDs := map[string]bool{
 		"npm": true, "yarn": true, "pnpm": true, "bun": true,
-		"pip": true, "composer": true, "cargo": true,
+		"pip": true, "poetry": true, "pipenv": true,
+		"composer": true, "cargo": true,
 		"gomod": true, "maven": true, "gradle": true,
 	}
 
