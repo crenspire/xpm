@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -47,6 +48,10 @@ func TestDefaultConfig(t *testing.T) {
 // TestLoadNoFile verifies Load returns defaults when config file doesn't exist.
 func TestLoadNoFile(t *testing.T) {
 	// Load should return defaults when file doesn't exist
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
+	t.Setenv("APPDATA", dir)
 	cfg := Load()
 
 	// Should have default values
@@ -59,63 +64,32 @@ func TestLoadNoFile(t *testing.T) {
 	}
 }
 
-// TestLoadValidJSON verifies Load correctly parses valid JSON config.
-func TestLoadValidJSON(t *testing.T) {
-	// Create a temporary config directory and file
-	tmpDir := t.TempDir()
-	configDir := filepath.Join(tmpDir, ".config", "upm")
-	if err := os.MkdirAll(configDir, 0755); err != nil {
-		t.Fatalf("Failed to create temp config dir: %v", err)
-	}
-
-	configFile := filepath.Join(configDir, "upmrc.json")
-	config := Config{
-		Prefer:        []string{"npm", "pip"},
-		Search:        map[string]bool{"npm": true, "pip": false},
-		AutoInstallPM: false,
-		Interactive:   false,
-	}
-
-	data, err := json.Marshal(config)
-	if err != nil {
-		t.Fatalf("Failed to marshal config: %v", err)
-	}
-
-	if err := os.WriteFile(configFile, data, 0644); err != nil {
-		t.Fatalf("Failed to write config file: %v", err)
-	}
-
-	// Note: This test can't fully test Load() because it uses the actual config path
-	// In production, you'd use dependency injection or environment variables
-}
-
-// TestLoadInvalidJSON verifies Load returns defaults for invalid JSON.
-func TestLoadInvalidJSON(t *testing.T) {
-	tmpDir := t.TempDir()
-	configDir := filepath.Join(tmpDir, ".config", "upm")
-	if err := os.MkdirAll(configDir, 0755); err != nil {
-		t.Fatalf("Failed to create temp config dir: %v", err)
-	}
-
-	configFile := filepath.Join(configDir, "upmrc.json")
-	if err := os.WriteFile(configFile, []byte("not valid json{{{"), 0644); err != nil {
-		t.Fatalf("Failed to write invalid config file: %v", err)
-	}
-
-	// Load() should return defaults for invalid JSON
-	// Note: This test can't fully verify since Load() uses fixed paths
-}
-
-// TestConfigPath verifies configPath returns a non-empty string on most systems.
+// TestConfigPath verifies Path returns a non-empty string on most systems.
 func TestConfigPath(t *testing.T) {
-	path := configPath()
+	path := Path()
 	// On most systems, this should return a valid path
 	// It might be empty if HOME is not set
 	if path != "" {
 		// Verify it ends with the expected filename
 		if filepath.Base(path) != "xpmrc.json" {
-			t.Errorf("configPath() should end with xpmrc.json, got %s", path)
+			t.Errorf("Path() should end with xpmrc.json, got %s", path)
 		}
+	}
+}
+
+// TestPathFollowsEnv verifies Path() is derived from the environment variables
+// the platform uses, so tests can isolate the config with a temp dir.
+func TestPathFollowsEnv(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
+	t.Setenv("APPDATA", dir)
+	want := filepath.Join(dir, ".config", "xpm", "xpmrc.json")
+	if runtime.GOOS == "windows" {
+		want = filepath.Join(dir, "xpm", "xpmrc.json")
+	}
+	if got := Path(); got != want {
+		t.Errorf("Path() = %q, want %q", got, want)
 	}
 }
 

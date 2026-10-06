@@ -242,9 +242,8 @@ func defaultConfig() Config {
 	}
 }
 
-// configPath returns the platform-specific path to the configuration file.
-// Returns an empty string if the path cannot be determined.
-func configPath() string {
+// Path returns the platform-specific config file path, or "" if it cannot be determined. Windows: %APPDATA%\xpm\xpmrc.json; elsewhere: $HOME/.config/xpm/xpmrc.json.
+func Path() string {
 	if runtime.GOOS == "windows" {
 		base := os.Getenv("APPDATA")
 		if base == "" {
@@ -264,7 +263,7 @@ func configPath() string {
 // If the file doesn't exist, defaults are returned; if it is invalid,
 // a warning is printed to stderr and defaults are returned.
 func Load() Config {
-	return loadFrom(configPath())
+	return loadFrom(Path())
 }
 
 func loadFrom(path string) Config {

@@ -9,12 +9,26 @@ import (
 	"github.com/crenspire/xpm/internal/config"
 )
 
-// isolatedHome points the config file at a temp dir.
-func isolatedHome(t *testing.T) {
+// isolatedHome points the config file at a temp dir on every OS (HOME for
+// Unix, USERPROFILE for os.UserHomeDir on Windows, APPDATA for the Windows
+// config location) and returns that dir.
+func isolatedHome(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("APPDATA", home)
+	return home
+}
+
+// TestWriteConfigIsWhatLoadReads guards the test helper: the config it writes
+// must be the one config.Load reads, on every OS.
+func TestWriteConfigIsWhatLoadReads(t *testing.T) {
+	isolatedHome(t)
+	writeConfig(t, `{"prefer":["pip"]}`)
+	if got := config.Load().Prefer; !reflect.DeepEqual(got, []string{"pip"}) {
+		t.Fatalf("Load().Prefer = %v, want [pip]", got)
+	}
 }
 
 func TestConfigSetValidatesBeforeWriting(t *testing.T) {
@@ -32,7 +46,7 @@ func TestConfigSetValidatesBeforeWriting(t *testing.T) {
 			t.Errorf("config set %v exited %d, want 1", args, code)
 		}
 	}
-	if _, err := os.Stat(getConfigPath()); err == nil {
+	if _, err := os.Stat(config.Path()); err == nil {
 		t.Fatal("an invalid `config set` wrote the config file")
 	}
 }

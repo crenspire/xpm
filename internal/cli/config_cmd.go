@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 
 	"github.com/manifoldco/promptui"
@@ -82,7 +81,7 @@ func showConfig() int {
 
 // showConfigPath displays the configuration file path.
 func showConfigPath() int {
-	path := getConfigPath()
+	path := config.Path()
 	if path == "" {
 		fmt.Println("Could not determine config path")
 		return 1
@@ -95,22 +94,6 @@ func showConfigPath() int {
 	}
 
 	return 0
-}
-
-// getConfigPath returns the platform-specific config file path.
-func getConfigPath() string {
-	if runtime.GOOS == "windows" {
-		base := os.Getenv("APPDATA")
-		if base == "" {
-			return ""
-		}
-		return filepath.Join(base, "xpm", "xpmrc.json")
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, ".config", "xpm", "xpmrc.json")
 }
 
 // editConfig opens an interactive editor for the configuration.
@@ -313,7 +296,7 @@ func setConfigValue(args []string) int {
 
 // resetConfig resets the configuration to defaults.
 func resetConfig() int {
-	path := getConfigPath()
+	path := config.Path()
 	if path == "" {
 		fmt.Fprintln(os.Stderr, "Could not determine config path")
 		return 1
@@ -348,7 +331,7 @@ func resetConfig() int {
 
 // saveConfig saves the configuration to the config file.
 func saveConfig(c config.Config) error {
-	path := getConfigPath()
+	path := config.Path()
 	if path == "" {
 		return fmt.Errorf("could not determine config path")
 	}
