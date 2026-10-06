@@ -327,3 +327,35 @@ func TestRemoveVersionRefusesWhenActiveJSONCorrupt(t *testing.T) {
 		t.Fatalf("version was removed: %v", serr)
 	}
 }
+
+// failingRemover is a fakeInstaller whose Remover always fails.
+type failingRemover struct{ *fakeInstaller }
+
+func (failingRemover) Remove(context.Context, string, string, string) error {
+	return errors.New("toolchain uninstall failed")
+}
+
+func TestRemoveVersionKeepsGlobalDefaultWhenRemoverFails(t *testing.T) {
+	m := isolate(t)
+	var out bytes.Buffer
+	m.SetOutput(&out)
+	useFake(t, failingRemover{&fakeInstaller{}})
+	dir := installFake(t, m, "1.0.0", "")
+	if err := m.SetGlobalVersion(fakeRT, "1.0.0"); err != nil {
+		t.Fatal(err)
+	}
+	err := RemoveVersion(context.Background(), m, fakeRT, "1.0.0")
+	if err == nil || !strings.Contains(err.Error(), "toolchain uninstall failed") {
+		t.Fatalf("err = %v", err)
+	}
+	active, aerr := m.loadActiveVersions()
+	if aerr != nil || active[fakeRT] != "1.0.0" {
+		t.Fatalf("active.json = %v, %v; want the default kept", active, aerr)
+	}
+	if _, serr := os.Stat(dir); serr != nil {
+		t.Fatalf("version dir should remain: %v", serr)
+	}
+	if strings.Contains(out.String(), "Cleared") {
+		t.Fatalf("output %q claims the default was cleared", out.String())
+	}
+}
