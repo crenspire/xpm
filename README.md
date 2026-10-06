@@ -145,13 +145,37 @@ xpm doctor              # installed tools, runtimes, lockfiles and project healt
 
 ### Runtime versions (experimental)
 
+macOS and Linux only; on Windows `xpm env` exits with an error.
+
 ```bash
-xpm env install node@20.11.0   # verified against nodejs.org SHASUMS256
-xpm env install go@latest      # newest *stable* Go, verified against go.dev
-xpm env use node@20.11.0       # pin for this directory (.xpm-env)
-xpm env setup-path             # add xpm's shims to your shell PATH
-xpm env list
+xpm env install node@20        # newest 20.x; also node@20.11.0, node@lts, node@latest
+xpm env use node@20            # pin in ./.xpm-env (exact installed version written)
+xpm env use --global go@1.26   # default everywhere else (~/.xpm/env/active.json)
+xpm env setup-path             # put ~/.xpm/env/shims first on PATH (one shell file)
+xpm env current                # version in effect here, and which file set it
+xpm env list                   # installed versions, newest first
+xpm env ls-remote python       # newest 20 available versions
+xpm env remove node@20.11.0
+xpm env reshim                 # recreate the shims (e.g. after moving the xpm binary)
 ```
+
+| Runtime | Source | Verified with |
+|---|---|---|
+| node | nodejs.org | `SHASUMS256.txt` |
+| go | go.dev | SHA-256 from the go.dev release feed |
+| python | [python-build-standalone](https://github.com/astral-sh/python-build-standalone) (newest release only) | `SHA256SUMS` |
+| java | Eclipse Temurin (Adoptium API); `java@21`, `java@lts` | Adoptium package checksum |
+| bun | GitHub releases | `SHASUMS256.txt` |
+| deno | GitHub releases (2.0.6+) | per-file `.sha256sum` |
+| rust | a private rustup in `~/.xpm/env` (never touches `~/.cargo` or your shell profile); `rust@stable`, `rust@1.80` | rustup-init `.sha256`, then rustup |
+| php | Homebrew `shivammathur/php` on macOS, per minor version (`php@8.3`) | Homebrew |
+
+How it works:
+- **Install never pins.** `install` downloads, verifies and unpacks into a staging directory, then renames it into place, so an interrupted install (Ctrl-C exits 130) leaves nothing behind. The first version of a runtime becomes the global default; `install` never writes `.xpm-env`.
+- **`use` vs `use --global`.** `use` writes `.xpm-env` in the current directory (comments and order are kept); `--global` writes `active.json`. Lookup order: the nearest `.xpm-env` up from the current directory that names the runtime, then `active.json`. Values may be exact (`20.11.0`), partial (`20`), `latest` or `lts`, matched against installed versions.
+- **Shims are links to xpm itself** (`~/.xpm/env/shims/node -> xpm`): no Go toolchain needed. A shim runs the version in effect, with that version's `bin` first on `PATH`. If nothing is configured it runs the system binary from `PATH`; if `.xpm-env` names a version that is not installed it fails (exit 127) and tells you what to install.
+- **`setup-path`** appends one line to one file for your `$SHELL`: `~/.zshrc` (or `$ZDOTDIR/.zshrc`), `~/.bashrc` (Linux) / `~/.bash_profile` (macOS), `~/.config/fish/conf.d/xpm.fish`, or `~/.profile`. Running it again changes nothing.
+- GitHub API calls (bun, deno version lists) use `GITHUB_TOKEN` when set; partial versions match the 100 most recent releases.
 
 ### Global flags
 
