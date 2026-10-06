@@ -71,6 +71,11 @@ bench:
 	@echo "Running benchmarks..."
 	$(GOTEST) -bench=. -benchmem ./...
 
+# Check CLI latency/size against roadmap budgets (needs hyperfine + jq + network)
+.PHONY: perf
+perf:
+	./scripts/perf.sh
+
 # Run linters
 .PHONY: lint
 lint:

@@ -126,3 +126,22 @@ func TestSearchEverywhereSkipsDisabled(t *testing.T) {
 		t.Fatalf("disabled registry was queried (called=%v got=%v err=%v)", called, got, err)
 	}
 }
+
+// BenchmarkSearchEverywhereFanout measures fan-out overhead with instant fakes.
+func BenchmarkSearchEverywhereFanout(b *testing.B) {
+	origLookups, origDir := exactLookups, lookupCacheDir
+	defer func() { exactLookups, lookupCacheDir = origLookups, origDir }()
+	exactLookups, lookupCacheDir = nil, ""
+	for _, id := range allIDs {
+		id := id
+		exactLookups = append(exactLookups, lookup{id: id, fn: func(p string) (*Result, error) {
+			return &Result{Manager: id, Name: p}, nil
+		}})
+	}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		if _, err := SearchEverywhere("x", Options{}); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
