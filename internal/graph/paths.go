@@ -6,10 +6,10 @@ import (
 
 // maxPathPops bounds the work spent enumerating paths to one target, so a
 // dense cyclic graph cannot run away. Hitting it marks the result truncated.
-const maxPathPops = 200000
+const maxPathPops = 50000
 
 // maxPathPushes bounds the queue growth (and so the memory) per target.
-const maxPathPushes = 1000000
+const maxPathPushes = 100000
 
 // TargetPaths holds the dependency paths to one node.
 type TargetPaths struct {
