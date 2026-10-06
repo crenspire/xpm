@@ -1,19 +1,16 @@
 package runtimes
 
 import (
-	"encoding/json"
+	"context"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
-	"path/filepath"
-	"runtime"
 	"strings"
 
 	"github.com/crenspire/xpm/internal/env"
 )
 
-// DenoInstaller installs Deno versions.
+// DenoInstaller installs Deno from GitHub releases, verified against the
+// per-asset .sha256sum file.
 type DenoInstaller struct{}
 
 func init() {
@@ -21,142 +18,68 @@ func init() {
 }
 
 // Name returns the runtime name.
-func (d *DenoInstaller) Name() string {
-	return "deno"
-}
+func (d *DenoInstaller) Name() string { return "deno" }
 
-// ListRemote fetches available Deno versions from GitHub releases.
-func (d *DenoInstaller) ListRemote() ([]string, error) {
-	resp, err := http.Get("https://api.github.com/repos/denoland/deno/releases")
+// ListRemote returns versions from release tags like "v2.9.7".
+func (d *DenoInstaller) ListRemote(ctx context.Context) ([]string, error) {
+	rels, err := fetchGitHubReleases(ctx, "denoland/deno")
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
-
-	var releases []struct {
-		TagName string `json:"tag_name"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&releases); err != nil {
-		return nil, err
-	}
-
-	var versions []string
-	for _, release := range releases {
-		// Remove 'v' prefix
-		version := strings.TrimPrefix(release.TagName, "v")
-		versions = append(versions, version)
-	}
-
-	return versions, nil
+	return versionsFromTags(rels, "v"), nil
 }
 
-// ValidateVersion validates a Deno version string.
-func (d *DenoInstaller) ValidateVersion(version string) error {
-	if version == "" {
-		return fmt.Errorf("version cannot be empty")
+// denoAsset names the release zip for a platform.
+func denoAsset(goos, goarch string) (string, error) {
+	triple := map[string]string{"darwin": "apple-darwin", "linux": "unknown-linux-gnu", "windows": "pc-windows-msvc"}[goos]
+	arch := map[string]string{"amd64": "x86_64", "arm64": "aarch64"}[goarch]
+	if triple == "" || arch == "" {
+		return "", fmt.Errorf("deno publishes no binaries for %s/%s", goos, goarch)
 	}
-	return nil
+	return fmt.Sprintf("deno-%s-%s.zip", arch, triple), nil
 }
 
-// Install downloads and installs a Deno version.
-func (d *DenoInstaller) Install(version string, dest string) error {
-	// Determine platform
-	goos := runtime.GOOS
-	goarch := runtime.GOARCH
-
-	// Map Go arch to Deno arch names
-	arch := goarch
-	if goarch == "amd64" {
-		arch = "x86_64"
-	} else if goarch == "arm64" {
-		arch = "aarch64"
+// parseSumFile reads "<hex>  <name>" (or a bare "<hex>").
+func parseSumFile(body, name string) (string, error) {
+	fields := strings.Fields(body)
+	if len(fields) == 1 {
+		return fields[0], nil
 	}
+	return checksumFromSums(body, name)
+}
 
-	// Map Go OS to Deno OS names
-	osName := goos
-	if goos == "darwin" {
-		osName = "apple-darwin"
-	} else if goos == "linux" {
-		osName = "unknown-linux-gnu"
-	} else if goos == "windows" {
-		osName = "pc-windows-msvc"
-	}
-
-	filename := fmt.Sprintf("deno-%s-%s.zip", arch, osName)
-	url := fmt.Sprintf("https://github.com/denoland/deno/releases/download/v%s/%s", version, filename)
-
-	fmt.Printf("Downloading from %s...\n", url)
-
-	// Download
-	resp, err := http.Get(url)
-	if err != nil {
-		return fmt.Errorf("failed to download: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("download failed with status %d", resp.StatusCode)
-	}
-
-	// Create temp file
-	tmpFile, err := os.CreateTemp("", "deno-*.tmp")
+// Install downloads, verifies and unpacks Deno; its zip holds a root-level
+// deno binary, which moves to bin/deno.
+func (d *DenoInstaller) Install(ctx context.Context, req env.InstallRequest) error {
+	zip, err := denoAsset(hostOS, hostArch)
 	if err != nil {
 		return err
 	}
-	defer os.Remove(tmpFile.Name())
-
-	if _, err := io.Copy(tmpFile, resp.Body); err != nil {
-		tmpFile.Close()
+	url := fmt.Sprintf("%s/denoland/deno/releases/download/v%s/%s", githubDownloadURL, req.Version, zip)
+	body, err := fetchSmall(ctx, url+".sha256sum")
+	if isNotFound(err) {
+		return fmt.Errorf("deno %s publishes no SHA-256 checksum for %s; xpm only installs verified downloads (Deno 2.0.6+ publish them)", req.Version, zip)
+	}
+	if err != nil {
+		return fmt.Errorf("fetch deno checksum: %w", err)
+	}
+	want, err := parseSumFile(string(body), zip)
+	if err != nil {
 		return err
 	}
-	tmpFile.Close()
-
-	// Extract zip
-	if err := extractZip(tmpFile.Name(), dest); err != nil {
+	archive, err := downloadVerified(ctx, url, want)
+	if err != nil {
 		return err
 	}
-
-	// Deno extracts to deno-<arch>-<os>/, move binary up
-	entries, _ := os.ReadDir(dest)
-	for _, entry := range entries {
-		if entry.IsDir() && strings.HasPrefix(entry.Name(), "deno-") {
-			denoDir := filepath.Join(dest, entry.Name())
-			denoBinary := filepath.Join(denoDir, "deno")
-			if goos == "windows" {
-				denoBinary = filepath.Join(denoDir, "deno.exe")
-			}
-			if _, err := os.Stat(denoBinary); err == nil {
-				// Move binary to bin/
-				binDir := filepath.Join(dest, "bin")
-				os.MkdirAll(binDir, 0755)
-				target := filepath.Join(binDir, filepath.Base(denoBinary))
-				os.Rename(denoBinary, target)
-				os.RemoveAll(denoDir)
-			}
-			break
-		}
+	defer os.Remove(archive)
+	if err := extractArchive(archive, req.Dest); err != nil {
+		return err
 	}
-
-	return nil
-}
-
-// PostInstall performs post-installation setup.
-func (d *DenoInstaller) PostInstall(version, dest string) error {
-	// Make deno executable
-	denoPath := filepath.Join(dest, "bin", "deno")
-	if runtime.GOOS == "windows" {
-		denoPath = filepath.Join(dest, "bin", "deno.exe")
-	}
-	if info, err := os.Stat(denoPath); err == nil {
-		os.Chmod(denoPath, info.Mode()|0111)
+	if err := moveToBin(req.Dest, "deno", "deno"); err != nil {
+		return fmt.Errorf("deno archive has no deno binary at its root: %w", err)
 	}
 	return nil
 }
 
-// BinaryPaths returns the paths to Deno binaries.
-func (d *DenoInstaller) BinaryPaths(version, dest string) []string {
-	if runtime.GOOS == "windows" {
-		return []string{"bin\\deno.exe"}
-	}
-	return []string{"bin/deno"}
-}
+// BinaryPaths returns the Deno binary.
+func (d *DenoInstaller) BinaryPaths() []string { return []string{"bin/deno"} }

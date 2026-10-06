@@ -497,7 +497,7 @@ func showEnvHelp() {
 	fmt.Printf("%s\n", colorCommand("xpm env <command> [arguments]"))
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("DESCRIPTION:"))
-	fmt.Println("  Manage runtime versions (node, python, go, java, rust, bun, deno) (experimental)")
+	fmt.Println("  Manage runtime versions (node, python, go, java, rust, bun, deno, php) (experimental)")
 	fmt.Println("  This command is experimental and is being reworked; its behaviour and output may change.")
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("COMMANDS:"))

@@ -1,18 +1,19 @@
 package runtimes
 
 import (
+	"context"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
-	"path/filepath"
-	"runtime"
 	"strings"
 
 	"github.com/crenspire/xpm/internal/env"
 )
 
-// PythonInstaller installs Python versions.
+// pbsLatestURL describes the newest python-build-standalone release.
+var pbsLatestURL = "https://raw.githubusercontent.com/astral-sh/python-build-standalone/latest-release/latest-release.json"
+
+// PythonInstaller installs CPython builds from python-build-standalone
+// (the builds uv and rye use), verified against the release's SHA256SUMS.
 type PythonInstaller struct{}
 
 func init() {
@@ -20,218 +21,140 @@ func init() {
 }
 
 // Name returns the runtime name.
-func (p *PythonInstaller) Name() string {
-	return "python"
+func (p *PythonInstaller) Name() string { return "python" }
+
+// pbsRelease is one python-build-standalone release and its checksums.
+type pbsRelease struct {
+	Tag    string
+	Prefix string // asset URL prefix
+	Sums   string // SHA256SUMS content
+	Triple string
 }
 
-// ListRemote fetches available Python versions from pyenv mirror.
-func (p *PythonInstaller) ListRemote() ([]string, error) {
-	// Use pyenv's version list API or python.org
-	// For simplicity, we'll fetch from a known source
-	// In production, this could use python.org/downloads API
-	resp, err := http.Get("https://www.python.org/ftp/python/")
+// pbsTriple maps GOOS/GOARCH to the supported build triples.
+func pbsTriple(goos, goarch string) (string, error) {
+	t := map[string]string{
+		"darwin/arm64": "aarch64-apple-darwin",
+		"darwin/amd64": "x86_64-apple-darwin",
+		"linux/amd64":  "x86_64-unknown-linux-gnu",
+		"linux/arm64":  "aarch64-unknown-linux-gnu",
+	}[goos+"/"+goarch]
+	if t == "" {
+		return "", fmt.Errorf("xpm installs Python only on macOS and Linux (x86_64, arm64), not %s/%s", goos, goarch)
+	}
+	return t, nil
+}
+
+func (p *PythonInstaller) latest(ctx context.Context) (pbsRelease, error) {
+	triple, err := pbsTriple(hostOS, hostArch)
+	if err != nil {
+		return pbsRelease{}, err
+	}
+	var meta struct {
+		Tag            string `json:"tag"`
+		AssetURLPrefix string `json:"asset_url_prefix"`
+	}
+	if err := fetchJSON(ctx, pbsLatestURL, &meta); err != nil {
+		return pbsRelease{}, err
+	}
+	if meta.Tag == "" || meta.AssetURLPrefix == "" {
+		return pbsRelease{}, fmt.Errorf("unexpected python-build-standalone release info from %s", pbsLatestURL)
+	}
+	sums, err := fetchSmall(ctx, strings.TrimSuffix(meta.AssetURLPrefix, "/")+"/SHA256SUMS")
+	if err != nil {
+		return pbsRelease{}, fmt.Errorf("fetch python-build-standalone checksums: %w", err)
+	}
+	return pbsRelease{Tag: meta.Tag, Prefix: strings.TrimSuffix(meta.AssetURLPrefix, "/"), Sums: string(sums), Triple: triple}, nil
+}
+
+// pbsAsset names the install_only archive of version in a release.
+func pbsAsset(version, tag, triple string) string {
+	return fmt.Sprintf("cpython-%s+%s-%s-install_only.tar.gz", version, tag, triple)
+}
+
+// versions lists the CPython versions this release offers for its triple
+// (only the plain install_only flavour).
+func (r pbsRelease) versions() []string {
+	suffix := "+" + r.Tag + "-" + r.Triple + "-install_only.tar.gz"
+	var out []string
+	for _, line := range strings.Split(r.Sums, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			continue
+		}
+		name := strings.TrimPrefix(fields[1], "*")
+		if !strings.HasPrefix(name, "cpython-") || !strings.HasSuffix(name, suffix) {
+			continue
+		}
+		v := strings.TrimSuffix(strings.TrimPrefix(name, "cpython-"), suffix)
+		if env.ValidateVersionSpec(v) == nil {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// ListRemote returns the versions of the newest release for this platform.
+func (p *PythonInstaller) ListRemote(ctx context.Context) ([]string, error) {
+	r, err := p.latest(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	// Parse HTML to extract versions (simplified)
-	// In production, use proper HTML parsing or API
-	var versions []string
-	content := string(body)
-	lines := strings.Split(content, "\n")
-	for _, line := range lines {
-		if strings.Contains(line, "href=\"") && strings.Contains(line, "python-") {
-			// Extract version from href
-			start := strings.Index(line, "python-")
-			if start != -1 {
-				end := strings.Index(line[start:], "/")
-				if end != -1 {
-					version := line[start+7 : start+end]
-					if isValidPythonVersion(version) {
-						versions = append(versions, version)
-					}
-				}
-			}
-		}
-	}
-
-	// Fallback: return common versions if parsing fails
-	if len(versions) == 0 {
-		versions = []string{
-			"3.12.1", "3.12.0", "3.11.7", "3.11.6", "3.11.5",
-			"3.10.13", "3.10.12", "3.9.18", "3.9.17",
-			"3.8.18", "3.7.17",
-		}
-	}
-
-	return versions, nil
+	return r.versions(), nil
 }
 
-// isValidPythonVersion checks if a version string looks valid.
-func isValidPythonVersion(version string) bool {
-	parts := strings.Split(version, ".")
-	if len(parts) < 2 {
-		return false
-	}
-	// Check each part is numeric
-	for _, part := range parts {
-		if len(part) == 0 {
-			return false
-		}
-		for _, r := range part {
-			if r < '0' || r > '9' {
-				return false
-			}
-		}
-	}
-	return true
-}
-
-// ValidateVersion validates a Python version string.
-func (p *PythonInstaller) ValidateVersion(version string) error {
-	// Allow special aliases
-	if version == "latest" {
-		return nil
-	}
-	if !isValidPythonVersion(version) {
-		return fmt.Errorf("invalid Python version format")
-	}
-	return nil
-}
-
-// GetLatestVersion returns the latest Python version.
-func (p *PythonInstaller) GetLatestVersion() (string, error) {
-	versions, err := p.ListRemote()
+// Resolve picks from the newest release only: "latest" or a partial
+// version selects the highest stable match; an exact version must be offered.
+func (p *PythonInstaller) Resolve(ctx context.Context, spec string) (string, error) {
+	r, err := p.latest(ctx)
 	if err != nil {
 		return "", err
 	}
-	if len(versions) == 0 {
-		return "", fmt.Errorf("no versions available")
+	versions := r.versions()
+	offered := append([]string(nil), versions...)
+	env.SortVersionsDesc(offered)
+	for i, j := 0, len(offered)-1; i < j; i, j = i+1, j-1 {
+		offered[i], offered[j] = offered[j], offered[i]
 	}
-	// First version should be the latest
-	return versions[0], nil
-}
-
-// Install downloads and installs a Python version.
-func (p *PythonInstaller) Install(version string, dest string) error {
-	// Handle special aliases
-	if version == "latest" {
-		latest, err := p.GetLatestVersion()
-		if err != nil {
-			return fmt.Errorf("failed to get latest version: %w", err)
+	list := strings.Join(offered, ", ")
+	pv, ok := env.ParseVersion(spec)
+	if spec != "latest" && ok && len(pv.Nums) >= 3 {
+		for _, v := range versions {
+			if v == spec {
+				return v, nil
+			}
 		}
-		fmt.Printf("Resolved 'latest' to %s\n", latest)
-		version = latest
+		return "", fmt.Errorf("python %s is not available: python-build-standalone %s provides %s", spec, r.Tag, list)
 	}
-
-	// Download prebuilt Python binaries directly to xpm directory
-	// For macOS and Linux, we'll use python.org's prebuilt installers
-	goos := runtime.GOOS
-	goarch := runtime.GOARCH
-
-	if goos == "darwin" {
-		return p.installMacOS(version, dest)
-	} else if goos == "linux" {
-		return p.installLinux(version, dest)
-	} else if goos == "windows" {
-		return p.installWindows(version, dest)
+	if v, found := env.HighestMatch(spec, versions, false); found {
+		return v, nil
 	}
-
-	return fmt.Errorf("Python installation not yet implemented for %s/%s", goos, goarch)
+	return "", fmt.Errorf("no python version matches %s: python-build-standalone %s provides %s", spec, r.Tag, list)
 }
 
-// installMacOS installs Python on macOS using python.org's macOS installer.
-func (p *PythonInstaller) installMacOS(version string, dest string) error {
-	// Python installation on macOS is complex because:
-	// 1. Official installers are .pkg files (hard to extract programmatically)
-	// 2. DMG files require mounting
-	// 3. Framework builds need special handling
-
-	// For now, provide clear instructions
-	majorMinor := strings.Join(strings.Split(version, ".")[:2], ".")
-	return fmt.Errorf("Python installation on macOS requires manual setup.\n\n"+
-		"Option 1: Use system Python (already installed on macOS)\n"+
-		"Option 2: Install via Homebrew: brew install python@%s\n"+
-		"Option 3: Download from python.org and install manually\n\n"+
-		"Note: Automatic Python installation on macOS is complex due to .pkg installer format.\n"+
-		"Consider using the system Python or Homebrew-installed Python.\n\n"+
-		"After installing Python via Homebrew or manually, you can use it with xpm by setting it up manually.", majorMinor)
-}
-
-// installLinux installs Python on Linux.
-func (p *PythonInstaller) installLinux(version string, dest string) error {
-	// For Linux, we could download source and compile, or use prebuilt binaries
-	// For now, suggest using system package manager
-	return fmt.Errorf("Python installation on Linux requires compilation or system packages.\n\n"+
-		"Option 1: Use system Python: sudo apt-get install python3.%s (Debian/Ubuntu)\n"+
-		"Option 2: Use pyenv: pyenv install %s\n"+
-		"Option 3: Download source from python.org and compile\n\n"+
-		"Note: Automatic Python installation on Linux requires compilation which is time-consuming.",
-		strings.Split(version, ".")[1], version)
-}
-
-// installWindows installs Python on Windows.
-func (p *PythonInstaller) installWindows(version string, dest string) error {
-	// For Windows, download the embeddable package
-	filename := fmt.Sprintf("python-%s-embed-amd64.zip", version)
-	url := fmt.Sprintf("https://www.python.org/ftp/python/%s/%s", version, filename)
-
-	fmt.Printf("Downloading from %s...\n", url)
-
-	resp, err := http.Get(url)
-	if err != nil {
-		return fmt.Errorf("failed to download: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("download failed with status %d", resp.StatusCode)
-	}
-
-	tmpFile, err := os.CreateTemp("", "python-*.zip")
+// Install downloads, verifies and unpacks CPython into req.Dest.
+func (p *PythonInstaller) Install(ctx context.Context, req env.InstallRequest) error {
+	r, err := p.latest(ctx)
 	if err != nil {
 		return err
 	}
-	defer os.Remove(tmpFile.Name())
-
-	if _, err := io.Copy(tmpFile, resp.Body); err != nil {
-		tmpFile.Close()
+	asset := pbsAsset(req.Version, r.Tag, r.Triple)
+	want, err := checksumFromSums(r.Sums, asset)
+	if err != nil {
+		return fmt.Errorf("python %s is not in python-build-standalone %s: %w", req.Version, r.Tag, err)
+	}
+	archive, err := downloadVerified(ctx, r.Prefix+"/"+asset, want)
+	if err != nil {
 		return err
 	}
-	tmpFile.Close()
-
-	// Extract to destination
-	return extractZip(tmpFile.Name(), dest)
+	defer os.Remove(archive)
+	if err := extractArchive(archive, req.Dest); err != nil {
+		return err
+	}
+	return hoistDir(req.Dest, "python")
 }
 
-// PostInstall performs post-installation setup.
-func (p *PythonInstaller) PostInstall(version, dest string) error {
-	// Ensure pip is available
-	pipPath := filepath.Join(dest, "bin", "pip")
-	if _, err := os.Stat(pipPath); err != nil {
-		// Try to bootstrap pip
-		pythonPath := filepath.Join(dest, "bin", "python")
-		if runtime.GOOS == "windows" {
-			pythonPath = filepath.Join(dest, "python.exe")
-		}
-		if _, err := os.Stat(pythonPath); err == nil {
-			// Download get-pip.py and run it
-			// For now, skip - pip should come with Python 3.4+
-		}
-	}
-	return nil
-}
-
-// BinaryPaths returns the paths to Python binaries.
-func (p *PythonInstaller) BinaryPaths(version, dest string) []string {
-	if runtime.GOOS == "windows" {
-		return []string{"python.exe", "python3.exe", "Scripts\\pip.exe"}
-	}
-	return []string{"bin/python", "bin/python3", "bin/pip"}
+// BinaryPaths returns the Python binaries.
+func (p *PythonInstaller) BinaryPaths() []string {
+	return []string{"bin/python", "bin/python3", "bin/pip", "bin/pip3"}
 }

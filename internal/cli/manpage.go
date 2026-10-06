@@ -316,7 +316,7 @@ Install dependencies in every workspace project`
 		data.Description = "Manage runtime versions (experimental)"
 		data.Synopsis = `.B xpm env
 \fIcommand\fR [\fIarguments\fR]`
-		data.FullDescription = `Manage runtime versions (node, python, go, java, rust, bun, deno).
+		data.FullDescription = `Manage runtime versions (node, python, go, java, rust, bun, deno, php).
 This command is experimental and is being reworked; its behaviour and output may change.`
 		data.Options = `.TP
 \fBinstall\fR \fIruntime@version\fR

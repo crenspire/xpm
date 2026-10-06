@@ -1,183 +1,228 @@
 package env
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
-
-	"github.com/crenspire/xpm/internal/logx"
+	"runtime"
+	"strconv"
+	"strings"
+	"time"
 )
 
-// InstallRuntime installs a specific version of a runtime.
-func InstallRuntime(manager *Manager, runtime, version string) error {
-	return InstallRuntimeWithAlias(manager, runtime, version, "")
+// ResolveSpec turns a user spec into one exact version. An installer's
+// Resolver wins; otherwise "latest" is the highest stable remote version,
+// "lts" needs an LTSResolver, a spec with three or more numeric components
+// is taken as-is (no network), and a partial spec picks the highest
+// matching remote version (stable only unless the spec is a prerelease).
+func ResolveSpec(ctx context.Context, inst RuntimeInstaller, spec string) (string, error) {
+	if err := ValidateVersionSpec(spec); err != nil {
+		return "", err
+	}
+	rt := inst.Name()
+	exact, err := resolveSpec(ctx, inst, spec)
+	if err != nil {
+		return "", err
+	}
+	if err := ValidateVersionSpec(exact); err != nil {
+		return "", fmt.Errorf("%s: resolving %s gave an unusable version: %w", rt, spec, err)
+	}
+	return exact, nil
 }
 
-// InstallRuntimeWithAlias installs a specific version of a runtime and stores the alias used.
-func InstallRuntimeWithAlias(manager *Manager, runtime, version, alias string) error {
-	if err := ValidateRuntimeName(runtime); err != nil {
-		return err
+func resolveSpec(ctx context.Context, inst RuntimeInstaller, spec string) (string, error) {
+	rt := inst.Name()
+	if r, ok := inst.(Resolver); ok {
+		return r.Resolve(ctx, spec)
 	}
-	if err := ValidateVersionSpec(version); err != nil {
-		return err
+	if spec == "lts" {
+		l, ok := inst.(LTSResolver)
+		if !ok {
+			return "", fmt.Errorf("%s has no lts alias", rt)
+		}
+		return l.LatestLTS(ctx)
 	}
-	installer, err := GetInstaller(runtime)
+	pv, parsed := ParseVersion(spec)
+	if spec != "latest" && parsed && len(pv.Nums) >= 3 {
+		return spec, nil
+	}
+	versions, err := inst.ListRemote(ctx)
 	if err != nil {
-		return err
+		return "", fmt.Errorf("list %s versions: %w", rt, err)
 	}
-
-	// Validate version
-	if err := installer.ValidateVersion(version); err != nil {
-		return fmt.Errorf("invalid version %s for %s: %w", version, runtime, err)
+	if v, ok := HighestMatch(spec, versions, parsed && pv.IsPrerelease()); ok {
+		return v, nil
 	}
+	return "", fmt.Errorf("no %s version matches %s (see: xpm env ls-remote %s)", rt, spec, rt)
+}
 
-	// Resolve aliases and partial versions BEFORE creating dest directory
-	// This ensures we install to the correct version directory
-	resolvedVersion := version
-	detectedAlias := alias
-
-	// If no alias was provided but version is an alias, detect it
-	if alias == "" {
-		if version == "latest" || version == "lts" {
-			detectedAlias = version
-		}
+// InstallRuntime resolves spec, then installs that exact version atomically:
+// it stages into runtimes/<rt>/.tmp-*, verifies every BinaryPaths entry,
+// writes .xpm-meta.json and renames the stage into place, all under a
+// per-runtime lock. On any failure or cancellation nothing is left behind.
+// It never writes .xpm-env; if the runtime has no global version yet, the
+// installed one becomes the global default. When only that last step fails
+// it returns exact and a *PostInstallError.
+func InstallRuntime(ctx context.Context, m *Manager, rt, spec string) (string, error) {
+	if err := ValidateRuntimeName(rt); err != nil {
+		return "", err
 	}
-
-	// Resolve the version (handles aliases and partial versions)
-	// We need to call a method that resolves without installing
-	// For now, we'll let Install handle resolution, but we need to track the resolved version
-	// Actually, let's resolve it here for Node.js specifically
-	if runtime == "node" {
-		if version == "latest" {
-			if nodeInstaller, ok := installer.(interface{ GetLatestVersion() (string, error) }); ok {
-				latest, err := nodeInstaller.GetLatestVersion()
-				if err == nil {
-					resolvedVersion = latest
-					if detectedAlias == "" {
-						detectedAlias = "latest"
-					}
-				}
-			}
-		} else if version == "lts" {
-			if nodeInstaller, ok := installer.(interface{ GetLTSVersion() (string, error) }); ok {
-				lts, err := nodeInstaller.GetLTSVersion()
-				if err == nil {
-					resolvedVersion = lts
-					if detectedAlias == "" {
-						detectedAlias = "lts"
-					}
-				}
-			}
-		}
-	} else {
-		// For other runtimes, try to resolve "latest"
-		if version == "latest" {
-			if latestGetter, ok := installer.(interface{ GetLatestVersion() (string, error) }); ok {
-				latest, err := latestGetter.GetLatestVersion()
-				if err == nil {
-					resolvedVersion = latest
-					if detectedAlias == "" {
-						detectedAlias = "latest"
-					}
-				}
-			}
-		}
+	if err := ValidateVersionSpec(spec); err != nil {
+		return "", err
 	}
-
-	// Use resolved version for destination
-	dest, err := manager.versionDir(runtime, resolvedVersion)
+	inst, err := GetInstaller(rt)
 	if err != nil {
-		return err
+		return "", err
 	}
-	if _, err := os.Stat(dest); err == nil {
-		// Verify installation
-		binaryPaths := installer.BinaryPaths(resolvedVersion, dest)
-		if err := verifyInstallation(dest, binaryPaths); err == nil {
-			fmt.Printf("%s@%s is already installed at %s\n", runtime, resolvedVersion, dest)
-			// Still save alias if provided
-			if detectedAlias != "" {
-				saveVersionAlias(dest, detectedAlias)
+	exact, err := ResolveSpec(ctx, inst, spec)
+	if err != nil {
+		return "", err
+	}
+	if exact != spec {
+		m.printf("Resolved %s@%s to %s\n", rt, spec, exact)
+	}
+	dest, err := m.versionDir(rt, exact)
+	if err != nil {
+		return "", err
+	}
+	alias := ""
+	if spec == "lts" || spec == "latest" {
+		alias = spec
+	}
+
+	if verifyInstallation(dest, inst.BinaryPaths()) == nil {
+		m.printf("%s@%s is already installed\n", rt, exact)
+		return exact, m.afterInstall(ctx, rt, exact, dest, alias)
+	}
+
+	rtDir := filepath.Dir(dest)
+	if err := os.MkdirAll(rtDir, 0o755); err != nil {
+		return "", err
+	}
+	unlock, err := lockFile(ctx, filepath.Join(rtDir, ".lock"), func() {
+		m.printf("Waiting for another xpm process installing %s...\n", rt)
+	})
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
+
+	if verifyInstallation(dest, inst.BinaryPaths()) == nil { // another process won
+		m.printf("%s@%s is already installed\n", rt, exact)
+		return exact, m.afterInstall(ctx, rt, exact, dest, alias)
+	}
+	removeStale(rtDir)
+
+	staging, err := os.MkdirTemp(rtDir, ".tmp-"+exact+"-")
+	if err != nil {
+		return "", err
+	}
+	done := false
+	defer func() {
+		if !done {
+			_ = os.RemoveAll(staging)
+		}
+	}()
+
+	m.printf("Installing %s@%s...\n", rt, exact)
+	if err := inst.Install(ctx, InstallRequest{Version: exact, Dest: staging, Root: m.envPath}); err != nil {
+		if cerr := ctx.Err(); cerr != nil { // a killed subprocess reports its own error
+			return "", fmt.Errorf("install %s@%s: %w", rt, exact, cerr)
+		}
+		return "", fmt.Errorf("install %s@%s: %w", rt, exact, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if err := verifyInstallation(staging, inst.BinaryPaths()); err != nil {
+		return "", fmt.Errorf("install %s@%s: %w", rt, exact, err)
+	}
+	if err := writeMeta(staging, versionMeta{Version: exact, Alias: alias}); err != nil {
+		return "", err
+	}
+	if _, err := os.Lstat(dest); err == nil { // corrupt leftover: move aside, delete
+		old := filepath.Join(rtDir, ".tmp-old-"+strconv.FormatInt(time.Now().UnixNano(), 36))
+		if err := os.Rename(dest, old); err != nil {
+			return "", err
+		}
+		_ = os.RemoveAll(old)
+	}
+	if err := os.Rename(staging, dest); err != nil {
+		return "", err
+	}
+	done = true
+	m.printf("Installed %s@%s\n", rt, exact)
+	return exact, m.afterInstall(ctx, rt, exact, "", "")
+}
+
+// PostInstallError means the version is installed but recording it (the lts
+// alias or the global default) failed; the CLI reports it as a warning.
+type PostInstallError struct{ Err error }
+
+func (e *PostInstallError) Error() string { return e.Err.Error() }
+func (e *PostInstallError) Unwrap() error { return e.Err }
+
+// afterInstall records an "lts" alias on an existing install and sets the
+// global default when the runtime has none, under the state lock. A failure
+// is a *PostInstallError.
+func (m *Manager) afterInstall(ctx context.Context, rt, exact, existingDir, alias string) error {
+	if existingDir != "" && alias == "lts" && readMeta(existingDir).Alias != "lts" {
+		if err := writeMeta(existingDir, versionMeta{Version: exact, Alias: alias}); err != nil {
+			return &PostInstallError{Err: err}
+		}
+	}
+	err := m.withStateLock(ctx, func() error {
+		global, err := m.GlobalVersion(rt)
+		if err != nil {
+			return err
+		}
+		if global == "" {
+			if err := m.SetGlobalVersion(rt, exact); err != nil {
+				return err
 			}
+			m.printf("Set %s@%s as the global default\n", rt, exact)
 			return nil
 		}
-		// Installation is corrupted, remove and reinstall
-		fmt.Printf("Corrupted installation detected, reinstalling...\n")
-		if err := os.RemoveAll(dest); err != nil {
-			logx.Info("failed to remove corrupted installation at %s: %v", dest, err)
-			// Continue anyway, installation will overwrite
-		}
+		m.printf("Use it here: xpm env use %s@%s\n", rt, exact)
+		return nil
+	})
+	if err != nil {
+		return &PostInstallError{Err: err}
 	}
-
-	if resolvedVersion != version {
-		fmt.Printf("Installing %s@%s (resolved from %s)...\n", runtime, resolvedVersion, version)
-	} else {
-		fmt.Printf("Installing %s@%s...\n", runtime, version)
-	}
-
-	// Create destination directory
-	if err := os.MkdirAll(dest, 0755); err != nil {
-		return fmt.Errorf("failed to create destination directory: %w", err)
-	}
-
-	// Download and install (pass original version, Install will handle resolution)
-	if err := installer.Install(version, dest); err != nil {
-		// Clean up on failure
-		if rmErr := os.RemoveAll(dest); rmErr != nil {
-			logx.Info("failed to clean up failed installation at %s: %v", dest, rmErr)
-		}
-		return fmt.Errorf("installation failed: %w", err)
-	}
-
-	// Save alias metadata if detected (after successful installation)
-	if detectedAlias != "" {
-		if err := saveVersionAlias(dest, detectedAlias); err != nil {
-			logx.Info("failed to save alias metadata: %v", err)
-		}
-	}
-
-	// Post-install setup
-	if err := installer.PostInstall(version, dest); err != nil {
-		logx.Info("post-install warning: %v", err)
-		// Don't fail on post-install errors, but log them
-	}
-
-	// Verify installation (use resolved version)
-	binaryPaths := installer.BinaryPaths(resolvedVersion, dest)
-	if err := verifyInstallation(dest, binaryPaths); err != nil {
-		if rmErr := os.RemoveAll(dest); rmErr != nil {
-			logx.Info("failed to clean up after verification failure at %s: %v", dest, rmErr)
-		}
-		return fmt.Errorf("verification failed: %v\n\nTo retry installation:\n  xpm env install %s@%s\n\nIf the issue persists, try:\n  xpm env ls-remote %s  # to see available versions\n  xpm env install %s@<different-version>", err, runtime, resolvedVersion, runtime, runtime)
-	}
-
-	fmt.Printf("✓ Installed %s@%s at %s\n", runtime, version, dest)
-
-	// Automatically activate the installed version (local)
-	// Use the resolved version, not the original (which might be an alias)
-	if err := UseVersion(manager, runtime, resolvedVersion, false); err != nil {
-		logx.Info("failed to auto-activate %s@%s: %v", runtime, resolvedVersion, err)
-		// Don't fail installation if activation fails
-	}
-
-	// Update shims
-	if err := CreateShims(manager); err != nil {
-		logx.Info("failed to update shims: %v", err)
-	}
-
 	return nil
 }
 
-// verifyInstallation checks that all expected binaries exist.
-func verifyInstallation(dest string, binaryPaths []string) error {
-	for _, relPath := range binaryPaths {
-		fullPath := filepath.Join(dest, relPath)
-		info, err := os.Stat(fullPath)
-		if err != nil {
-			return fmt.Errorf("binary not found: %s", relPath)
+// removeStale deletes leftovers of interrupted installs. Callers hold the
+// runtime lock, so no live install owns them.
+func removeStale(rtDir string) {
+	entries, err := os.ReadDir(rtDir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".tmp-") {
+			_ = os.RemoveAll(filepath.Join(rtDir, e.Name()))
 		}
-		if info.Mode()&0111 == 0 {
-			// Make executable
-			os.Chmod(fullPath, 0755)
+	}
+}
+
+// verifyInstallation checks that every expected binary exists, is not a
+// directory and (on Unix) is executable.
+func verifyInstallation(dir string, binaryPaths []string) error {
+	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+		return fmt.Errorf("%s is not installed", dir)
+	}
+	for _, rel := range binaryPaths {
+		fi, err := os.Stat(filepath.Join(dir, filepath.FromSlash(rel)))
+		if err != nil {
+			return fmt.Errorf("expected binary %s is missing", rel)
+		}
+		if fi.IsDir() {
+			return fmt.Errorf("expected binary %s is a directory", rel)
+		}
+		if runtime.GOOS != "windows" && fi.Mode().Perm()&0o111 == 0 {
+			return fmt.Errorf("expected binary %s is not executable", rel)
 		}
 	}
 	return nil

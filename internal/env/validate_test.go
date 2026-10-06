@@ -1,8 +1,9 @@
 package env
 
 import (
-	"go/parser"
-	"go/token"
+	"context"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,24 +12,33 @@ import (
 	"github.com/crenspire/xpm/internal/config"
 )
 
-// isolate chdirs into a fresh temp dir (the repo root has its own .xpm-env)
-// and returns a Manager rooted in another temp dir.
-func isolate(t *testing.T) *Manager {
+// chdir is t.Chdir for Go < 1.24.
+func chdir(t *testing.T, dir string) {
 	t.Helper()
 	old, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chdir(t.TempDir()); err != nil {
+	if err := os.Chdir(dir); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chdir(old) })
+}
 
+// isolate points HOME at a temp dir, chdirs into another (the repo root has
+// its own .xpm-env) and returns a Manager rooted in a third. Shims link to a
+// fake executable path and progress output is discarded.
+func isolate(t *testing.T) *Manager {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	chdir(t, t.TempDir())
 	cfg := config.Config{Env: config.EnvConfig{Enabled: true, Path: t.TempDir()}}
 	m, err := NewManager(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
+	m.SetExecutable(filepath.Join(t.TempDir(), "xpm"))
+	m.SetOutput(io.Discard)
 	return m
 }
 
@@ -63,45 +73,39 @@ func TestValidateRuntimeName(t *testing.T) {
 func TestRemoveVersionRejectsDangerousInput(t *testing.T) {
 	m := isolate(t)
 	for _, v := range []string{"18.0.0", "20.0.0"} {
-		if err := os.MkdirAll(filepath.Join(m.GetRuntimesPath(), "node", v), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Join(m.GetRuntimesPath(), fakeRT, v), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
-	cases := [][2]string{{"node", ""}, {"node", ".."}, {"node", "."}, {"../x", "1"}, {"", "1"}}
+	cases := [][2]string{{fakeRT, ""}, {fakeRT, ".."}, {fakeRT, "."}, {"../x", "1"}, {"", "1"}}
 	for _, c := range cases {
-		if err := RemoveVersion(m, c[0], c[1]); err == nil {
+		if err := RemoveVersion(context.Background(), m, c[0], c[1]); err == nil {
 			t.Errorf("RemoveVersion(%q, %q) = nil, want error", c[0], c[1])
 		}
 	}
 	for _, v := range []string{"18.0.0", "20.0.0"} {
-		if _, err := os.Stat(filepath.Join(m.GetRuntimesPath(), "node", v)); err != nil {
+		if _, err := os.Stat(filepath.Join(m.GetRuntimesPath(), fakeRT, v)); err != nil {
 			t.Fatalf("node %s was deleted by a rejected call", v)
 		}
 	}
-	if err := RemoveVersion(m, "node", "18.0.0"); err != nil {
+	if err := RemoveVersion(context.Background(), m, fakeRT, "18.0.0"); err != nil {
 		t.Fatalf("legit removal failed: %v", err)
 	}
 }
 
-func TestLocalEnvIgnoresPathLikeVersion(t *testing.T) {
+func TestLocalEnvRejectsPathLikeVersion(t *testing.T) {
 	m := isolate(t)
 	if err := os.WriteFile(".xpm-env", []byte("node=../../../../tmp/evil\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if v, _ := m.GetActiveVersion("node"); strings.Contains(v, "..") {
-		t.Fatalf("GetActiveVersion returned path-like version %q from .xpm-env", v)
+	a, err := m.ActiveVersion("node")
+	if err == nil || !strings.Contains(err.Error(), `invalid node version "../../../../tmp/evil"`) {
+		t.Fatalf("ActiveVersion = %+v, %v; want an invalid-version error", a, err)
 	}
-}
-
-func TestShimTemplateGuardsVersion(t *testing.T) {
-	code, err := generateShimCode("node", "node", "/opt/xpm env")
-	if err != nil {
-		t.Fatal(err)
+	if errors.Is(err, ErrNoVersion) || errors.Is(err, ErrNotInstalled) {
+		t.Fatal("an invalid entry must fail closed, not fall back")
 	}
-	if _, err := parser.ParseFile(token.NewFileSet(), "shim.go", code, 0); err != nil {
-		t.Fatalf("generated shim is not valid Go: %v", err)
-	}
-	if !strings.Contains(code, "!safeVersion(version)") {
-		t.Fatal("shim does not validate the resolved version before using it as a path")
+	if strings.Contains(a.Version, "..") {
+		t.Fatalf("returned path-like version %q", a.Version)
 	}
 }
