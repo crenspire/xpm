@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -20,6 +21,12 @@ var (
 	nodeDistURL = "https://nodejs.org/dist"
 	goDLURL     = "https://go.dev/dl"
 	githubAPI   = "https://api.github.com"
+)
+
+// hostOS and hostArch pick release assets; tests override them.
+var (
+	hostOS   = runtime.GOOS
+	hostArch = runtime.GOARCH
 )
 
 // progress receives "Downloading ..." lines; tests silence it.
