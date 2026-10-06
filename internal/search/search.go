@@ -20,6 +20,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/crenspire/xpm/internal/logx"
@@ -66,26 +67,31 @@ func Enabled(opts Options, id pm.ID) bool {
 	return v
 }
 
-// validatePackageNameForURL validates package name length for URL construction.
-// Maximum URL length is typically 2048 characters, but we use a conservative limit.
-// Returns an error if the package name is too long or empty.
-//
-// Edge cases:
-//   - Empty string: returns error
-//   - Names longer than 214 characters: returns error (npm package name limit)
-//   - Valid names: returns nil
-//
-// This prevents DoS attacks via extremely long package names and ensures
-// URLs remain within reasonable limits.
+// validatePackageNameForURL rejects names that are empty, too long, or could
+// change the meaning of the registry URL they are spliced into
+// (query/fragment/escape characters, whitespace, control characters, or
+// "." / ".." path segments). Scoped names like "@types/node" and composer
+// names like "vendor/pkg" are allowed.
 func validatePackageNameForURL(pkg string) error {
 	if len(pkg) == 0 {
 		return fmt.Errorf("package name cannot be empty")
 	}
-	// Conservative limit: 214 characters (npm package name limit)
-	// This leaves room for the base URL and query parameters
-	const maxPackageNameLength = 214
+	const maxPackageNameLength = 214 // npm's limit; the strictest registry
 	if len(pkg) > maxPackageNameLength {
 		return fmt.Errorf("package name too long (max %d characters)", maxPackageNameLength)
+	}
+	if strings.ContainsAny(pkg, "?#%\\") {
+		return fmt.Errorf("invalid package name %q: contains a URL-reserved character", pkg)
+	}
+	for _, r := range pkg {
+		if r <= ' ' || r == 0x7f {
+			return fmt.Errorf("invalid package name %q: contains whitespace or control characters", pkg)
+		}
+	}
+	for _, seg := range strings.Split(pkg, "/") {
+		if seg == "." || seg == ".." {
+			return fmt.Errorf("invalid package name %q: contains a relative path segment", pkg)
+		}
 	}
 	return nil
 }

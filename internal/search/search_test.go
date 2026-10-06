@@ -360,6 +360,22 @@ func TestURLInjectionPrevention(t *testing.T) {
 			pkg:     "lodash",
 			wantErr: false,
 		},
+		{
+			name:    "npm scoped name",
+			pkg:     "@types/node",
+			wantErr: false,
+		},
+		{
+			name:    "composer vendor/name",
+			pkg:     "monolog/monolog",
+			wantErr: false,
+		},
+		{
+			name:     "embedded whitespace",
+			pkg:      "foo bar",
+			wantErr:  true,
+			contains: "invalid package name",
+		},
 	}
 
 	for _, tc := range tests {
