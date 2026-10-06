@@ -27,6 +27,18 @@ xpm {{.Command}} \- {{.Description}}
 {{.Options}}
 .SH EXAMPLES
 {{.Examples}}
+.SH EXIT STATUS
+0 on success; 1 on errors, invalid arguments, cancelled install prompts, no matches, or a refused non-interactive choice.
+\fBinstall\fR (without packages), \fBci\fR, \fBlist\fR, \fBupdate\fR, \fBremove\fR and \fBrun\fR pass through the underlying tool's exit code.
+.SH ENVIRONMENT
+.TP
+\fBXPM_NO_CACHE=1\fR
+Skip the on-disk registry lookup cache.
+.TP
+\fBXPM_CACHE_DIR\fR=\fIdir\fR
+Keep the lookup cache in \fIdir\fR/lookups instead of the OS cache folder.
+.SH FILES
+~/.config/xpm/xpmrc.json (Windows: %APPDATA%\expm\expmrc.json)
 .SH SEE ALSO
 {{.SeeAlso}}
 .SH AUTHOR
@@ -75,31 +87,74 @@ func getManPageData(command string) manPageData {
 	case "install":
 		data.Description = "Install packages or project dependencies"
 		data.Synopsis = `.B xpm install
-[\fIpackage[@version]\fR] [\fB-g\fR|\fB--global\fR]`
-		data.FullDescription = `Install packages from all supported ecosystems or install dependencies for detected projects.
-If no package is specified, xpm will auto-detect project types and install their dependencies.`
+[\fB-g\fR|\fB--global\fR] [\fIpackage\fR[@\fIversion\fR] ...] [\fB--\fR]`
+		data.FullDescription = `Install one or several packages, or, without packages, the dependencies of the detected project.
+Several packages are installed in order; xpm stops at the first failure.
+Without packages, the detected project's tool runs its install (with several projects, a terminal asks which one or all; a script runs all).
+\fB-g\fR without packages is an error: project dependencies are never global.
+Exit status 1 when no registry has a match or an install fails.
+.PP
+How xpm picks a tool: inside a project, an exact hit in the project's own ecosystem is installed with the project's tool (its lockfile decides, e.g. yarn.lock selects yarn).
+Outside a project, and for every \fB-g\fR install, exact hits from a single ecosystem are installed; with several, the \fBprefer\fR config list decides, else a terminal shows a menu and a script gets an error listing the candidates.
+.PP
+A Go module path (github.com/gin-gonic/gin) runs \fBgo get\fR (with \fB-g\fR, \fBgo install\fR \fImodule\fR@latest or @\fIversion\fR).
+A Maven or Gradle hit only prints the dependency snippet to add.`
 		data.Options = `.TP
 \fB-g\fR, \fB--global\fR
-Install globally (if supported by the package manager)`
+Install globally (if the tool supports it); may come before or after the packages.
+.TP
+\fB--\fR
+Ends flag parsing; names starting with - are still rejected by name validation.
+.PP
+Any other flag, including \fB--global=false\fR, is rejected.`
 		data.Examples = `.B xpm install
 Install dependencies for detected projects
 .PP
 .B xpm install axios
 Install axios (searches all ecosystems)
 .PP
+.B xpm install axios lodash
+Install several packages in order
+.PP
 .B xpm install axios@1.0.0
-Install specific version`
+Install specific version
+.PP
+.B xpm install typescript -g
+Install globally
+.PP
+.B xpm install github.com/gin-gonic/gin
+go get a Go module`
 		data.SeeAlso = `\fBxpm\fR(1), \fBxpm ci\fR(1), \fBxpm update\fR(1), \fBxpm remove\fR(1)`
+
+	case "ci":
+		data.Description = "Frozen install from lockfiles; deletes nothing unasked"
+		data.Synopsis = `.B xpm ci`
+		data.FullDescription = `Install every detected project's dependencies from its lockfile, using the tool's strict form where one exists:
+\fBnpm ci\fR, \fBpnpm\fR/\fByarn\fR/\fBbun install --frozen-lockfile\fR, \fByarn install --immutable\fR (yarn 2+), \fBpipenv install --deploy\fR, \fBcargo build --locked\fR, \fBgo mod download\fR.
+Other tools have no frozen flag and run their normal install: \fBcomposer install\fR, \fBpip install -r requirements.txt\fR (\fBpip install .\fR for pyproject.toml), \fBpoetry install\fR, \fBmvn install\fR, \fBgradle build\fR.
+.PP
+xpm checks every project's tool before running any install.
+It deletes nothing unasked: it never deletes lockfiles, and asks before removing node_modules/ (yarn, pnpm, bun) or Composer's vendor/.
+ci takes no arguments.`
+		data.Options = ""
+		data.Examples = `.B xpm ci
+Frozen install for every detected project`
+		data.SeeAlso = `\fBxpm\fR(1), \fBxpm install\fR(1)`
 
 	case "run":
 		data.Description = "Run project scripts"
 		data.Synopsis = `.B xpm run
 [\fItask\fR] [\fB--\fR \fIargs\fR] [\fB-w\fR|\fB--workspace\fR]`
 		data.FullDescription = `Run scripts defined in package.json, composer.json, pyproject.toml, or Cargo.toml.
-If no task is specified, lists all available scripts.`
+If no task is specified, lists all available scripts.
+.PP
+pyproject.toml: [tool.xpm.scripts] ([tool.upm.scripts] when that table is absent or empty), else [tool.poetry.scripts], else [project.scripts].
+Cargo.toml: [package.metadata.xpm.scripts] ([package.metadata.upm.scripts] fallback).
+package.json scripts run with npm, yarn, pnpm or bun run; composer.json scripts with \fBcomposer run-script\fR; pyproject.toml and Cargo.toml scripts run with \fBsh -c\fR.
+The exit status is the script's.`
 		data.Options = `.TP
 \fB-w\fR, \fB--workspace\fR
-Run task in all workspace projects`
+Run task in all workspace projects (experimental)`
 		data.Examples = `.B xpm run
 List all available scripts
 .PP
@@ -114,7 +169,9 @@ Run 'build' with --watch argument`
 		data.Description = "Check which ecosystems have a package"
 		data.Synopsis = `.B xpm which
 \fIpackage\fR`
-		data.FullDescription = `Search for a package across all supported ecosystems and show where it's available.`
+		data.FullDescription = `Search for a package across all supported ecosystems and show where it's available.
+Registries that do not answer within 2.5 s (by default) are listed as Unavailable.
+Exit status 1 when nothing matches or every registry fails.`
 		data.Options = ""
 		data.Examples = `.B xpm which lodash
 Find lodash across all registries`
@@ -156,17 +213,20 @@ Remove axios from project`
 		data.Description = "Show detailed package information"
 		data.Synopsis = `.B xpm info
 \fIpackage\fR`
-		data.FullDescription = `Show detailed package information from all ecosystems.`
+		data.FullDescription = `Show detailed package information from all ecosystems.
+Registries that do not answer within 2.5 s (by default) are listed as Unavailable.
+Exit status 1 when nothing matches or every registry fails.`
 		data.Options = ""
 		data.Examples = `.B xpm info express
 Get detailed info about express`
 		data.SeeAlso = `\fBxpm\fR(1), \fBxpm which\fR(1), \fBxpm search\fR(1)`
 
 	case "lock":
-		data.Description = "Generate or verify unified lockfile"
+		data.Description = "Generate or verify unified lockfile (experimental)"
 		data.Synopsis = `.B xpm lock
 [\fB--verify\fR]`
-		data.FullDescription = `Generate or verify unified lockfile (xpm-lock.yaml) that consolidates metadata from all ecosystem lockfiles.`
+		data.FullDescription = `Generate or verify unified lockfile (xpm-lock.yaml) that consolidates metadata from all ecosystem lockfiles.
+This command is experimental and is being reworked; its behaviour and output may change.`
 		data.Options = `.TP
 \fB--verify\fR
 Verify lockfiles haven't changed since last generation`
@@ -178,10 +238,11 @@ Check if lockfiles changed`
 		data.SeeAlso = `\fBxpm\fR(1), \fBxpm install\fR(1)`
 
 	case "cache":
-		data.Description = "Manage dependency cache"
+		data.Description = "Manage dependency cache (experimental)"
 		data.Synopsis = `.B xpm cache
 \fIsubcommand\fR`
-		data.FullDescription = `Manage the global dependency cache.`
+		data.FullDescription = `Manage the global dependency cache.
+This command is experimental and is being reworked; its behaviour and output may change.`
 		data.Options = `.TP
 \fBtree\fR
 Show cache structure and contents
@@ -211,10 +272,11 @@ Clear all cached artifacts`
 		data.SeeAlso = `\fBxpm\fR(1), \fBxpm install\fR(1)`
 
 	case "graph":
-		data.Description = "Show unified dependency graph"
+		data.Description = "Show unified dependency graph (experimental)"
 		data.Synopsis = `.B xpm graph
 [\fIpackage\fR] [\fB--json\fR] [\fB--svg\fR] [\fB--workspace\fR]`
-		data.FullDescription = `Show unified dependency graph across all ecosystems.`
+		data.FullDescription = `Show unified dependency graph across all ecosystems.
+This command is experimental and is being reworked; its behaviour and output may change.`
 		data.Options = `.TP
 \fB--json\fR
 Export graph as JSON
@@ -235,32 +297,37 @@ Export as JSON`
 		data.SeeAlso = `\fBxpm\fR(1), \fBxpm list\fR(1)`
 
 	case "search":
-		data.Description = "Interactive TUI package search"
+		data.Description = "Search all registries"
 		data.Synopsis = `.B xpm search
-[\fIquery\fR]`
-		data.FullDescription = `Interactive TUI package search across all ecosystems.`
+[\fIquery\fR ...]`
+		data.FullDescription = `Search all ecosystems' registries. Several words are one query.
+The interactive TUI opens only when stdin and stdout are terminals and the \fBinteractive\fR and \fBsearchUI.enabled\fR settings are true; otherwise results are printed as plain text, and a query is required.
+Registries that do not answer within 2.5 s (by default) are listed as Unavailable.
+Plain output exits with status 1 when nothing matches or every registry fails.`
 		data.Options = ""
 		data.Examples = `.B xpm search
-Start interactive search
+Start interactive search (terminal only)
 .PP
 .B xpm search axios
 Search for axios`
 		data.SeeAlso = `\fBxpm\fR(1), \fBxpm which\fR(1), \fBxpm info\fR(1)`
 
 	case "workspaces":
-		data.Description = "List detected workspaces/monorepos"
+		data.Description = "List detected workspaces/monorepos (experimental)"
 		data.Synopsis = `.B xpm workspaces`
-		data.FullDescription = `List detected workspaces/monorepos.`
+		data.FullDescription = `List detected workspaces/monorepos.
+This command is experimental and is being reworked; its behaviour and output may change.`
 		data.Options = ""
 		data.Examples = `.B xpm workspaces
 List all detected workspaces`
-		data.SeeAlso = `\fBxpm\fR(1), \fBxpm install\fR(1)`
+		data.SeeAlso = `\fBxpm\fR(1), \fBxpm run\fR(1)`
 
 	case "env":
-		data.Description = "Manage runtime versions"
+		data.Description = "Manage runtime versions (experimental)"
 		data.Synopsis = `.B xpm env
 \fIcommand\fR [\fIarguments\fR]`
-		data.FullDescription = `Manage runtime versions (node, python, go, java, rust, bun, deno).`
+		data.FullDescription = `Manage runtime versions (node, python, go, java, rust, bun, deno).
+This command is experimental and is being reworked; its behaviour and output may change.`
 		data.Options = `.TP
 \fBinstall\fR \fIruntime@version\fR
 Install a runtime version
@@ -311,22 +378,42 @@ Show config file path
 Open config in editor
 .TP
 \fBset\fR \fIkey\fR \fIvalue\fR
-Set a configuration value
+Set a configuration value (keys below)
 .TP
 \fBreset\fR
-Reset to default configuration`
+Reset to default configuration
+.PP
+Keys accepted by \fBset\fR (values are validated before anything is written; unknown keys are rejected):
+.TP
+\fBprefer\fR
+Comma-separated manager IDs: npm, yarn, pnpm, bun, pip, poetry, pipenv, composer, cargo, gomod, maven, gradle
+.TP
+\fBautoInstallPM\fR
+true/false (also yes/no, on/off, 1/0)
+.TP
+\fBinteractive\fR
+true/false
+.TP
+\fBsearch.\fR\fIid\fR
+true/false: enable or disable one registry (id from the prefer list)`
 		data.Examples = `.B xpm config show
 Show current config
 .PP
 .B xpm config set interactive false
-Set interactive mode to false`
+Never prompt
+.PP
+.B xpm config set prefer npm,pip
+Prefer npm, then pip`
 		data.SeeAlso = `\fBxpm\fR(1), \fBxpm doctor\fR(1)`
 
 	case "version":
 		data.Description = "Show version information"
 		data.Synopsis = `.B xpm version
-[\fB-v\fR|\fB--version\fR]`
-		data.FullDescription = `Show xpm version information.`
+.br
+.B xpm -V
+| \fB--version\fR | \fB-v\fR`
+		data.FullDescription = `Show xpm version information.
+\fB-v\fR shows the version only when it is the sole argument; before a command it means \fB--verbose\fR.`
 		data.Options = ""
 		data.Examples = `.B xpm version
 Show version
@@ -340,7 +427,13 @@ Show version (shorthand)`
 		data.Synopsis = `.B xpm help
 [\fB-h\fR|\fB--help\fR]`
 		data.FullDescription = `Show brief help message.`
-		data.Options = ""
+		data.Options = `Global flags go before the command:
+.TP
+\fB-v\fR, \fB--verbose\fR
+Verbose logging (e.g. xpm -v install axios)
+.TP
+\fB-V\fR, \fB--version\fR
+Show version`
 		data.Examples = `.B xpm help
 Show help`
 		data.SeeAlso = `\fBxpm\fR(1), \fBxpm man\fR(1)`
@@ -362,7 +455,7 @@ Show install command help`
 		data.Description = "xpm command"
 		data.Synopsis = `.B xpm
 \fIcommand\fR`
-		data.FullDescription = `Universal Package Manager for multiple ecosystems.`
+		data.FullDescription = `Cross-ecosystem package manager front end.`
 		data.Options = ""
 		data.Examples = ""
 		data.SeeAlso = `\fBxpm help\fR(1), \fBxpm man\fR(1)`
@@ -431,17 +524,12 @@ func getManPath() (string, error) {
 
 // GenerateAllManPages generates man pages for all commands.
 func GenerateAllManPages(outputDir string) error {
-	commands := []string{
-		"install", "run", "which", "list", "update", "remove", "info",
-		"lock", "cache", "graph", "search", "workspaces", "env",
-		"doctor", "config", "version", "help", "man",
-	}
-
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		return fmt.Errorf("failed to create output directory: %w", err)
 	}
 
-	for _, cmd := range commands {
+	for _, c := range commandTable {
+		cmd := c.name
 		content, err := GenerateManPage(cmd)
 		if err != nil {
 			return fmt.Errorf("failed to generate man page for %s: %w", cmd, err)
