@@ -71,22 +71,22 @@ func TestValidateRuntimeName(t *testing.T) {
 func TestRemoveVersionRejectsDangerousInput(t *testing.T) {
 	m := isolate(t)
 	for _, v := range []string{"18.0.0", "20.0.0"} {
-		if err := os.MkdirAll(filepath.Join(m.GetRuntimesPath(), "node", v), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Join(m.GetRuntimesPath(), fakeRT, v), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
-	cases := [][2]string{{"node", ""}, {"node", ".."}, {"node", "."}, {"../x", "1"}, {"", "1"}}
+	cases := [][2]string{{fakeRT, ""}, {fakeRT, ".."}, {fakeRT, "."}, {"../x", "1"}, {"", "1"}}
 	for _, c := range cases {
 		if err := RemoveVersion(context.Background(), m, c[0], c[1]); err == nil {
 			t.Errorf("RemoveVersion(%q, %q) = nil, want error", c[0], c[1])
 		}
 	}
 	for _, v := range []string{"18.0.0", "20.0.0"} {
-		if _, err := os.Stat(filepath.Join(m.GetRuntimesPath(), "node", v)); err != nil {
+		if _, err := os.Stat(filepath.Join(m.GetRuntimesPath(), fakeRT, v)); err != nil {
 			t.Fatalf("node %s was deleted by a rejected call", v)
 		}
 	}
-	if err := RemoveVersion(context.Background(), m, "node", "18.0.0"); err != nil {
+	if err := RemoveVersion(context.Background(), m, fakeRT, "18.0.0"); err != nil {
 		t.Fatalf("legit removal failed: %v", err)
 	}
 }

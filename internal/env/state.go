@@ -259,12 +259,18 @@ func updateEnvContent(content, key, value string) string {
 // writeFileAtomic writes data to a temp file in path's directory and renames
 // it over path, so readers see the old or the new file, never a mix.
 func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = resolved // write through a symlink instead of replacing it
+	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
 		return err
 	}
 	name := tmp.Name()
 	_, werr := tmp.Write(data)
+	if werr == nil {
+		werr = tmp.Sync()
+	}
 	cerr := tmp.Close()
 	if werr == nil {
 		werr = cerr

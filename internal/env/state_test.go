@@ -5,13 +5,14 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
 
 func TestActiveVersionNothingConfigured(t *testing.T) {
 	m := isolate(t)
-	if _, err := m.ActiveVersion("node"); !errors.Is(err, ErrNoVersion) {
+	if _, err := m.ActiveVersion(fakeRT); !errors.Is(err, ErrNoVersion) {
 		t.Fatalf("err = %v, want ErrNoVersion", err)
 	}
 }
@@ -227,5 +228,65 @@ func TestListInstalledSemverOrder(t *testing.T) {
 	}
 	if strings.Join(names, " ") != "1.10.0 1.9.0 1.2.0" {
 		t.Fatalf("order = %v", names)
+	}
+}
+
+func TestWriteThroughSymlinkedStateFiles(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks need privileges on windows")
+	}
+	m := isolate(t)
+	tdir := t.TempDir()
+	realEnv := filepath.Join(tdir, "env-real")
+	if err := os.WriteFile(realEnv, []byte("# mine\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realEnv, ".xpm-env"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SetLocalVersion(".", fakeRT, "1.0.0"); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Lstat(".xpm-env"); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf(".xpm-env no longer a symlink: %v %v", fi, err)
+	}
+	data, _ := os.ReadFile(realEnv)
+	if string(data) != "# mine\n"+fakeRT+"=1.0.0\n" {
+		t.Fatalf("target = %q", data)
+	}
+	if fi, _ := os.Stat(realEnv); fi.Mode().Perm() != 0o600 {
+		t.Fatalf("mode = %v", fi.Mode().Perm())
+	}
+
+	realActive := filepath.Join(tdir, "active-real.json")
+	if err := os.WriteFile(realActive, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realActive, m.GetActivePath()); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetGlobalVersion(fakeRT, "2.0.0"); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Lstat(m.GetActivePath()); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("active.json no longer a symlink: %v %v", fi, err)
+	}
+	if data, _ := os.ReadFile(realActive); !strings.Contains(string(data), "2.0.0") {
+		t.Fatalf("target = %q", data)
+	}
+}
+
+func TestRemoveVersionRefusesWhenActiveJSONCorrupt(t *testing.T) {
+	m := isolate(t)
+	installFake(t, m, "1.0.0", "")
+	if err := os.WriteFile(m.GetActivePath(), []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := RemoveVersion(context.Background(), m, fakeRT, "1.0.0")
+	if err == nil || !strings.Contains(err.Error(), "invalid") {
+		t.Fatalf("err = %v, want refusal naming the corrupt file", err)
+	}
+	if _, serr := os.Stat(filepath.Join(m.GetRuntimesPath(), fakeRT, "1.0.0")); serr != nil {
+		t.Fatalf("version was removed: %v", serr)
 	}
 }
