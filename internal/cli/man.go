@@ -80,6 +80,7 @@ var commandTable = []commandInfo{
 	{"graph", []string{"g"}, "Dependency graph across ecosystems", true},
 	{"lock", nil, "Generate or verify the unified lockfile (xpm-lock.yaml)", true},
 	{"workspaces", nil, "List detected workspaces/monorepos", true},
+	{"completion", nil, "Print a shell completion script (bash, zsh, fish)", false},
 	{"version", []string{"-v", "-V", "--version"}, "Show version information", false},
 	{"help", []string{"-h", "--help"}, "Show this help message", false},
 	{"man", nil, "Show the detailed manual for a command", false},
@@ -156,6 +157,8 @@ func showCommandHelp(command string) bool {
 		showHelpHelp()
 	case "man":
 		showManHelp()
+	case "completion":
+		showCompletionHelp()
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n\n", command)
 		listCommands()
@@ -620,4 +623,22 @@ func showManHelp() {
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("RELATED COMMANDS:"))
 	fmt.Printf("  %s                       Show brief help\n", colorCommand("xpm help"))
+}
+
+func showCompletionHelp() {
+	fmt.Printf("%s\n", colorCommand("xpm completion <bash|zsh|fish>"))
+	fmt.Println()
+	fmt.Printf("%s\n", colorSection("DESCRIPTION:"))
+	fmt.Println("  Print a shell completion script on stdout. It completes commands, aliases,")
+	fmt.Println("  per-command flags and the arguments of man, completion, config and env.")
+	fmt.Println()
+	fmt.Printf("%s\n", colorSection("INSTALL:"))
+	fmt.Printf("  %s\n", colorExample("source <(xpm completion bash)"))
+	fmt.Println("    bash: or save to /usr/local/etc/bash_completion.d/xpm or")
+	fmt.Println("    ~/.local/share/bash-completion/completions/xpm")
+	fmt.Printf("  %s\n", colorExample("xpm completion zsh > \"${fpath[1]}/_xpm\""))
+	fmt.Printf("  %s\n", colorExample("xpm completion fish > ~/.config/fish/completions/xpm.fish"))
+	fmt.Println()
+	fmt.Printf("%s\n", colorSection("EXIT STATUS:"))
+	fmt.Println("  0 on success; 2 on a usage error (missing, extra or unknown shell argument).")
 }

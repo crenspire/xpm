@@ -176,6 +176,8 @@ func Run() int {
 		return 0
 	case "man":
 		return cmdMan(rest)
+	case "completion":
+		return cmdCompletion(rest)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", cmd)
 		printBanner()

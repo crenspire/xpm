@@ -29,7 +29,7 @@ xpm {{.Command}} \- {{.Description}}
 {{.Examples}}
 .SH EXIT STATUS
 0 on success; 1 on errors, invalid arguments, cancelled install prompts, no matches, or a refused non-interactive choice.
-2 on a \fBgraph\fR usage error (bad flag or argument).
+2 on a \fBgraph\fR or \fBcompletion\fR usage error (bad flag or argument).
 \fBinstall\fR (without packages), \fBci\fR, \fBlist\fR, \fBupdate\fR, \fBremove\fR and \fBrun\fR pass through the underlying tool's exit code; \fBrun -w\fR exits 1 if any project fails.
 .SH ENVIRONMENT
 .TP
@@ -439,6 +439,28 @@ List commands
 .PP
 .B xpm man install
 Show install command help`
+		data.SeeAlso = `\fBxpm\fR(1), \fBxpm help\fR(1)`
+
+	case "completion":
+		data.Description = "Print a shell completion script (bash, zsh, fish)"
+		data.Synopsis = `.B xpm completion
+\fI<bash|zsh|fish>\fR`
+		data.FullDescription = `Print a completion script for the given shell on standard output. It completes command names and aliases, the flags of each command, and the arguments of \fBman\fR, \fBcompletion\fR, \fBconfig\fR and \fBenv\fR; everything else falls back to file completion.
+Exactly one argument is required; anything else is a usage error (exit status 2).`
+		data.Options = `.TP
+\fBbash\fR
+\fBsource <(xpm completion bash)\fR, or save the output to /usr/local/etc/bash_completion.d/xpm or ~/.local/share/bash-completion/completions/xpm.
+.TP
+\fBzsh\fR
+\fBxpm completion zsh > "${fpath[1]}/_xpm"\fR
+.TP
+\fBfish\fR
+\fBxpm completion fish > ~/.config/fish/completions/xpm.fish\fR`
+		data.Examples = `.B source <(xpm completion bash)
+Enable completion in the current bash session
+.PP
+.B xpm completion fish > ~/.config/fish/completions/xpm.fish
+Install fish completion`
 		data.SeeAlso = `\fBxpm\fR(1), \fBxpm help\fR(1)`
 
 	default:
