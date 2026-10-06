@@ -5246,6 +5246,4685 @@ git commit -m "workspace: run and install via cmd.Dir (no os.Chdir), install nod
 
 ---
 
+## Section B — Tasks 8–11: lock, `xpm lock`, cache removal, doctor
+
+## Review Focus
+
+1. **A failed audit reported as clean.** `npm audit` exits 1 both when it finds vulnerabilities (valid report JSON) and when it fails (`{"error": {"code": "ENOLOCK", ...}}`, empty stdout, a crash code); a person expects the second group to read "unavailable", never "OK" or "0 vulnerabilities". Pinned by `TestRunSecurityAuditClassifiesToolOutput` (cases "npm error JSON is unavailable, not OK", "npm prints nothing", "npm valid JSON but crash exit code", "yarn without summary", "pip-audit failure") in Task 11.
+2. **False "missing lockfile" on modern Python and Go projects.** A PEP 621 `pyproject.toml` (uv/pdm/hatch/none), a bare `requirements.txt`, and a `go.mod` without requirements must not be told to generate `poetry.lock` / `requirements.lock` / `go.sum`; and a real missing lockfile is counted once, not twice. Pinned by `TestScanProjectRequiresOnlyRealLockfiles` and `TestMissingLockfileIsCountedOnce` in Task 11.
+3. **`xpm-lock.yaml` churn and blind spots in CI.** Running `xpm lock` on an unchanged project must not rewrite the file (no timestamps, sorted keys), and `--verify` must fail when a lockfile is added, removed or changed — including `yarn.lock` next to `package-lock.json`, which v1 silently dropped. Pinned by `TestWriteUnifiedLockSkipsIdenticalContent`, `TestGenerateKeysByPathSoNodeLockfilesDoNotCollide`, `TestVerifyReportsEveryStatus` (Task 8) and `TestCmdLockVerifyReportsAddedChangedMissingInPathOrder` (Task 9).
+
+---
+### Task 8: `internal/lock` — schema v2, path keys, no churn, added/removed, containment
+
+**Files:**
+- Modify (full rewrite): `internal/lock/lock.go`, `internal/lock/detectors.go`, `internal/lock/parsers.go`, `internal/lock/writer.go`
+- Create: `internal/lock/contain.go`
+- Modify (3 small edits to keep it compiling; Task 9 rewrites it): `internal/cli/lock_cmd.go`
+- Test: `internal/lock/parsers_test.go`, `internal/lock/contain_test.go`, `internal/lock/lock_test.go`
+- Testdata: `internal/lock/testdata/counts/{package-lock.json,yarn.lock,yarn-berry.lock,pnpm-v6.yaml,pnpm-v9.yaml,bun.lock,uv.lock,poetry.lock,Cargo.lock,composer.lock,Pipfile.lock,go.sum,gradle.lockfile,requirements.lock}`
+
+**Interfaces:**
+- Consumes: nothing from other P6 tasks (stdlib, `gopkg.in/yaml.v3`, `github.com/BurntSushi/toml`).
+- Produces (Task 9 consumes):
+
+```go
+type LockInfo struct { Ecosystem, Manager, File, Hash string; Packages int }   // yaml: ecosystem,omitempty / manager,omitempty / file / hash / packages
+type UnifiedLock struct { Version int; Locks map[string]*LockInfo }           // key = slash path relative to root
+const LockfileName = "xpm-lock.yaml"
+const CurrentVersion = 2
+func NewUnifiedLock() *UnifiedLock
+func (u *UnifiedLock) Count() int
+func (u *UnifiedLock) IsEmpty() bool
+func (u *UnifiedLock) TotalPackages() int
+type VerificationStatus int // StatusUnchanged, StatusChanged, StatusMissing, StatusError, StatusAdded
+type VerificationResult struct { Key, File string; Status VerificationStatus; ExpectedHash, ActualHash string; Error error }
+func VerificationPassed(results []VerificationResult) bool
+func DetectAll(dir string) []DetectedLockfile                                  // root only, SupportedLockfiles order
+func ParseLockfile(d DetectedLockfile) (info *LockInfo, warning string, err error)
+func ComputeHash(path string) (string, error)                                  // lowercase hex sha256 (same as v1)
+func Marshal(u *UnifiedLock) ([]byte, error)                                   // deterministic
+func WriteUnifiedLock(dir string, u *UnifiedLock) (changed bool, err error)    // atomic; skips identical bytes
+func ReadUnifiedLock(dir string) (*UnifiedLock, error)                         // reads v1 (re-keyed by file) and v2
+func UnifiedLockExists(dir string) bool
+func Generate(dir string) (u *UnifiedLock, warnings []string, err error)       // library prints nothing
+func Verify(dir string) ([]VerificationResult, error)                          // sorted by Key; includes StatusAdded
+func ListSupportedFiles() []string
+```
+
+Removed (no callers outside the package; `GetEcosystemKey` was the collision bug): `GetEcosystemKey`, `DetectByEcosystem`, `HasLockfiles`, `ListSupportedEcosystems`, `FormatVerificationResults`, `AddLock`, `GetLock`, `LockInfo.Modified`, `UnifiedLock.GeneratedAt`, `LockInfo.PackageCnt` (renamed `Packages`).
+
+Behavior notes for the implementer:
+- `xpm-lock.yaml` v2 looks exactly like this (2-space indent, map keys sorted by yaml.v3, struct fields in declaration order, no timestamps):
+
+```yaml
+version: 2
+locks:
+  go.sum:
+    ecosystem: go
+    manager: go
+    file: go.sum
+    hash: 3f0c…(64 hex)
+    packages: 1
+```
+
+- `Hash` stays plain lowercase hex as in v1, so v1 entries compare directly; `Verify` also accepts a `sha256:` prefix and any case.
+- Every `file` read from `xpm-lock.yaml` goes through `containedPath`: rejected (StatusError, never opened) when empty, `.`, absolute, containing `..`, a backslash, a NUL byte or a drive letter (same rules on every OS), or when it exists and `EvalSymlinks` resolves outside the root. `DetectAll` uses the same check, so `xpm lock` never hashes a symlink that points outside the project.
+- A lockfile that cannot be read fails `Generate` (no silent omission). A lockfile whose packages cannot be counted is still recorded with `packages: 0` plus a warning; `bun.lockb` (binary) always gets that warning instead of the old size/100 guess.
+
+- [ ] **Step 1: Add the count fixtures**
+
+Create each file below with exactly this content (they are small but real-format; the counts in Step 2 depend on them).
+
+`internal/lock/testdata/counts/package-lock.json`:
+
+```json
+{
+  "name": "app",
+  "version": "1.0.0",
+  "lockfileVersion": 3,
+  "requires": true,
+  "packages": {
+    "": {
+      "name": "app",
+      "version": "1.0.0",
+      "dependencies": {
+        "express": "^4.18.2"
+      },
+      "devDependencies": {
+        "@types/node": "^20.0.0"
+      }
+    },
+    "node_modules/@types/node": {
+      "version": "20.11.5",
+      "resolved": "https://registry.npmjs.org/@types/node/-/node-20.11.5.tgz",
+      "dev": true
+    },
+    "node_modules/express": {
+      "version": "4.18.2",
+      "resolved": "https://registry.npmjs.org/express/-/express-4.18.2.tgz"
+    },
+    "node_modules/express/node_modules/debug": {
+      "version": "2.6.9",
+      "resolved": "https://registry.npmjs.org/debug/-/debug-2.6.9.tgz"
+    }
+  }
+}
+```
+
+`internal/lock/testdata/counts/yarn.lock`:
+
+```text
+# THIS IS AN AUTOGENERATED FILE. DO NOT EDIT THIS FILE DIRECTLY.
+# yarn lockfile v1
+
+
+"@babel/code-frame@^7.0.0", "@babel/code-frame@^7.22.13":
+  version "7.23.5"
+  resolved "https://registry.yarnpkg.com/@babel/code-frame/-/code-frame-7.23.5.tgz"
+  dependencies:
+    chalk "^2.4.2"
+
+chalk@^2.4.2:
+  version "2.4.2"
+  resolved "https://registry.yarnpkg.com/chalk/-/chalk-2.4.2.tgz"
+
+lodash@^4.17.21:
+  version "4.17.21"
+  resolved "https://registry.yarnpkg.com/lodash/-/lodash-4.17.21.tgz"
+```
+
+`internal/lock/testdata/counts/yarn-berry.lock`:
+
+```text
+# This file is generated by running "yarn install" inside your project.
+# Manual changes might be lost - proceed with caution!
+
+__metadata:
+  version: 8
+  cacheKey: 10c0
+
+"app@workspace:.":
+  version: 0.0.0-use.local
+  resolution: "app@workspace:."
+  dependencies:
+    lodash: "npm:^4.17.21"
+  languageName: unknown
+  linkType: soft
+
+"lodash@npm:^4.17.21":
+  version: 4.17.21
+  resolution: "lodash@npm:4.17.21"
+  checksum: 10c0/d8cbea072bb08655bb4c989da418994b073a608dffa608b09ac04b43a791b12aeae7cd7ad919aa4c925f33b48490b5cfe6c1f71d827956071dae2e7bb3a6b74
+  languageName: node
+  linkType: hard
+```
+
+`internal/lock/testdata/counts/pnpm-v6.yaml`:
+
+```yaml
+lockfileVersion: '6.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+dependencies:
+  express:
+    specifier: ^4.18.2
+    version: 4.18.2
+
+packages:
+
+  /accepts@1.3.8:
+    resolution: {integrity: sha512-PYAthTa2m2VKxuvSD3DPC/Gy+U+sOA1LAuT8mkmRuvw+NACSaeXEQ+NHcVF7rONl6qcaxV3Uuemwawk+7+SJLw==}
+    engines: {node: '>= 0.6'}
+    dev: false
+
+  /express@4.18.2:
+    resolution: {integrity: sha512-5/PsL6iGPdfQ/lKM1UuielYgv3BUoJfz1aUwU9vHZ+J7gyvwdQXFEBIEIaxeGf0GIcreATNyBExtalisDbuMqQ==}
+    engines: {node: '>= 0.10.0'}
+    dependencies:
+      accepts: 1.3.8
+    dev: false
+```
+
+`internal/lock/testdata/counts/pnpm-v9.yaml`:
+
+```yaml
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    dependencies:
+      '@scope/util':
+        specifier: ^1.0.0
+        version: 1.0.0
+      ms:
+        specifier: ^2.1.3
+        version: 2.1.3
+
+packages:
+
+  '@scope/util@1.0.0':
+    resolution: {integrity: sha512-aaaa}
+
+  ms@2.1.3:
+    resolution: {integrity: sha512-bbbb}
+
+snapshots:
+
+  '@scope/util@1.0.0':
+    dependencies:
+      ms: 2.1.3
+
+  ms@2.1.3: {}
+```
+
+`internal/lock/testdata/counts/bun.lock`:
+
+```json
+{
+  "lockfileVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "app",
+      "dependencies": {
+        "react": "^18.2.0",
+      },
+    },
+  },
+  // comments are allowed in JSONC
+  "packages": {
+    "js-tokens": ["js-tokens@4.0.0", "", {}, "sha512-RdJUflcE3cUzKiMqQgsCu06FPu9UdIJO0beYbPhHN4k6apgJtifcoCtT9bcxOpYBtpD2kCM6Sbzg4CausW/PKQ=="],
+    "loose-envify": ["loose-envify@1.4.0", "", { "dependencies": { "js-tokens": "^3.0.0 || ^4.0.0" }, "bin": { "loose-envify": "cli.js" } }, "sha512-lyuxPGr/Wfhrlem2CL/UcnUc1zcqKAImBDzukY7Y5F/yQiNdko6+fRLevlw1HgMySw7f611UIY408EtxRSoK3Q=="],
+    "react": ["react@18.2.0", "", { "dependencies": { "loose-envify": "^1.1.0" } }, "sha512-/3IjMdb2L9QbBdWiW5e3P2/npwMBaU9mHCSCUzNln0ZCYbcfTsGbTJrU/kGemdH2IWmB2ioZ+zkxtmq6g09fGQ=="],
+  }
+}
+```
+
+`internal/lock/testdata/counts/uv.lock`:
+
+```text
+version = 1
+requires-python = ">=3.12"
+
+[[package]]
+name = "app"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "requests" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "requests", specifier = ">=2.31" }]
+
+[[package]]
+name = "certifi"
+version = "2024.2.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/certifi-2024.2.2.tar.gz", hash = "sha256:0569859f95fc761b18b45ef421b1290a0f65f147e92a1e5eb3e635f9a5e4e66f", size = 164886 }
+
+[[package]]
+name = "requests"
+version = "2.31.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "certifi" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/requests-2.31.0.tar.gz", hash = "sha256:942c5a758f98d790eaed1a29cb6eefc7ffb0d1cf7af05c3d2791656dbd6ad1e1", size = 110794 }
+```
+
+`internal/lock/testdata/counts/poetry.lock`:
+
+```text
+# This file is automatically @generated by Poetry 1.8.2 and should not be changed by hand.
+
+[[package]]
+name = "certifi"
+version = "2024.2.2"
+description = "Python package for providing Mozilla's CA Bundle."
+optional = false
+python-versions = ">=3.6"
+files = [
+    {file = "certifi-2024.2.2-py3-none-any.whl", hash = "sha256:dc383c07b76109f368f6106eee2b593b04a011ea4d55f652c6ca24a754d1cdd1"},
+]
+
+[[package]]
+name = "requests"
+version = "2.31.0"
+description = "Python HTTP for Humans."
+optional = false
+python-versions = ">=3.7"
+files = []
+
+[package.dependencies]
+certifi = ">=2017.4.17"
+
+[metadata]
+lock-version = "2.0"
+python-versions = "^3.11"
+content-hash = "0f0f0f"
+```
+
+`internal/lock/testdata/counts/Cargo.lock`:
+
+```text
+# This file is automatically @generated by Cargo.
+# It is not intended for manual editing.
+version = 3
+
+[[package]]
+name = "app"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "serde"
+version = "1.0.197"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3fb1c873e1b9b056a4dc4c0c198b24c3ffa059243875552b2bd0933b1aee4ce2"
+```
+
+`internal/lock/testdata/counts/composer.lock`:
+
+```text
+{
+    "_readme": ["This file locks the dependencies of your project to a known state"],
+    "content-hash": "a1b2c3",
+    "packages": [
+        {"name": "monolog/monolog", "version": "3.5.0"},
+        {"name": "psr/log", "version": "3.0.0"}
+    ],
+    "packages-dev": [
+        {"name": "phpunit/phpunit", "version": "10.5.10"}
+    ],
+    "aliases": [],
+    "minimum-stability": "stable"
+}
+```
+
+`internal/lock/testdata/counts/Pipfile.lock`:
+
+```text
+{
+    "_meta": {"hash": {"sha256": "abc"}, "pipfile-spec": 6},
+    "default": {
+        "requests": {"hashes": ["sha256:aaa"], "version": "==2.31.0"},
+        "certifi": {"hashes": ["sha256:bbb"], "version": "==2024.2.2"}
+    },
+    "develop": {
+        "pytest": {"hashes": ["sha256:ccc"], "version": "==8.0.0"}
+    }
+}
+```
+
+`internal/lock/testdata/counts/go.sum`:
+
+```text
+github.com/BurntSushi/toml v1.3.2 h1:o7IhLm0Msx3BaB+n3Ag7L8EVlByGnpq14C4YWiu/gL8=
+github.com/BurntSushi/toml v1.3.2/go.mod h1:CxXYINrC8qIiEnFrOxCa7Jy5BFHlXnUU2pbicEuybxQ=
+gopkg.in/yaml.v3 v3.0.1 h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA=
+gopkg.in/yaml.v3 v3.0.1/go.mod h1:K4uyk7z7BCEPqu6E4C/ADh5gWJ+FNkKDhzpBmIfmJlc=
+gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
+```
+
+`internal/lock/testdata/counts/gradle.lockfile`:
+
+```text
+# This is a Gradle generated file for dependency locking.
+# Manual edits can break the build and are not advised.
+# This file is expected to be part of source control.
+com.google.guava:failureaccess:1.0.1=compileClasspath,runtimeClasspath
+com.google.guava:guava:32.1.3-jre=compileClasspath,runtimeClasspath
+org.junit.jupiter:junit-jupiter:5.10.1=testCompileClasspath
+empty=annotationProcessor
+```
+
+`internal/lock/testdata/counts/requirements.lock`:
+
+```text
+# generated by rye
+-e file:.
+certifi==2024.2.2 \
+    --hash=sha256:dc383c07b76109f368f6106eee2b593b04a011ea4d55f652c6ca24a754d1cdd1
+requests==2.31.0
+```
+
+- [ ] **Step 2: Write the failing tests**
+
+`internal/lock/parsers_test.go`:
+
+```go
+package lock
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestCountPackagesFixtures(t *testing.T) {
+	cases := []struct {
+		fixture string // under testdata/counts
+		file    string // lockfile name that selects the counter
+		want    int
+	}{
+		{"package-lock.json", "package-lock.json", 3}, // root "" excluded, nested node_modules counted
+		{"yarn.lock", "yarn.lock", 3},                 // a multi-range header counts once
+		{"yarn-berry.lock", "yarn.lock", 2},           // __metadata is not a package
+		{"pnpm-v6.yaml", "pnpm-lock.yaml", 2},
+		{"pnpm-v9.yaml", "pnpm-lock.yaml", 2}, // v9 keys have no leading "/"; snapshots ignored
+		{"bun.lock", "bun.lock", 3},           // JSONC: trailing commas and // comments
+		{"uv.lock", "uv.lock", 2},             // the editable project itself is not counted
+		{"poetry.lock", "poetry.lock", 2},
+		{"Cargo.lock", "Cargo.lock", 2},
+		{"composer.lock", "composer.lock", 3},
+		{"Pipfile.lock", "Pipfile.lock", 3},
+		{"go.sum", "go.sum", 3}, // h1 + /go.mod lines of one version count once
+		{"gradle.lockfile", "gradle.lockfile", 3},
+		{"requirements.lock", "requirements.lock", 2}, // -e and --hash lines skipped
+	}
+	for _, c := range cases {
+		t.Run(c.fixture, func(t *testing.T) {
+			data, err := os.ReadFile(filepath.Join("testdata", "counts", c.fixture))
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := countPackages(c.file, data)
+			if err != nil {
+				t.Fatalf("countPackages(%s): %v", c.file, err)
+			}
+			if got != c.want {
+				t.Errorf("countPackages(%s) = %d, want %d", c.file, got, c.want)
+			}
+		})
+	}
+}
+
+func TestCountPackagesMalformedNeverPanics(t *testing.T) {
+	inputs := []string{
+		"",
+		"{",
+		"\x00\xff\xfe",
+		`{"packages": [1, 2]}`,
+		`{"packages": {"a": 1,}`,
+		"\"unterminated",
+		"/* unterminated comment",
+		"{\"a\": \"\\",
+		"[[package]]\nname = ",
+		"packages:\n  - [",
+		"packages: 7\n",
+		"lockfileVersion: '9.0'\npackages:\n  a: [\n",
+	}
+	for _, spec := range SupportedLockfiles {
+		for _, in := range inputs {
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						t.Errorf("countPackages(%s, %q) panicked: %v", spec.File, in, r)
+					}
+				}()
+				n, _ := countPackages(spec.File, []byte(in))
+				if n < 0 {
+					t.Errorf("countPackages(%s, %q) = %d, want >= 0", spec.File, in, n)
+				}
+			}()
+		}
+	}
+}
+
+func TestCountPackagesMalformedStructuredFormatsReportError(t *testing.T) {
+	for _, file := range []string{"package-lock.json", "pnpm-lock.yaml", "bun.lock", "composer.lock", "poetry.lock", "uv.lock", "Pipfile.lock", "Cargo.lock"} {
+		n, err := countPackages(file, []byte("{[ not valid in any format"))
+		if err == nil {
+			t.Errorf("countPackages(%s, garbage) error = nil, want parse error", file)
+		}
+		if n != 0 {
+			t.Errorf("countPackages(%s, garbage) = %d, want 0", file, n)
+		}
+	}
+}
+
+func TestCountBunLockbIsReportedNotEstimated(t *testing.T) {
+	n, err := countPackages("bun.lockb", make([]byte, 5000))
+	if n != 0 || err == nil {
+		t.Fatalf("countPackages(bun.lockb) = %d, %v; want 0 and an explanation", n, err)
+	}
+}
+
+func TestStripJSONCKeepsStrings(t *testing.T) {
+	in := `{"url": "https://x/y", "a": "b,}", /* c */ "d": [1,2,],}`
+	want := `{"url": "https://x/y", "a": "b,}",  "d": [1,2]}`
+	if got := string(stripJSONC([]byte(in))); got != want {
+		t.Fatalf("stripJSONC = %q, want %q", got, want)
+	}
+}
+```
+
+`internal/lock/contain_test.go`:
+
+```go
+package lock
+
+import (
+	"errors"
+	"os"
+	"path/filepath"
+	"runtime"
+	"testing"
+)
+
+func TestCheckLocal(t *testing.T) {
+	ok := []string{"package-lock.json", "sub/yarn.lock", "./go.sum"}
+	bad := []string{
+		"",
+		".",
+		"/etc/passwd",
+		"../outside.lock",
+		"sub/../../outside.lock",
+		"..",
+		`..\outside.lock`,
+		`sub\yarn.lock`,
+		"C:/Windows/win.ini",
+		"c:go.sum",
+		"go.sum\x00",
+	}
+	for _, p := range ok {
+		if err := checkLocal(p); err != nil {
+			t.Errorf("checkLocal(%q) = %v, want nil", p, err)
+		}
+	}
+	for _, p := range bad {
+		err := checkLocal(p)
+		if err == nil {
+			t.Errorf("checkLocal(%q) = nil, want error", p)
+			continue
+		}
+		if !errors.Is(err, errOutsideRoot) {
+			t.Errorf("checkLocal(%q) = %v, want errOutsideRoot", p, err)
+		}
+	}
+}
+
+func TestContainedPathRejectsSymlinkEscape(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks need privileges on Windows")
+	}
+	outside := t.TempDir()
+	secret := filepath.Join(outside, "secret.txt")
+	if err := os.WriteFile(secret, []byte("s3cret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	if err := os.Symlink(secret, filepath.Join(root, "go.sum")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := containedPath(root, "go.sum"); !errors.Is(err, errOutsideRoot) {
+		t.Fatalf("containedPath(symlink to outside) = %v, want errOutsideRoot", err)
+	}
+	// Detection skips it too, so `xpm lock` never hashes a file outside the project.
+	if got := DetectAll(root); len(got) != 0 {
+		t.Fatalf("DetectAll = %+v, want nothing", got)
+	}
+}
+
+func TestContainedPathAllowsSymlinkInside(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks need privileges on Windows")
+	}
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "real.sum"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("real.sum", filepath.Join(root, "go.sum")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := containedPath(root, "go.sum"); err != nil {
+		t.Fatalf("containedPath(symlink inside root) = %v, want nil", err)
+	}
+}
+```
+
+`internal/lock/lock_test.go`:
+
+```go
+package lock
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// writeFile writes data to dir/name, creating parent directories.
+func writeFile(t *testing.T, dir, name, data string) {
+	t.Helper()
+	p := filepath.Join(dir, filepath.FromSlash(name))
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+const (
+	npmLock  = "{\"lockfileVersion\":3,\"packages\":{\"\":{},\"node_modules/a\":{\"version\":\"1.0.0\"}}}\n"
+	yarnLock = "# yarn lockfile v1\n\na@^1.0.0:\n  version \"1.0.0\"\n"
+	goSum    = "example.com/m v1.0.0 h1:abc=\nexample.com/m v1.0.0/go.mod h1:def=\n"
+)
+
+func TestGenerateKeysByPathSoNodeLockfilesDoNotCollide(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "package-lock.json", npmLock)
+	writeFile(t, dir, "yarn.lock", yarnLock)
+
+	u, warnings, err := Generate(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %v, want none", warnings)
+	}
+	if u.Count() != 2 {
+		t.Fatalf("Count = %d, want 2 (package-lock.json and yarn.lock): %+v", u.Count(), u.Locks)
+	}
+	if got := u.Locks["package-lock.json"]; got == nil || got.Manager != "npm" || got.Packages != 1 {
+		t.Errorf("package-lock.json entry = %+v", got)
+	}
+	if got := u.Locks["yarn.lock"]; got == nil || got.Manager != "yarn" || got.Packages != 1 {
+		t.Errorf("yarn.lock entry = %+v", got)
+	}
+}
+
+func TestMarshalIsExactAndHasNoTimestamps(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "yarn.lock", yarnLock)
+	writeFile(t, dir, "go.sum", goSum)
+	u, _, err := Generate(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := Marshal(u)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "version: 2\n" +
+		"locks:\n" +
+		"  go.sum:\n" +
+		"    ecosystem: go\n" +
+		"    manager: go\n" +
+		"    file: go.sum\n" +
+		"    hash: " + hashBytes([]byte(goSum)) + "\n" +
+		"    packages: 1\n" +
+		"  yarn.lock:\n" +
+		"    ecosystem: node\n" +
+		"    manager: yarn\n" +
+		"    file: yarn.lock\n" +
+		"    hash: " + hashBytes([]byte(yarnLock)) + "\n" +
+		"    packages: 1\n"
+	if string(data) != want {
+		t.Fatalf("Marshal =\n%s\nwant\n%s", data, want)
+	}
+}
+
+func TestWriteUnifiedLockSkipsIdenticalContent(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "package-lock.json", npmLock)
+
+	u, _, err := Generate(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed, err := WriteUnifiedLock(dir, u)
+	if err != nil || !changed {
+		t.Fatalf("first write: changed=%v err=%v, want true nil", changed, err)
+	}
+	first, err := os.ReadFile(filepath.Join(dir, LockfileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	u2, _, err := Generate(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed, err = WriteUnifiedLock(dir, u2)
+	if err != nil || changed {
+		t.Fatalf("second write: changed=%v err=%v, want false nil", changed, err)
+	}
+	second, err := os.ReadFile(filepath.Join(dir, LockfileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(first) != string(second) {
+		t.Fatalf("regenerating an unchanged project changed xpm-lock.yaml:\n%s\n---\n%s", first, second)
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".tmp") {
+			t.Errorf("temporary file left behind: %s", e.Name())
+		}
+	}
+}
+
+func TestWriteUnifiedLockRewritesWhenContentDiffers(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, LockfileName, "version: 1\n")
+	writeFile(t, dir, "go.sum", goSum)
+	u, _, err := Generate(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed, err := WriteUnifiedLock(dir, u)
+	if err != nil || !changed {
+		t.Fatalf("changed=%v err=%v, want true nil", changed, err)
+	}
+	got, err := ReadUnifiedLock(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Version != CurrentVersion || got.Locks["go.sum"] == nil {
+		t.Fatalf("ReadUnifiedLock = %+v", got)
+	}
+}
+
+func TestVerifyReportsEveryStatus(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "package-lock.json", npmLock)
+	writeFile(t, dir, "yarn.lock", yarnLock)
+	writeFile(t, dir, "go.sum", goSum)
+	u, _, err := Generate(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := WriteUnifiedLock(dir, u); err != nil {
+		t.Fatal(err)
+	}
+
+	// yarn.lock changes, go.sum disappears, Cargo.lock appears.
+	writeFile(t, dir, "yarn.lock", yarnLock+"\nb@^2.0.0:\n  version \"2.0.0\"\n")
+	if err := os.Remove(filepath.Join(dir, "go.sum")); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, dir, "Cargo.lock", "version = 3\n")
+
+	results, err := Verify(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]VerificationStatus{}
+	var order []string
+	for _, r := range results {
+		got[r.Key] = r.Status
+		order = append(order, r.Key)
+	}
+	want := map[string]VerificationStatus{
+		"Cargo.lock":        StatusAdded,
+		"go.sum":            StatusMissing,
+		"package-lock.json": StatusUnchanged,
+		"yarn.lock":         StatusChanged,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("results = %+v, want %v", results, want)
+	}
+	for k, w := range want {
+		if got[k] != w {
+			t.Errorf("%s: status %v, want %v", k, got[k], w)
+		}
+	}
+	if strings.Join(order, ",") != "Cargo.lock,go.sum,package-lock.json,yarn.lock" {
+		t.Errorf("order = %v, want sorted by path", order)
+	}
+	if VerificationPassed(results) {
+		t.Error("VerificationPassed = true, want false")
+	}
+}
+
+func TestVerifyReadsVersion1Files(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "package-lock.json", npmLock)
+	writeFile(t, dir, "yarn.lock", yarnLock)
+	// xpm v1 keyed by ecosystem; yarn.lock was silently dropped by the collision.
+	writeFile(t, dir, LockfileName, "version: 1\n"+
+		"generatedAt: 2026-01-02T03:04:05Z\n"+
+		"locks:\n"+
+		"    node:\n"+
+		"        ecosystem: node\n"+
+		"        manager: npm\n"+
+		"        file: package-lock.json\n"+
+		"        hash: "+hashBytes([]byte(npmLock))+"\n"+
+		"        modified: 2026-01-02T03:04:05Z\n"+
+		"        packages: 1\n")
+
+	results, err := Verify(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("results = %+v, want 2", results)
+	}
+	if results[0].Key != "package-lock.json" || results[0].Status != StatusUnchanged {
+		t.Errorf("results[0] = %+v, want package-lock.json unchanged", results[0])
+	}
+	if results[1].Key != "yarn.lock" || results[1].Status != StatusAdded {
+		t.Errorf("results[1] = %+v, want yarn.lock added", results[1])
+	}
+}
+
+func TestVerifyNeverOpensPathsOutsideTheProject(t *testing.T) {
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "project")
+	writeFile(t, parent, "secret.lock", "s3cret")
+	writeFile(t, dir, LockfileName, "version: 2\n"+
+		"locks:\n"+
+		"  ../secret.lock:\n"+
+		"    file: ../secret.lock\n"+
+		"    hash: "+hashBytes([]byte("s3cret"))+"\n"+
+		"  /etc/hosts:\n"+
+		"    file: /etc/hosts\n"+
+		"    hash: 00\n")
+
+	results, err := Verify(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("results = %+v, want 2", results)
+	}
+	for _, r := range results {
+		if r.Status != StatusError || r.Error == nil {
+			t.Errorf("%s: status %v err %v, want StatusError with a reason", r.Key, r.Status, r.Error)
+		}
+		if r.ActualHash != "" {
+			t.Errorf("%s: ActualHash = %q; the file must never be read", r.Key, r.ActualHash)
+		}
+	}
+}
+
+func TestReadUnifiedLockRejectsNewerVersion(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, LockfileName, "version: 3\nlocks: {}\n")
+	if _, err := ReadUnifiedLock(dir); err == nil || !strings.Contains(err.Error(), "version 3") {
+		t.Fatalf("ReadUnifiedLock(version 3) err = %v, want a version error", err)
+	}
+}
+
+func TestGenerateWarnsButRecordsUncountableLockfile(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "package-lock.json", "{ not json")
+	u, warnings, err := Generate(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "package-lock.json") {
+		t.Fatalf("warnings = %v, want one about package-lock.json", warnings)
+	}
+	if info := u.Locks["package-lock.json"]; info == nil || info.Packages != 0 || info.Hash == "" {
+		t.Fatalf("entry = %+v, want recorded with hash and 0 packages", info)
+	}
+}
+```
+
+- [ ] **Step 3: Run the tests to verify they fail**
+
+Run: `go test ./internal/lock/`
+Expected: FAIL — build errors such as `undefined: countPackages`, `undefined: checkLocal`, `undefined: containedPath`, `undefined: hashBytes`, `undefined: Marshal`, `assignment mismatch: 3 variables but Generate returns 2 values`.
+
+- [ ] **Step 4: Write the implementation**
+
+Replace the four existing files and create `contain.go` with exactly this content.
+
+`internal/lock/lock.go`:
+
+```go
+// Package lock provides unified lockfile generation and verification.
+//
+// It scans a project's root directory for the lockfiles of all supported
+// ecosystems and records each one's SHA-256 hash and package count in
+// xpm-lock.yaml, so CI can detect a lockfile that changed, disappeared, or
+// appeared since the file was generated.
+//
+// The file carries no timestamps: regenerating it for an unchanged project
+// produces byte-identical output and is not rewritten.
+package lock
+
+// LockInfo holds metadata about a single lockfile.
+type LockInfo struct {
+	// Ecosystem identifies the package ecosystem (e.g. "node", "python").
+	Ecosystem string `yaml:"ecosystem,omitempty"`
+
+	// Manager is the package manager that writes the file (e.g. "npm", "uv").
+	Manager string `yaml:"manager,omitempty"`
+
+	// File is the lockfile path relative to the project root, with forward
+	// slashes. It is always equal to the entry's key in UnifiedLock.Locks.
+	File string `yaml:"file"`
+
+	// Hash is the lowercase hex SHA-256 of the file's bytes.
+	Hash string `yaml:"hash"`
+
+	// Packages is the number of packages the lockfile resolves (0 when the
+	// format cannot be counted, e.g. binary bun.lockb).
+	Packages int `yaml:"packages"`
+}
+
+// UnifiedLock represents the complete xpm-lock.yaml structure.
+type UnifiedLock struct {
+	// Version is the schema version (CurrentVersion when written by xpm).
+	Version int `yaml:"version"`
+
+	// Locks maps each lockfile's slash-separated path relative to the project
+	// root to its metadata.
+	Locks map[string]*LockInfo `yaml:"locks"`
+}
+
+// LockfileName is the name of the unified lock file.
+const LockfileName = "xpm-lock.yaml"
+
+// CurrentVersion is the schema version written by this xpm. Version 1 files
+// (keyed by ecosystem, with generatedAt/modified timestamps) are still read.
+const CurrentVersion = 2
+
+// NewUnifiedLock creates an empty UnifiedLock at the current schema version.
+func NewUnifiedLock() *UnifiedLock {
+	return &UnifiedLock{
+		Version: CurrentVersion,
+		Locks:   make(map[string]*LockInfo),
+	}
+}
+
+// Count returns the number of lockfiles tracked.
+func (u *UnifiedLock) Count() int {
+	return len(u.Locks)
+}
+
+// IsEmpty reports whether no lockfiles are tracked.
+func (u *UnifiedLock) IsEmpty() bool {
+	return len(u.Locks) == 0
+}
+
+// TotalPackages returns the sum of packages across all lockfiles.
+func (u *UnifiedLock) TotalPackages() int {
+	total := 0
+	for _, info := range u.Locks {
+		total += info.Packages
+	}
+	return total
+}
+
+// VerificationResult holds the result of verifying one lockfile.
+type VerificationResult struct {
+	// Key is the lockfile path relative to the project root (slash-separated).
+	Key string
+
+	// File is the lockfile path as recorded (equal to Key for v2 files).
+	File string
+
+	// Status is the verification outcome.
+	Status VerificationStatus
+
+	// ExpectedHash is the hash recorded in xpm-lock.yaml ("" for StatusAdded).
+	ExpectedHash string
+
+	// ActualHash is the hash of the file on disk ("" when not computed).
+	ActualHash string
+
+	// Error explains StatusError results.
+	Error error
+}
+
+// VerificationStatus represents the outcome of a lockfile verification.
+type VerificationStatus int
+
+const (
+	// StatusUnchanged: the file's hash matches xpm-lock.yaml.
+	StatusUnchanged VerificationStatus = iota
+
+	// StatusChanged: the file's hash differs from xpm-lock.yaml.
+	StatusChanged
+
+	// StatusMissing: recorded in xpm-lock.yaml but no longer on disk.
+	StatusMissing
+
+	// StatusError: the entry could not be checked (unsafe path, read error).
+	StatusError
+
+	// StatusAdded: a supported lockfile on disk that xpm-lock.yaml does not record.
+	StatusAdded
+)
+
+// String returns a human-readable status string.
+func (s VerificationStatus) String() string {
+	switch s {
+	case StatusUnchanged:
+		return "unchanged"
+	case StatusChanged:
+		return "changed"
+	case StatusMissing:
+		return "missing"
+	case StatusError:
+		return "error"
+	case StatusAdded:
+		return "added"
+	default:
+		return "unknown"
+	}
+}
+
+// VerificationPassed reports whether every result is StatusUnchanged.
+func VerificationPassed(results []VerificationResult) bool {
+	for _, r := range results {
+		if r.Status != StatusUnchanged {
+			return false
+		}
+	}
+	return true
+}
+```
+
+`internal/lock/detectors.go`:
+
+```go
+package lock
+
+import (
+	"path/filepath"
+)
+
+// LockfileSpec defines a lockfile to detect.
+type LockfileSpec struct {
+	// File is the lockfile name.
+	File string
+
+	// Ecosystem is the ecosystem identifier (node, python, rust, etc.).
+	Ecosystem string
+
+	// Manager is the package manager name (npm, yarn, pip, etc.).
+	Manager string
+}
+
+// SupportedLockfiles lists all lockfiles that can be detected, in the order
+// they are reported.
+var SupportedLockfiles = []LockfileSpec{
+	// Node.js ecosystem
+	{File: "package-lock.json", Ecosystem: "node", Manager: "npm"},
+	{File: "yarn.lock", Ecosystem: "node", Manager: "yarn"},
+	{File: "pnpm-lock.yaml", Ecosystem: "node", Manager: "pnpm"},
+	{File: "bun.lock", Ecosystem: "node", Manager: "bun"},
+	{File: "bun.lockb", Ecosystem: "node", Manager: "bun"},
+
+	// PHP ecosystem
+	{File: "composer.lock", Ecosystem: "composer", Manager: "composer"},
+
+	// Python ecosystem
+	{File: "poetry.lock", Ecosystem: "python", Manager: "poetry"},
+	{File: "uv.lock", Ecosystem: "python", Manager: "uv"},
+	{File: "requirements.lock", Ecosystem: "python", Manager: "pip"},
+	{File: "Pipfile.lock", Ecosystem: "python", Manager: "pipenv"},
+
+	// Rust ecosystem
+	{File: "Cargo.lock", Ecosystem: "rust", Manager: "cargo"},
+
+	// Go ecosystem
+	{File: "go.sum", Ecosystem: "go", Manager: "go"},
+
+	// Java ecosystem
+	{File: "gradle.lockfile", Ecosystem: "gradle", Manager: "gradle"},
+}
+
+// DetectedLockfile holds information about a detected lockfile.
+type DetectedLockfile struct {
+	// Spec is the lockfile specification.
+	Spec LockfileSpec
+
+	// Path is the full path to the lockfile.
+	Path string
+
+	// RelPath is the slash-separated path relative to the scanned root; it is
+	// the file's key in xpm-lock.yaml.
+	RelPath string
+}
+
+// DetectAll returns the supported lockfiles present in dir (the project root
+// only; subdirectories are not scanned), in SupportedLockfiles order.
+// A lockfile that is a symlink resolving outside dir is not detected.
+func DetectAll(dir string) []DetectedLockfile {
+	var detected []DetectedLockfile
+	for _, spec := range SupportedLockfiles {
+		full, err := containedPath(dir, spec.File)
+		if err != nil || !fileExists(full) {
+			continue
+		}
+		detected = append(detected, DetectedLockfile{
+			Spec:    spec,
+			Path:    filepath.Join(dir, spec.File),
+			RelPath: spec.File,
+		})
+	}
+	return detected
+}
+
+// ListSupportedFiles returns the names of all supported lockfiles.
+func ListSupportedFiles() []string {
+	files := make([]string, len(SupportedLockfiles))
+	for i, spec := range SupportedLockfiles {
+		files[i] = spec.File
+	}
+	return files
+}
+```
+
+`internal/lock/contain.go`:
+
+```go
+package lock
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"path"
+	"path/filepath"
+	"strings"
+)
+
+// errOutsideRoot marks a path that leaves the project root.
+var errOutsideRoot = errors.New("path is outside the project")
+
+// checkLocal validates a slash-separated path read from xpm-lock.yaml. It
+// must be relative, must not contain "..", backslashes, NUL bytes or a drive
+// letter, and must name something below the root (not the root itself). The
+// rules are the same on every OS, so a lock file cannot behave differently
+// on Windows than it does on Linux.
+func checkLocal(rel string) error {
+	switch {
+	case rel == "":
+		return fmt.Errorf("empty path: %w", errOutsideRoot)
+	case strings.ContainsRune(rel, '\\'):
+		return fmt.Errorf("%q contains a backslash (use / separators): %w", rel, errOutsideRoot)
+	case strings.ContainsRune(rel, 0):
+		return fmt.Errorf("%q contains a NUL byte: %w", rel, errOutsideRoot)
+	case strings.HasPrefix(rel, "/") || path.IsAbs(rel) || filepath.IsAbs(rel):
+		return fmt.Errorf("%q is absolute: %w", rel, errOutsideRoot)
+	case len(rel) >= 2 && rel[1] == ':':
+		return fmt.Errorf("%q has a drive letter: %w", rel, errOutsideRoot)
+	}
+	for _, part := range strings.Split(rel, "/") {
+		if part == ".." {
+			return fmt.Errorf("%q contains \"..\": %w", rel, errOutsideRoot)
+		}
+	}
+	clean := path.Clean(rel)
+	if clean == "." {
+		return fmt.Errorf("%q names the project root, not a file: %w", rel, errOutsideRoot)
+	}
+	if !filepath.IsLocal(filepath.FromSlash(clean)) {
+		return fmt.Errorf("%q is not a local path: %w", rel, errOutsideRoot)
+	}
+	return nil
+}
+
+// containedPath joins root and the slash-separated rel after checkLocal, and,
+// when the target exists, verifies that resolving symlinks keeps it inside
+// root. A target that does not exist is returned without error (callers
+// report it as missing); nothing outside root is ever returned.
+func containedPath(root, rel string) (string, error) {
+	if err := checkLocal(rel); err != nil {
+		return "", err
+	}
+	full := filepath.Join(root, filepath.FromSlash(path.Clean(rel)))
+	if _, err := os.Lstat(full); err != nil {
+		return full, nil // missing: the caller reports it
+	}
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", fmt.Errorf("resolve project root: %w", err)
+	}
+	realFull, err := filepath.EvalSymlinks(full)
+	if err != nil {
+		// Dangling symlink: treat it as missing; it is never opened.
+		return full, nil
+	}
+	inside, err := filepath.Rel(realRoot, realFull)
+	if err != nil || !filepath.IsLocal(inside) {
+		return "", fmt.Errorf("%q resolves to %s: %w", rel, realFull, errOutsideRoot)
+	}
+	return full, nil
+}
+
+// fileExists reports whether path exists and is not a directory.
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return !info.IsDir()
+}
+```
+
+`internal/lock/parsers.go`:
+
+```go
+package lock
+
+import (
+	"bufio"
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"strings"
+
+	"github.com/BurntSushi/toml"
+	"gopkg.in/yaml.v3"
+)
+
+// errBinaryLockfile is returned by countPackages for formats it cannot read.
+var errBinaryLockfile = errors.New("binary lockfile; package count recorded as 0 (bun >= 1.2 writes a text bun.lock)")
+
+// ParseLockfile reads a detected lockfile once and returns its metadata. A
+// read error is returned as err. A file whose packages cannot be counted still
+// yields a LockInfo (Packages = 0) plus a warning saying why.
+func ParseLockfile(d DetectedLockfile) (info *LockInfo, warning string, err error) {
+	data, err := os.ReadFile(d.Path)
+	if err != nil {
+		return nil, "", fmt.Errorf("read %s: %w", d.RelPath, err)
+	}
+	n, countErr := countPackages(d.Spec.File, data)
+	if countErr != nil {
+		warning = fmt.Sprintf("%s: %v", d.RelPath, countErr)
+	}
+	return &LockInfo{
+		Ecosystem: d.Spec.Ecosystem,
+		Manager:   d.Spec.Manager,
+		File:      d.RelPath,
+		Hash:      hashBytes(data),
+		Packages:  n,
+	}, warning, nil
+}
+
+// ComputeHash returns the lowercase hex SHA-256 of the file at path.
+func ComputeHash(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return hashBytes(data), nil
+}
+
+func hashBytes(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+// countPackages counts the packages a lockfile resolves. It never panics on
+// malformed input; it returns 0 and an error instead.
+func countPackages(file string, data []byte) (int, error) {
+	switch file {
+	case "package-lock.json":
+		return countPackageLockJSON(data)
+	case "yarn.lock":
+		return countYarnLock(data), nil
+	case "pnpm-lock.yaml":
+		return countPnpmLock(data)
+	case "bun.lock":
+		return countBunLock(data)
+	case "bun.lockb":
+		return 0, errBinaryLockfile
+	case "composer.lock":
+		return countComposerLock(data)
+	case "poetry.lock":
+		return countTOMLPackages(data, false)
+	case "uv.lock":
+		return countTOMLPackages(data, true)
+	case "requirements.lock":
+		return countRequirementsLock(data), nil
+	case "Pipfile.lock":
+		return countPipfileLock(data)
+	case "Cargo.lock":
+		return countTOMLPackages(data, false)
+	case "go.sum":
+		return countGoSum(data), nil
+	case "gradle.lockfile":
+		return countGradleLock(data), nil
+	default:
+		return 0, fmt.Errorf("unsupported lockfile %q", file)
+	}
+}
+
+// countPackageLockJSON counts installed packages: "packages" minus the root
+// entry "" (lockfileVersion 2/3), or top-level "dependencies" (version 1).
+func countPackageLockJSON(data []byte) (int, error) {
+	var lf struct {
+		Packages     map[string]json.RawMessage `json:"packages"`
+		Dependencies map[string]json.RawMessage `json:"dependencies"`
+	}
+	if err := json.Unmarshal(data, &lf); err != nil {
+		return 0, fmt.Errorf("parse package-lock.json: %w", err)
+	}
+	if lf.Packages != nil {
+		n := len(lf.Packages)
+		if _, ok := lf.Packages[""]; ok {
+			n--
+		}
+		return n, nil
+	}
+	return len(lf.Dependencies), nil
+}
+
+// countYarnLock counts entry headers: unindented, non-comment lines ending in
+// ":" (one per resolution, even when several ranges share it). The Berry
+// "__metadata:" header is not a package.
+func countYarnLock(data []byte) int {
+	n := 0
+	sc := bufio.NewScanner(bytes.NewReader(data))
+	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	for sc.Scan() {
+		line := strings.TrimRight(sc.Text(), " \t\r")
+		if line == "" || line[0] == ' ' || line[0] == '\t' || line[0] == '#' {
+			continue
+		}
+		if !strings.HasSuffix(line, ":") || strings.HasPrefix(line, "__metadata") {
+			continue
+		}
+		n++
+	}
+	return n
+}
+
+// countPnpmLock counts the keys of the top-level "packages" map (v5/v6 keys
+// look like "/name@1.0.0", v9 keys like "name@1.0.0").
+func countPnpmLock(data []byte) (int, error) {
+	var lf struct {
+		Packages map[string]yaml.Node `yaml:"packages"`
+	}
+	if err := yaml.Unmarshal(data, &lf); err != nil {
+		return 0, fmt.Errorf("parse pnpm-lock.yaml: %w", err)
+	}
+	return len(lf.Packages), nil
+}
+
+// countBunLock counts the keys of "packages" in a text bun.lock (JSON with
+// trailing commas).
+func countBunLock(data []byte) (int, error) {
+	var lf struct {
+		Packages map[string]json.RawMessage `json:"packages"`
+	}
+	if err := json.Unmarshal(stripJSONC(data), &lf); err != nil {
+		return 0, fmt.Errorf("parse bun.lock: %w", err)
+	}
+	return len(lf.Packages), nil
+}
+
+// stripJSONC turns JSONC into JSON: it removes // and /* */ comments and
+// commas that directly precede "}" or "]", leaving string contents intact.
+// Malformed input (unterminated strings or comments) is passed through as far
+// as it goes; json.Unmarshal then reports the error.
+func stripJSONC(in []byte) []byte {
+	out := make([]byte, 0, len(in))
+	for i := 0; i < len(in); i++ {
+		c := in[i]
+		switch {
+		case c == '"':
+			j := i + 1
+			for j < len(in) && in[j] != '"' {
+				if in[j] == '\\' {
+					j++
+				}
+				j++
+			}
+			if j >= len(in) {
+				return append(out, in[i:]...)
+			}
+			out = append(out, in[i:j+1]...)
+			i = j
+		case c == '/' && i+1 < len(in) && in[i+1] == '/':
+			for i < len(in) && in[i] != '\n' {
+				i++
+			}
+			if i < len(in) {
+				out = append(out, '\n')
+			}
+		case c == '/' && i+1 < len(in) && in[i+1] == '*':
+			end := bytes.Index(in[i+2:], []byte("*/"))
+			if end < 0 {
+				return out
+			}
+			i += 2 + end + 1
+		case c == ',':
+			j := i + 1
+			for j < len(in) && (in[j] == ' ' || in[j] == '\t' || in[j] == '\n' || in[j] == '\r') {
+				j++
+			}
+			if j < len(in) && (in[j] == '}' || in[j] == ']') {
+				continue
+			}
+			out = append(out, c)
+		default:
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// countComposerLock counts "packages" plus "packages-dev".
+func countComposerLock(data []byte) (int, error) {
+	var lf struct {
+		Packages    []json.RawMessage `json:"packages"`
+		PackagesDev []json.RawMessage `json:"packages-dev"`
+	}
+	if err := json.Unmarshal(data, &lf); err != nil {
+		return 0, fmt.Errorf("parse composer.lock: %w", err)
+	}
+	return len(lf.Packages) + len(lf.PackagesDev), nil
+}
+
+// countTOMLPackages counts [[package]] tables (poetry.lock, uv.lock,
+// Cargo.lock). With skipRoot, uv's entry for the project itself
+// (source = { editable = "." } or { virtual = "." }) is not counted.
+func countTOMLPackages(data []byte, skipRoot bool) (int, error) {
+	var lf struct {
+		Package []struct {
+			Source map[string]interface{} `toml:"source"`
+		} `toml:"package"`
+	}
+	if _, err := toml.Decode(string(data), &lf); err != nil {
+		return 0, fmt.Errorf("parse TOML lockfile: %w", err)
+	}
+	n := 0
+	for _, p := range lf.Package {
+		if skipRoot && (p.Source["editable"] == "." || p.Source["virtual"] == ".") {
+			continue
+		}
+		n++
+	}
+	return n, nil
+}
+
+// countRequirementsLock counts requirement lines (not blank, comments, or
+// pip options such as "-r" / "--hash" continuation lines).
+func countRequirementsLock(data []byte) int {
+	n := 0
+	sc := bufio.NewScanner(bytes.NewReader(data))
+	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line != "" && !strings.HasPrefix(line, "#") && !strings.HasPrefix(line, "-") {
+			n++
+		}
+	}
+	return n
+}
+
+// countPipfileLock counts "default" plus "develop" entries.
+func countPipfileLock(data []byte) (int, error) {
+	var lf struct {
+		Default map[string]json.RawMessage `json:"default"`
+		Develop map[string]json.RawMessage `json:"develop"`
+	}
+	if err := json.Unmarshal(data, &lf); err != nil {
+		return 0, fmt.Errorf("parse Pipfile.lock: %w", err)
+	}
+	return len(lf.Default) + len(lf.Develop), nil
+}
+
+// countGoSum counts distinct module@version pairs ("v1.0.0" and
+// "v1.0.0/go.mod" lines are the same module version).
+func countGoSum(data []byte) int {
+	seen := make(map[string]bool)
+	sc := bufio.NewScanner(bytes.NewReader(data))
+	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	for sc.Scan() {
+		parts := strings.Fields(sc.Text())
+		if len(parts) < 2 || strings.HasPrefix(parts[0], "//") {
+			continue
+		}
+		seen[parts[0]+"@"+strings.TrimSuffix(parts[1], "/go.mod")] = true
+	}
+	return len(seen)
+}
+
+// countGradleLock counts dependency lines (not blank, comments, or the
+// trailing "empty=" line).
+func countGradleLock(data []byte) int {
+	n := 0
+	sc := bufio.NewScanner(bytes.NewReader(data))
+	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line != "" && !strings.HasPrefix(line, "#") && !strings.HasPrefix(line, "empty=") {
+			n++
+		}
+	}
+	return n
+}
+```
+
+`internal/lock/writer.go`:
+
+```go
+package lock
+
+import (
+	"bytes"
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"path"
+	"path/filepath"
+	"sort"
+	"strings"
+
+	"gopkg.in/yaml.v3"
+)
+
+// Marshal renders u as YAML. The output is deterministic: struct fields keep
+// their declaration order and yaml.v3 sorts map keys, so equal locks always
+// produce identical bytes.
+func Marshal(u *UnifiedLock) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err := enc.Encode(u); err != nil {
+		return nil, fmt.Errorf("marshal %s: %w", LockfileName, err)
+	}
+	if err := enc.Close(); err != nil {
+		return nil, fmt.Errorf("marshal %s: %w", LockfileName, err)
+	}
+	return buf.Bytes(), nil
+}
+
+// WriteUnifiedLock writes u to dir/xpm-lock.yaml. When the file already holds
+// exactly these bytes it is left untouched and changed is false. Otherwise the
+// new content is written to a temporary file in dir and renamed over the old
+// one, so a crash never leaves a half-written lock file.
+func WriteUnifiedLock(dir string, u *UnifiedLock) (changed bool, err error) {
+	data, err := Marshal(u)
+	if err != nil {
+		return false, err
+	}
+	target := filepath.Join(dir, LockfileName)
+	if old, readErr := os.ReadFile(target); readErr == nil && bytes.Equal(old, data) {
+		return false, nil
+	}
+
+	tmp, err := os.CreateTemp(dir, ".xpm-lock-*.tmp")
+	if err != nil {
+		return false, fmt.Errorf("write %s: %w", LockfileName, err)
+	}
+	tmpName := tmp.Name()
+	defer func() {
+		if err != nil {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if _, err = tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return false, fmt.Errorf("write %s: %w", LockfileName, err)
+	}
+	if err = tmp.Close(); err != nil {
+		return false, fmt.Errorf("write %s: %w", LockfileName, err)
+	}
+	if err = os.Chmod(tmpName, 0o644); err != nil {
+		return false, fmt.Errorf("write %s: %w", LockfileName, err)
+	}
+	if err = os.Rename(tmpName, target); err != nil {
+		return false, fmt.Errorf("write %s: %w", LockfileName, err)
+	}
+	return true, nil
+}
+
+// ReadUnifiedLock reads dir/xpm-lock.yaml. Version 1 files (keyed by
+// ecosystem) are re-keyed by each entry's file path; versions newer than
+// CurrentVersion are rejected.
+func ReadUnifiedLock(dir string) (*UnifiedLock, error) {
+	data, err := os.ReadFile(filepath.Join(dir, LockfileName))
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("%s not found - run 'xpm lock' to generate it: %w", LockfileName, err)
+		}
+		return nil, fmt.Errorf("read %s: %w", LockfileName, err)
+	}
+
+	var u UnifiedLock
+	if err := yaml.Unmarshal(data, &u); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", LockfileName, err)
+	}
+	if u.Version > CurrentVersion {
+		return nil, fmt.Errorf("%s has version %d; this xpm reads versions 1-%d (upgrade xpm)", LockfileName, u.Version, CurrentVersion)
+	}
+
+	locks := make(map[string]*LockInfo, len(u.Locks))
+	for key, info := range u.Locks {
+		if info == nil {
+			info = &LockInfo{}
+		}
+		if info.File == "" {
+			info.File = key
+		}
+		if u.Version <= 1 {
+			key = info.File
+		}
+		locks[key] = info
+	}
+	u.Locks = locks
+	return &u, nil
+}
+
+// UnifiedLockExists reports whether dir/xpm-lock.yaml exists.
+func UnifiedLockExists(dir string) bool {
+	return fileExists(filepath.Join(dir, LockfileName))
+}
+
+// Generate scans dir (the project root only) and builds a unified lock. A
+// lockfile that cannot be read fails the whole run, so xpm-lock.yaml never
+// silently omits one. Lockfiles whose packages cannot be counted are still
+// recorded (Packages = 0) and explained in warnings, which the caller prints;
+// the library itself writes nothing to stdout or stderr.
+func Generate(dir string) (u *UnifiedLock, warnings []string, err error) {
+	u = NewUnifiedLock()
+	for _, d := range DetectAll(dir) {
+		info, warning, err := ParseLockfile(d)
+		if err != nil {
+			return nil, warnings, err
+		}
+		if warning != "" {
+			warnings = append(warnings, warning)
+		}
+		u.Locks[d.RelPath] = info
+	}
+	return u, warnings, nil
+}
+
+// Verify compares the lockfiles on disk with dir/xpm-lock.yaml and returns one
+// result per recorded entry plus one StatusAdded result per supported
+// lockfile on disk that is not recorded, sorted by Key. Recorded paths that
+// are absolute, contain "..", or resolve (through symlinks) outside dir yield
+// StatusError and are never opened.
+func Verify(dir string) ([]VerificationResult, error) {
+	saved, err := ReadUnifiedLock(dir)
+	if err != nil {
+		return nil, err
+	}
+
+	var results []VerificationResult
+	recorded := make(map[string]bool)
+
+	for key, info := range saved.Locks {
+		r := VerificationResult{Key: key, File: info.File, ExpectedHash: info.Hash}
+		full, err := containedPath(dir, info.File)
+		if err != nil {
+			r.Status = StatusError
+			r.Error = err
+			results = append(results, r)
+			continue
+		}
+		recorded[path.Clean(info.File)] = true
+
+		if !fileExists(full) {
+			r.Status = StatusMissing
+			results = append(results, r)
+			continue
+		}
+		actual, err := ComputeHash(full)
+		if err != nil {
+			r.Status = StatusError
+			r.Error = err
+			results = append(results, r)
+			continue
+		}
+		r.ActualHash = actual
+		if sameHash(info.Hash, actual) {
+			r.Status = StatusUnchanged
+		} else {
+			r.Status = StatusChanged
+		}
+		results = append(results, r)
+	}
+
+	for _, d := range DetectAll(dir) {
+		if recorded[d.RelPath] {
+			continue
+		}
+		r := VerificationResult{Key: d.RelPath, File: d.RelPath, Status: StatusAdded}
+		if actual, err := ComputeHash(d.Path); err == nil {
+			r.ActualHash = actual
+		}
+		results = append(results, r)
+	}
+
+	sort.Slice(results, func(i, j int) bool { return results[i].Key < results[j].Key })
+	return results, nil
+}
+
+// sameHash compares a recorded hash (hex, optionally "sha256:"-prefixed, any
+// case) with a computed lowercase hex hash.
+func sameHash(recorded, actual string) bool {
+	return strings.EqualFold(strings.TrimPrefix(recorded, "sha256:"), actual)
+}
+```
+
+- [ ] **Step 5: Keep `internal/cli/lock_cmd.go` compiling**
+
+Three edits in `generateLock` (Task 9 replaces the whole file):
+
+```go
+	unified, warnings, err := lock.Generate(dir)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error generating lock:", err)
+		return 1
+	}
+	for _, w := range warnings {
+		fmt.Fprintln(os.Stderr, "warning:", w)
+	}
+```
+
+replaces the `unified, err := lock.Generate(dir)` block;
+
+```go
+	if _, err := lock.WriteUnifiedLock(dir, unified); err != nil {
+```
+
+replaces `if err := lock.WriteUnifiedLock(dir, unified); err != nil {`; and `info.PackageCnt` becomes `info.Packages`.
+
+- [ ] **Step 6: Run the tests and the gates**
+
+Run: `go test ./internal/lock/ -v -run 'Count|Strip|CheckLocal|Contained|Generate|Marshal|Write|Verify|Read'`
+Expected: PASS for all 17 tests (14 fixture subtests in `TestCountPackagesFixtures`).
+
+Run: `go build ./... && go vet ./... && go test ./... && gofmt -l . && go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.5.0 run ./...`
+Expected: all packages `ok`, `gofmt -l` prints nothing, lint prints `0 issues.`
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add internal/lock/ internal/cli/lock_cmd.go
+git commit -m "lock: xpm-lock.yaml v2 keyed by path, no timestamps, verify reports added lockfiles, paths stay inside the project"
+```
+
+---
+### Task 9: `internal/cli/lock_cmd.go` — up-to-date message, added/removed in `--verify`
+
+**Files:**
+- Modify (full rewrite): `internal/cli/lock_cmd.go`
+- Test: `internal/cli/lock_cmd_test.go` (new)
+
+**Interfaces:**
+- Consumes (Task 8): `lock.Generate(dir) (*UnifiedLock, []string, error)`, `lock.WriteUnifiedLock(dir, u) (bool, error)`, `lock.Verify(dir) ([]VerificationResult, error)` (sorted by Key), `lock.StatusAdded`, `lock.UnifiedLockExists`, `lock.ListSupportedFiles`, `lock.LockfileName`, `lock.VerificationPassed`.
+- Consumes (existing test helpers in package `cli`): `chdir(t, dir)` (startup_test.go), `captureStdout`, `captureStderr` (helpers_test.go). The new helper is named `lockCmdProject` to avoid clashing with helpers other P6 tasks add.
+- Produces: `cmdLock(args []string) int` (unchanged signature, dispatched by cli.go); `formatVerifyLine(r lock.VerificationResult) string`. `formatEcosystemName` is deleted (only lock_cmd.go used it).
+
+Output contract (stdout carries the human result, as in `xpm search`/`xpm workspaces`; errors and warnings go to stderr; the old "Scanning for lockfiles..." / "Verifying lock state..." banners are dropped):
+
+```text
+$ xpm lock
+Generated xpm-lock.yaml            # or: xpm-lock.yaml is up to date   (file not rewritten)
+
+  package-lock.json (npm): 3 packages
+  yarn.lock (yarn): 3 packages
+
+Total: 2 lockfiles, 6 packages
+
+$ xpm lock --verify                 # exit 1 on anything but "unchanged"; lines sorted by path
+✘ go.sum missing
+✔ package-lock.json unchanged
+✘ poetry.lock changed
+✘ yarn.lock added (not in xpm-lock.yaml)
+
+Verification FAILED.
+Run 'xpm lock' to update xpm-lock.yaml.
+```
+
+- [ ] **Step 1: Write the failing tests**
+
+`internal/cli/lock_cmd_test.go`:
+
+```go
+package cli
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+const lockCmdNpmLock = "{\"lockfileVersion\":3,\"packages\":{\"\":{},\"node_modules/a\":{\"version\":\"1.0.0\"}}}\n"
+
+// lockCmdProject creates a temp project with the given files, chdirs into it
+// and returns its path.
+func lockCmdProject(t *testing.T, files map[string]string) string {
+	t.Helper()
+	dir := t.TempDir()
+	for name, data := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(data), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	chdir(t, dir)
+	return dir
+}
+
+func TestCmdLockGeneratesThenReportsUpToDate(t *testing.T) {
+	dir := lockCmdProject(t, map[string]string{"package-lock.json": lockCmdNpmLock})
+
+	var code int
+	out := captureStdout(t, func() { code = cmdLock(nil) })
+	if code != 0 {
+		t.Fatalf("first cmdLock = %d, output:\n%s", code, out)
+	}
+	if !strings.HasPrefix(out, "Generated xpm-lock.yaml\n") {
+		t.Fatalf("first run output:\n%s\nwant it to start with %q", out, "Generated xpm-lock.yaml")
+	}
+	if !strings.Contains(out, "  package-lock.json (npm): 1 packages\n") {
+		t.Errorf("first run output lacks the package-lock.json line:\n%s", out)
+	}
+	before, err := os.ReadFile(filepath.Join(dir, "xpm-lock.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out = captureStdout(t, func() { code = cmdLock(nil) })
+	if code != 0 {
+		t.Fatalf("second cmdLock = %d, output:\n%s", code, out)
+	}
+	if !strings.HasPrefix(out, "xpm-lock.yaml is up to date\n") {
+		t.Fatalf("second run output:\n%s\nwant it to start with %q", out, "xpm-lock.yaml is up to date")
+	}
+	after, err := os.ReadFile(filepath.Join(dir, "xpm-lock.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Fatalf("xpm-lock.yaml changed on an unchanged project:\n%s\n---\n%s", before, after)
+	}
+}
+
+func TestCmdLockVerifyReportsAddedChangedMissingInPathOrder(t *testing.T) {
+	dir := lockCmdProject(t, map[string]string{
+		"package-lock.json": lockCmdNpmLock,
+		"go.sum":            "example.com/m v1.0.0 h1:abc=\n",
+		"poetry.lock":       "[[package]]\nname = \"a\"\nversion = \"1\"\n",
+	})
+	_ = captureStdout(t, func() { _ = cmdLock(nil) })
+
+	var code int
+	out := captureStdout(t, func() { code = cmdLock([]string{"--verify"}) })
+	if code != 0 {
+		t.Fatalf("verify on fresh lock = %d, output:\n%s", code, out)
+	}
+	if !strings.Contains(out, "Verification PASSED.") {
+		t.Fatalf("output:\n%s\nwant PASSED", out)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "poetry.lock"), []byte("[[package]]\nname = \"b\"\nversion = \"2\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(dir, "go.sum")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "yarn.lock"), []byte("a@^1.0.0:\n  version \"1.0.0\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out = captureStdout(t, func() { code = cmdLock([]string{"--verify"}) })
+	if code != 1 {
+		t.Fatalf("verify after edits = %d, want 1; output:\n%s", code, out)
+	}
+	want := "✘ go.sum missing\n" +
+		"✔ package-lock.json unchanged\n" +
+		"✘ poetry.lock changed\n" +
+		"✘ yarn.lock added (not in xpm-lock.yaml)\n" +
+		"\n" +
+		"Verification FAILED.\n" +
+		"Run 'xpm lock' to update xpm-lock.yaml.\n"
+	if out != want {
+		t.Fatalf("verify output:\n%s\nwant:\n%s", out, want)
+	}
+}
+
+func TestCmdLockVerifyWithoutLockFileFails(t *testing.T) {
+	lockCmdProject(t, map[string]string{"package-lock.json": lockCmdNpmLock})
+	var code int
+	errOut := captureStderr(t, func() {
+		_ = captureStdout(t, func() { code = cmdLock([]string{"--verify"}) })
+	})
+	if code != 1 {
+		t.Fatalf("cmdLock --verify = %d, want 1", code)
+	}
+	if !strings.Contains(errOut, "xpm-lock.yaml not found") {
+		t.Fatalf("stderr = %q, want a not-found message", errOut)
+	}
+}
+
+func TestCmdLockVerifyReportsUnsafePathAsError(t *testing.T) {
+	lockCmdProject(t, map[string]string{
+		"xpm-lock.yaml": "version: 2\nlocks:\n  ../escape.lock:\n    file: ../escape.lock\n    hash: 00\n",
+	})
+	var code int
+	out := captureStdout(t, func() { code = cmdLock([]string{"--verify"}) })
+	if code != 1 {
+		t.Fatalf("cmdLock --verify = %d, want 1; output:\n%s", code, out)
+	}
+	if !strings.Contains(out, "✘ ../escape.lock error: ") || !strings.Contains(out, "outside the project") {
+		t.Fatalf("output:\n%s\nwant an error line for ../escape.lock", out)
+	}
+}
+
+func TestCmdLockWarningsGoToStderr(t *testing.T) {
+	lockCmdProject(t, map[string]string{"package-lock.json": "{ not json"})
+	var code int
+	var out string
+	errOut := captureStderr(t, func() {
+		out = captureStdout(t, func() { code = cmdLock(nil) })
+	})
+	if code != 0 {
+		t.Fatalf("cmdLock = %d, want 0", code)
+	}
+	if !strings.Contains(errOut, "warning: package-lock.json:") {
+		t.Errorf("stderr = %q, want a package-lock.json warning", errOut)
+	}
+	if strings.Contains(out, "warning") {
+		t.Errorf("stdout carries a warning:\n%s", out)
+	}
+}
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `go test ./internal/cli/ -run CmdLock -v`
+Expected: FAIL — `TestCmdLockGeneratesThenReportsUpToDate` (output starts with "Scanning for lockfiles..."), `TestCmdLockVerifyReportsAddedChangedMissingInPathOrder` (no "added" line, banner present).
+
+- [ ] **Step 3: Write the implementation**
+
+`internal/cli/lock_cmd.go`:
+
+```go
+package cli
+
+import (
+	"flag"
+	"fmt"
+	"os"
+	"sort"
+
+	"github.com/crenspire/xpm/internal/lock"
+)
+
+// cmdLock handles `xpm lock` (write xpm-lock.yaml) and `xpm lock --verify`.
+// Results go to stdout; errors and warnings go to stderr.
+func cmdLock(args []string) int {
+	fs := flag.NewFlagSet("lock", flag.ContinueOnError)
+	verify := fs.Bool("verify", false, "verify lockfiles against xpm-lock.yaml")
+	fs.SetOutput(os.Stderr)
+
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintln(os.Stderr)
+		showCommandUsage("lock")
+		return 1
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "lock: unexpected argument %q\n", fs.Arg(0))
+		return 1
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error getting current directory:", err)
+		return 1
+	}
+
+	if *verify {
+		return verifyLock(cwd)
+	}
+	return generateLock(cwd)
+}
+
+// generateLock writes xpm-lock.yaml for dir, leaving the file untouched when
+// its content would not change.
+func generateLock(dir string) int {
+	unified, warnings, err := lock.Generate(dir)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error generating lock:", err)
+		return 1
+	}
+	for _, w := range warnings {
+		fmt.Fprintln(os.Stderr, "warning:", w)
+	}
+
+	if unified.IsEmpty() {
+		fmt.Println("No lockfiles found in the project root.")
+		fmt.Println()
+		fmt.Println("Supported lockfiles:")
+		for _, file := range lock.ListSupportedFiles() {
+			fmt.Printf("  - %s\n", file)
+		}
+		return 0
+	}
+
+	changed, err := lock.WriteUnifiedLock(dir, unified)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error writing lock file:", err)
+		return 1
+	}
+	if changed {
+		fmt.Printf("Generated %s\n", lock.LockfileName)
+	} else {
+		fmt.Printf("%s is up to date\n", lock.LockfileName)
+	}
+	fmt.Println()
+
+	paths := make([]string, 0, len(unified.Locks))
+	for p := range unified.Locks {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	for _, p := range paths {
+		info := unified.Locks[p]
+		fmt.Printf("  %s (%s): %d packages\n", p, info.Manager, info.Packages)
+	}
+	fmt.Println()
+	fmt.Printf("Total: %d lockfiles, %d packages\n", unified.Count(), unified.TotalPackages())
+	return 0
+}
+
+// verifyLock checks the lockfiles in dir against xpm-lock.yaml. It returns 1
+// when any lockfile changed, disappeared, appeared, or could not be checked.
+func verifyLock(dir string) int {
+	if !lock.UnifiedLockExists(dir) {
+		fmt.Fprintf(os.Stderr, "%s not found.\n", lock.LockfileName)
+		fmt.Fprintln(os.Stderr, "Run 'xpm lock' to generate it first.")
+		return 1
+	}
+
+	results, err := lock.Verify(dir) // sorted by path
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error verifying lock:", err)
+		return 1
+	}
+	if len(results) == 0 {
+		fmt.Println("No lockfiles to verify.")
+		return 0
+	}
+
+	for _, r := range results {
+		fmt.Println(formatVerifyLine(r))
+	}
+	fmt.Println()
+
+	if lock.VerificationPassed(results) {
+		fmt.Println("Verification PASSED.")
+		return 0
+	}
+	fmt.Println("Verification FAILED.")
+	fmt.Printf("Run 'xpm lock' to update %s.\n", lock.LockfileName)
+	return 1
+}
+
+// formatVerifyLine renders one verification result.
+func formatVerifyLine(r lock.VerificationResult) string {
+	switch r.Status {
+	case lock.StatusUnchanged:
+		return fmt.Sprintf("✔ %s unchanged", r.Key)
+	case lock.StatusChanged:
+		return fmt.Sprintf("✘ %s changed", r.Key)
+	case lock.StatusMissing:
+		return fmt.Sprintf("✘ %s missing", r.Key)
+	case lock.StatusAdded:
+		return fmt.Sprintf("✘ %s added (not in %s)", r.Key, lock.LockfileName)
+	default:
+		return fmt.Sprintf("✘ %s error: %v", r.Key, r.Error)
+	}
+}
+```
+
+- [ ] **Step 4: Run the tests and the gates**
+
+Run: `go test ./internal/cli/ -run CmdLock -v`
+Expected: PASS (5 tests).
+
+Run: `go build ./... && go vet ./... && go test ./... && gofmt -l . && go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.5.0 run ./...`
+Expected: all `ok`, no gofmt output, `0 issues.`
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add internal/cli/lock_cmd.go internal/cli/lock_cmd_test.go
+git commit -m "lock: report up-to-date without rewriting; --verify lists added, changed, missing lockfiles by path"
+```
+
+---
+### Task 10: delete `internal/cache`; `xpm cache` reports its removal
+
+**Files:**
+- Delete: `internal/cache/` (cache.go, clean.go, fetch.go, inject.go, inspect.go, object.go, store.go — no tests exist)
+- Modify (full rewrite): `internal/cli/cache_cmd.go`
+- Test: `internal/cli/cache_cmd_test.go` (new)
+
+**Interfaces:**
+- Consumes: `captureStdout`, `captureStderr` (helpers_test.go), `isolatedHome(t)` (config_cmd_test.go), `Run() int` (cli.go reads `os.Args`).
+- Produces: `cmdCache(args []string) int` — same signature cli.go already dispatches for `cache`, `cc` and `cg`; prints the message to stderr, nothing to stdout, returns 1.
+
+Verified before writing: the only importer of `internal/cache` is `internal/cli/cache_cmd.go` (`grep -rn 'internal/cache"' --include='*.go' .`); `go mod tidy` changes nothing afterwards (the package had no unique dependencies).
+
+- [ ] **Step 1: Write the failing test**
+
+`internal/cli/cache_cmd_test.go`:
+
+```go
+package cli
+
+import (
+	"os"
+	"strings"
+	"testing"
+)
+
+func TestCmdCacheReportsRemoval(t *testing.T) {
+	for _, args := range [][]string{nil, {"clean"}, {"gc"}, {"tree"}} {
+		var code int
+		var out string
+		errOut := captureStderr(t, func() {
+			out = captureStdout(t, func() { code = cmdCache(args) })
+		})
+		if code != 1 {
+			t.Errorf("cmdCache(%v) = %d, want 1", args, code)
+		}
+		if out != "" {
+			t.Errorf("cmdCache(%v) wrote to stdout: %q", args, out)
+		}
+		if !strings.HasPrefix(errOut, "xpm cache has been removed: package managers keep their own caches.\n") {
+			t.Errorf("cmdCache(%v) stderr = %q", args, errOut)
+		}
+		if !strings.Contains(errOut, "go clean -modcache") {
+			t.Errorf("cmdCache(%v) stderr lacks examples: %q", args, errOut)
+		}
+	}
+}
+
+func TestRunCacheAliasesReportRemoval(t *testing.T) {
+	isolatedHome(t)
+	origArgs := os.Args
+	t.Cleanup(func() { os.Args = origArgs })
+	for _, cmd := range []string{"cache", "cc", "cg"} {
+		os.Args = []string{"xpm", cmd}
+		var code int
+		errOut := captureStderr(t, func() {
+			_ = captureStdout(t, func() { code = Run() })
+		})
+		if code != 1 || !strings.Contains(errOut, "xpm cache has been removed") {
+			t.Errorf("Run(%q) = %d, stderr %q; want 1 and the removal message", cmd, code, errOut)
+		}
+	}
+}
+```
+
+- [ ] **Step 2: Do NOT run this test against the old code**
+
+The old `cmdCache([]string{"clean"})` really empties `~/.xpm/cache` under the real `$HOME`. The test is only safe after Step 3. Its "red" state is the old behavior: `cmdCache(nil)` printed usage to stdout and returned 0.
+
+- [ ] **Step 3: Delete the package and write the stub**
+
+```bash
+git rm -r internal/cache
+```
+
+`internal/cli/cache_cmd.go`:
+
+```go
+package cli
+
+import (
+	"fmt"
+	"os"
+)
+
+// cacheRemovedMsg explains why `xpm cache` (and the cc/cg aliases) no longer
+// do anything. The dependency cache was never used by installs and has been
+// deleted; each package manager keeps its own cache.
+const cacheRemovedMsg = `xpm cache has been removed: package managers keep their own caches.
+Clear them with the tool itself, for example:
+  npm cache clean --force
+  yarn cache clean
+  pnpm store prune
+  pip cache purge
+  composer clear-cache
+  cargo clean (per project)
+  go clean -modcache`
+
+// cmdCache reports that the cache command was removed and fails.
+func cmdCache(_ []string) int {
+	fmt.Fprintln(os.Stderr, cacheRemovedMsg)
+	return 1
+}
+```
+
+- [ ] **Step 4: Run the tests and the gates**
+
+Run: `grep -rn 'internal/cache"' --include='*.go' . ; go mod tidy && git diff --exit-code go.mod go.sum`
+Expected: no grep output; `git diff --exit-code` exits 0.
+
+Run: `go build ./... && go vet ./... && go test ./... && gofmt -l . && go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.5.0 run ./...`
+Expected: all `ok`, no gofmt output, `0 issues.`
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add -A internal/cache internal/cli/cache_cmd.go internal/cli/cache_cmd_test.go
+git commit -m "cache: remove the unused dependency cache; xpm cache explains that package managers keep their own"
+```
+
+**Left for P4/P7 (files P6 must not edit), exact locations at f747c56:**
+- `internal/cli/cli.go:92` — usage entry `{"cache", nil, "Manage dependency cache (tree, size, clean, gc)"}`.
+- `internal/cli/cli.go:193-198` — `case "cc":`, `case "cg":`, `case "cache":` dispatch; then delete `internal/cli/cache_cmd.go` and `internal/cli/cache_cmd_test.go`.
+- `internal/cli/man.go:73` — command list entry; `man.go:118-119` — `case "cache": showCacheHelp()`; `man.go:346-372` — `showCacheHelp` (includes the `cc`/`cg` alias lines and "Install dependencies (uses cache)").
+- `internal/cli/manpage.go:180-210` — `case "cache":` man-page block; `manpage.go:436` — `"cache"` in the command list.
+- `internal/config/config.go:57-70` — `CacheConfig` type; `config.go:166-167` — `Cache CacheConfig` field; `config.go:211-216` — defaults; `internal/config/config_test.go:144` — `!c.Cache.Enabled` assertion.
+- `internal/cli/config_cmd.go` — no `cache.*` keys exist (checked); nothing to remove.
+- README line 60 (feature table row "Global dependency cache") and line 247 (`cache` in the project-layout list) — Task 14.
+
+---
+### Task 11: `internal/doctor` — audits never fake OK, pip-audit object format, no false missing lockfiles, drift by content, missing lockfile counted once
+
+**Files:**
+- Create: `internal/doctor/exec.go` (command seam), `internal/doctor/manifest.go` (manifest/lockfile readers)
+- Modify (full rewrite): `internal/doctor/security.go`, `internal/doctor/drift.go`, `internal/doctor/project.go`, `internal/doctor/doctor.go`
+- Modify (one line each): `internal/doctor/pm.go:135`, `internal/doctor/env.go:117` (`exec.LookPath` → `lookPath`, so tests can run `Run` with no real tool)
+- Test: `internal/doctor/security_test.go`, `internal/doctor/drift_test.go` (new; the package had no tests)
+- Testdata: `internal/doctor/testdata/audit/{npm-v2-vulnerable.json,npm-v2-clean.json,npm-error-enolock.json,pnpm-vulnerable.json,yarn-v1-vulnerable.ndjson,bun-vulnerable.json,pip-audit-object.json,pip-audit-legacy.json,composer-vulnerable.json,composer-clean.json,cargo-audit-vulnerable.json}`
+
+**Interfaces:**
+- Consumes: `golang.org/x/mod/modfile` (module added to go.mod by **Task 5**; this task must run after Task 5 — if it is ever reordered, run `go get golang.org/x/mod@v0.23.0` first), `gopkg.in/yaml.v3`, `github.com/BurntSushi/toml`.
+- Keeps compiling unchanged: `cmdDoctor` in cli.go (`doctor.Config{SkipEnv, SkipSecurity, SkipConflicts, SkipDrift}`, `doctor.Run`, `doctor.PrintReport`, `doctor.HasIssues`).
+- Produces:
+
+```go
+type Config struct { Dir string; SkipEnv, SkipSecurity, SkipConflicts, SkipDrift bool } // Dir "" = os.Getwd()
+var lookPath = exec.LookPath
+var runCommand = func(dir, name string, args ...string) (stdout []byte, exitCode int, err error) // non-zero exit is not err; stderr discarded; 2 min timeout
+type AuditStatus int // AuditOK, AuditVulnerable, AuditNotInstalled, AuditUnavailable
+type SecurityResult struct { Ecosystem, Tool string; Status AuditStatus; Vulnerabilities, HighSeverity, MediumSeverity, LowSeverity int; Summary string } // Available/Error fields removed
+func RunSecurityAudit(dir string, project ProjectScanResult) []SecurityResult             // was (project, pmResults)
+type DriftStatus int // DriftStatusOK, DriftStatusOutdated, DriftStatusUnknown, DriftStatusInvalid (Missing/NoDepFile removed)
+type DriftInfo struct { DepFile, LockFile, Ecosystem string; Status DriftStatus; Detail string } // DepModTime/LockModTime removed
+func CheckDrift(dir string) []DriftInfo
+func CountDriftIssues(results []DriftInfo) (ok, outdated, invalidCount int)
+func ScanProject(dir string) ProjectScanResult                                             // ProjectFileSpec loses LockFile/DepFile
+func summarize(report Report, cfg Config) (good, bad, warn int)                            // PrintSummary prints it
+```
+
+Rules this task implements:
+- **Audits** (`runAudit`): tool not on PATH → `AuditNotInstalled` and nothing runs. Otherwise the run is `AuditUnavailable` (a warning, never OK or "0 vulnerabilities") when the command cannot start or times out, when its exit code is outside the tool's "report produced" set (npm/pnpm/bun/pip-audit/cargo: 0–1; yarn v1: 0–31 bitmask; composer: 0–3 bitmask), or when its stdout does not parse into that tool's report shape (npm/pnpm need `metadata.vulnerabilities`, and npm's `{"error": {...}}` object is a failure; yarn v1 needs an `auditSummary` line; pip-audit needs a top-level array or an object with `dependencies`; composer needs `advisories` as object or `[]`; cargo needs `vulnerabilities`; bun needs an object of advisory lists). Stdout only: npm warnings on stderr used to corrupt `CombinedOutput`. Each audit runs with `cmd.Dir` = the project dir. A yarn ≥2 project (`__metadata:` in yarn.lock) is not run: `yarn audit` does not exist there. pip-audit gets `-r requirements.txt` when that file exists; a pyproject-only project audits the active environment and says so.
+- **Missing lockfiles** (`missingLockfile`): package.json → any of package-lock.json/pnpm-lock.yaml/yarn.lock/bun.lock/bun.lockb; pyproject.toml → poetry.lock only when `[tool.poetry]` exists (PEP 621 projects accept uv.lock, pdm.lock or nothing); requirements.txt → never; go.mod → go.sum only when go.mod has requirements not redirected by `replace`; composer/Pipfile/Cargo unchanged.
+- **Drift by content, never mtime** (`CheckDrift`): npm v2/v3 root `packages[""]` names vs package.json (dependencies, devDependencies, optionalDependencies, peerDependencies; both directions); pnpm `importers["."]` (or v5/v6 top-level maps) vs package.json (no peers); Cargo.toml names (incl. `package =` renames and `[target.*]` tables, excluding `[workspace.dependencies]`) ⊆ Cargo.lock names; go.mod `path version` (skipping replaced modules) ⊆ go.sum; composer.lock/Pipfile.lock (JSON) and poetry.lock/uv.lock/pdm.lock (TOML) only parsed → `Unknown` ("lockfile parses; contents not compared"), unparseable → `Invalid`; yarn.lock/bun.lock(b) → `Unknown`. Absent lockfile → no drift entry (the project scan owns it). `modfile.Parse` (strict) is used because `ParseLax` drops `replace` directives.
+- **Summary**: outdated + invalid drift count as failed, `Unknown` is not counted; missing lockfiles are counted once (project scan); unavailable/not-installed audits count as warnings; `HasIssues` fails on vulnerabilities, not on audits that could not run.
+
+- [ ] **Step 1: Add the audit fixtures**
+
+Each is real tool output for a small project (npm 10 `npm audit --json`, pnpm 8 `pnpm audit --json`, yarn 1.22 `yarn audit --json`, bun 1.2 `bun audit --json`, pip-audit 2.7 object format and the pre-2.5 array format, composer 2.7 `composer audit --format=json` with and without advisories, cargo-audit 0.20 `cargo audit --json`).
+
+`internal/doctor/testdata/audit/npm-v2-vulnerable.json`:
+
+```json
+{
+  "auditReportVersion": 2,
+  "vulnerabilities": {
+    "lodash": {
+      "name": "lodash",
+      "severity": "critical",
+      "isDirect": true,
+      "via": [
+        {
+          "source": 1094499,
+          "name": "lodash",
+          "dependency": "lodash",
+          "title": "Prototype Pollution in lodash",
+          "url": "https://github.com/advisories/GHSA-jf85-cpcp-j695",
+          "severity": "critical",
+          "cwe": ["CWE-1321"],
+          "cvss": {"score": 9.1, "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N"},
+          "range": "<4.17.12"
+        }
+      ],
+      "effects": [],
+      "range": "<=4.17.11",
+      "nodes": ["node_modules/lodash"],
+      "fixAvailable": true
+    },
+    "minimist": {
+      "name": "minimist",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        {
+          "source": 1096465,
+          "name": "minimist",
+          "dependency": "minimist",
+          "title": "Prototype Pollution in minimist",
+          "url": "https://github.com/advisories/GHSA-vh95-rmgr-6w4m",
+          "severity": "moderate",
+          "cwe": ["CWE-1321"],
+          "cvss": {"score": 5.6, "vectorString": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:L/I:L/A:L"},
+          "range": "<0.2.1"
+        }
+      ],
+      "effects": [],
+      "range": "<0.2.1",
+      "nodes": ["node_modules/minimist"],
+      "fixAvailable": true
+    }
+  },
+  "metadata": {
+    "vulnerabilities": {"info": 0, "low": 0, "moderate": 1, "high": 0, "critical": 1, "total": 2},
+    "dependencies": {"prod": 3, "dev": 0, "optional": 0, "peer": 0, "peerOptional": 0, "total": 2}
+  }
+}
+```
+
+`internal/doctor/testdata/audit/npm-v2-clean.json`:
+
+```json
+{
+  "auditReportVersion": 2,
+  "vulnerabilities": {},
+  "metadata": {
+    "vulnerabilities": {"info": 0, "low": 0, "moderate": 0, "high": 0, "critical": 0, "total": 0},
+    "dependencies": {"prod": 1, "dev": 0, "optional": 0, "peer": 0, "peerOptional": 0, "total": 0}
+  }
+}
+```
+
+`internal/doctor/testdata/audit/npm-error-enolock.json`:
+
+```json
+{
+  "error": {
+    "code": "ENOLOCK",
+    "summary": "This command requires an existing lockfile.",
+    "detail": "Try creating one first with: npm i --package-lock-only\nOriginal error: loadVirtual requires existing shrinkwrap file"
+  }
+}
+```
+
+`internal/doctor/testdata/audit/pnpm-vulnerable.json`:
+
+```json
+{
+  "actions": [],
+  "advisories": {
+    "1094499": {
+      "findings": [{"version": "4.17.11", "paths": [".>lodash"]}],
+      "id": 1094499,
+      "title": "Prototype Pollution in lodash",
+      "module_name": "lodash",
+      "vulnerable_versions": "<4.17.12",
+      "patched_versions": ">=4.17.12",
+      "severity": "high",
+      "url": "https://github.com/advisories/GHSA-jf85-cpcp-j695"
+    }
+  },
+  "muted": [],
+  "metadata": {
+    "vulnerabilities": {"info": 0, "low": 0, "moderate": 0, "high": 1, "critical": 0},
+    "dependencies": 5,
+    "devDependencies": 0,
+    "optionalDependencies": 0,
+    "totalDependencies": 5
+  }
+}
+```
+
+`internal/doctor/testdata/audit/yarn-v1-vulnerable.ndjson`:
+
+```text
+{"type":"auditAdvisory","data":{"resolution":{"id":1094499,"path":"lodash","dev":false,"optional":false,"bundled":false},"advisory":{"findings":[{"version":"4.17.11","paths":["lodash"]}],"id":1094499,"module_name":"lodash","severity":"critical","title":"Prototype Pollution in lodash","url":"https://github.com/advisories/GHSA-jf85-cpcp-j695"}}}
+{"type":"auditAdvisory","data":{"resolution":{"id":1097682,"path":"debug","dev":false,"optional":false,"bundled":false},"advisory":{"findings":[{"version":"2.6.8","paths":["debug"]}],"id":1097682,"module_name":"debug","severity":"low","title":"Regular Expression Denial of Service in debug","url":"https://github.com/advisories/GHSA-gxpj-cx7g-858c"}}}
+{"type":"auditSummary","data":{"vulnerabilities":{"info":0,"low":1,"moderate":0,"high":0,"critical":1},"dependencies":12,"devDependencies":0,"optionalDependencies":0,"totalDependencies":12}}
+```
+
+`internal/doctor/testdata/audit/bun-vulnerable.json`:
+
+```json
+{
+  "lodash": [
+    {
+      "id": 1094499,
+      "url": "https://github.com/advisories/GHSA-jf85-cpcp-j695",
+      "title": "Prototype Pollution in lodash",
+      "severity": "critical",
+      "vulnerable_versions": "<4.17.12",
+      "cwe": ["CWE-1321"],
+      "cvss": {"score": 9.1, "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N"}
+    }
+  ]
+}
+```
+
+`internal/doctor/testdata/audit/pip-audit-object.json`:
+
+```json
+{"dependencies": [{"name": "requests", "version": "2.25.0", "vulns": [{"id": "PYSEC-2023-74", "fix_versions": ["2.31.0"], "aliases": ["CVE-2023-32681", "GHSA-j8r2-6x86-q33q"], "description": "Requests leaks Proxy-Authorization headers on redirect."}]}, {"name": "certifi", "version": "2024.2.2", "vulns": []}, {"name": "myapp", "skip_reason": "Dependency not found on PyPI and could not be audited: myapp (0.1.0)"}], "fixes": []}
+```
+
+`internal/doctor/testdata/audit/pip-audit-legacy.json`:
+
+```json
+[{"name": "requests", "version": "2.25.0", "vulns": [{"id": "PYSEC-2023-74", "fix_versions": ["2.31.0"]}, {"id": "GHSA-9wx4-h78v-vm56", "fix_versions": ["2.32.0"]}]}, {"name": "certifi", "version": "2024.2.2", "vulns": []}]
+```
+
+`internal/doctor/testdata/audit/composer-vulnerable.json`:
+
+```json
+{
+    "advisories": {
+        "guzzlehttp/guzzle": [
+            {
+                "advisoryId": "PKSA-yfw5-9gnj-n2c7",
+                "packageName": "guzzlehttp/guzzle",
+                "affectedVersions": ">=7,<7.4.5",
+                "title": "Change in port should be considered a change in origin",
+                "cve": "CVE-2022-31091",
+                "link": "https://github.com/guzzle/guzzle/security/advisories/GHSA-q559-8m2m-g699",
+                "reportedAt": "2022-06-20T22:24:00+00:00",
+                "sources": [{"name": "GitHub", "remoteId": "GHSA-q559-8m2m-g699"}],
+                "severity": "high"
+            },
+            {
+                "advisoryId": "PKSA-8qx3-n5y5-vvnd",
+                "packageName": "guzzlehttp/guzzle",
+                "affectedVersions": ">=7,<7.4.4",
+                "title": "Cross-domain cookie leakage",
+                "cve": "CVE-2022-29248",
+                "link": "https://github.com/guzzle/guzzle/security/advisories/GHSA-cwmx-hcrq-mhc3",
+                "reportedAt": "2022-05-25T13:21:00+00:00",
+                "sources": [{"name": "GitHub", "remoteId": "GHSA-cwmx-hcrq-mhc3"}],
+                "severity": "medium"
+            }
+        ]
+    },
+    "abandoned": []
+}
+```
+
+`internal/doctor/testdata/audit/composer-clean.json`:
+
+```json
+{
+    "advisories": [],
+    "abandoned": []
+}
+```
+
+`internal/doctor/testdata/audit/cargo-audit-vulnerable.json`:
+
+```json
+{"database":{"advisory-count":600,"last-commit":"1f8c0b3c4d5e6f708192a3b4c5d6e7f8091a2b3c","last-updated":"2024-03-01T00:00:00Z"},"lockfile":{"dependency-count":42},"settings":{"target_arch":[],"target_os":[],"severity":null,"ignore":[],"informational_warnings":["unmaintained","unsound","yanked"]},"vulnerabilities":{"found":true,"count":1,"list":[{"advisory":{"id":"RUSTSEC-2020-0071","package":"time","title":"Potential segfault in the time crate","description":"Unix-like operating systems may segfault due to dereferencing a dangling pointer.","date":"2020-11-18","aliases":["CVE-2020-26235"],"cvss":"CVSS:3.1/AV:N/AC:H/PR:N/UI:R/S:U/C:N/I:N/A:H"},"versions":{"patched":[">=0.2.23"],"unaffected":["=0.2.0","=0.2.1"]},"affected":null,"package":{"name":"time","version":"0.1.45","source":"registry+https://github.com/rust-lang/crates.io-index"}}]},"warnings":{}}
+```
+
+- [ ] **Step 2: Write the failing tests**
+
+`internal/doctor/security_test.go`:
+
+```go
+package doctor
+
+import (
+	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+)
+
+// fakeAudit replaces lookPath and runCommand. installed lists binaries on
+// PATH; every run returns out (a testdata/audit fixture name, or raw output
+// when it does not end in .json/.ndjson), code and err, and is recorded.
+type fakeAudit struct {
+	installed map[string]bool
+	out       string
+	code      int
+	err       error
+	calls     []string
+}
+
+func withFakeAudit(t *testing.T, f *fakeAudit) {
+	t.Helper()
+	oldLook, oldRun := lookPath, runCommand
+	lookPath = func(name string) (string, error) {
+		if f.installed[name] {
+			return "/usr/bin/" + name, nil
+		}
+		return "", exec.ErrNotFound
+	}
+	runCommand = func(dir, name string, args ...string) ([]byte, int, error) {
+		f.calls = append(f.calls, filepath.Base(dir)+": "+name+" "+strings.Join(args, " "))
+		out := []byte(f.out)
+		if strings.HasSuffix(f.out, ".json") || strings.HasSuffix(f.out, ".ndjson") {
+			data, err := os.ReadFile(filepath.Join("testdata", "audit", f.out))
+			if err != nil {
+				t.Fatal(err)
+			}
+			out = data
+		}
+		return out, f.code, f.err
+	}
+	t.Cleanup(func() { lookPath, runCommand = oldLook, oldRun })
+}
+
+// projectWith creates a temp project holding the named (empty unless given)
+// files and returns its directory and scan.
+func projectWith(t *testing.T, files map[string]string) (string, ProjectScanResult) {
+	t.Helper()
+	dir := t.TempDir()
+	for name, data := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(data), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir, ScanProject(dir)
+}
+
+func TestRunSecurityAuditClassifiesToolOutput(t *testing.T) {
+	cases := []struct {
+		name      string
+		files     map[string]string
+		installed string
+		out       string
+		code      int
+		runErr    error
+		want      SecurityResult
+		wantCall  string
+	}{
+		{
+			name: "npm vulnerable exits 1 with valid JSON", files: map[string]string{"package.json": "{}", "package-lock.json": "{}"},
+			installed: "npm", out: "npm-v2-vulnerable.json", code: 1,
+			want:     SecurityResult{Ecosystem: "node", Tool: "npm audit", Status: AuditVulnerable, Vulnerabilities: 2, HighSeverity: 1, MediumSeverity: 1, Summary: "2 vulnerabilities (1 high, 1 moderate)"},
+			wantCall: "npm audit --json",
+		},
+		{
+			name: "npm clean", files: map[string]string{"package.json": "{}", "package-lock.json": "{}"},
+			installed: "npm", out: "npm-v2-clean.json", code: 0,
+			want: SecurityResult{Ecosystem: "node", Tool: "npm audit", Status: AuditOK, Summary: "no known vulnerabilities"},
+		},
+		{
+			name: "npm error JSON is unavailable, not OK", files: map[string]string{"package.json": "{}"},
+			installed: "npm", out: "npm-error-enolock.json", code: 1,
+			want: SecurityResult{Ecosystem: "node", Tool: "npm audit", Status: AuditUnavailable, Summary: "unavailable: audit failed: ENOLOCK This command requires an existing lockfile."},
+		},
+		{
+			name: "npm prints nothing", files: map[string]string{"package.json": "{}"},
+			installed: "npm", out: "", code: 1,
+			want: SecurityResult{Ecosystem: "node", Tool: "npm audit", Status: AuditUnavailable, Summary: "unavailable: could not parse audit output: unexpected end of JSON input"},
+		},
+		{
+			name: "npm valid JSON but crash exit code", files: map[string]string{"package.json": "{}"},
+			installed: "npm", out: "npm-v2-clean.json", code: 134,
+			want: SecurityResult{Ecosystem: "node", Tool: "npm audit", Status: AuditUnavailable, Summary: "unavailable: npm audit exited with status 134"},
+		},
+		{
+			name: "npm cannot start", files: map[string]string{"package.json": "{}"},
+			installed: "npm", runErr: errors.New("fork/exec npm: permission denied"),
+			want: SecurityResult{Ecosystem: "node", Tool: "npm audit", Status: AuditUnavailable, Summary: "unavailable: fork/exec npm: permission denied"},
+		},
+		{
+			name: "npm not installed", files: map[string]string{"package.json": "{}"},
+			want: SecurityResult{Ecosystem: "node", Tool: "npm audit", Status: AuditNotInstalled, Summary: "npm not installed"},
+		},
+		{
+			name: "pnpm", files: map[string]string{"package.json": "{}", "pnpm-lock.yaml": "lockfileVersion: '9.0'\n"},
+			installed: "pnpm", out: "pnpm-vulnerable.json", code: 1,
+			want:     SecurityResult{Ecosystem: "node", Tool: "pnpm audit", Status: AuditVulnerable, Vulnerabilities: 1, HighSeverity: 1, Summary: "1 vulnerabilities (1 high)"},
+			wantCall: "pnpm audit --json",
+		},
+		{
+			name: "yarn v1 bitmask exit", files: map[string]string{"package.json": "{}", "yarn.lock": "# yarn lockfile v1\n"},
+			installed: "yarn", out: "yarn-v1-vulnerable.ndjson", code: 18,
+			want: SecurityResult{Ecosystem: "node", Tool: "yarn audit", Status: AuditVulnerable, Vulnerabilities: 2, HighSeverity: 1, LowSeverity: 1, Summary: "2 vulnerabilities (1 high, 1 low)"},
+		},
+		{
+			name: "yarn without summary", files: map[string]string{"package.json": "{}", "yarn.lock": "# yarn lockfile v1\n"},
+			installed: "yarn", out: "{\"type\":\"error\",\"data\":\"Unexpected token\"}\n", code: 1,
+			want: SecurityResult{Ecosystem: "node", Tool: "yarn audit", Status: AuditUnavailable, Summary: "unavailable: yarn audit printed no auditSummary"},
+		},
+		{
+			name: "yarn berry is not run", files: map[string]string{"package.json": "{}", "yarn.lock": "__metadata:\n  version: 8\n"},
+			installed: "yarn",
+			want:      SecurityResult{Ecosystem: "node", Tool: "yarn audit", Status: AuditUnavailable, Summary: "unavailable: yarn 2+ projects are audited with `yarn npm audit`, whose output xpm does not read"},
+		},
+		{
+			name: "bun", files: map[string]string{"package.json": "{}", "bun.lock": "{}"},
+			installed: "bun", out: "bun-vulnerable.json", code: 1,
+			want: SecurityResult{Ecosystem: "node", Tool: "bun audit", Status: AuditVulnerable, Vulnerabilities: 1, HighSeverity: 1, Summary: "1 vulnerabilities (1 high)"},
+		},
+		{
+			name: "pip-audit object format", files: map[string]string{"requirements.txt": "requests==2.25.0\n"},
+			installed: "pip-audit", out: "pip-audit-object.json", code: 1,
+			want:     SecurityResult{Ecosystem: "python", Tool: "pip-audit", Status: AuditVulnerable, Vulnerabilities: 1, LowSeverity: 1, Summary: "1 vulnerabilities (1 low)"},
+			wantCall: "pip-audit -r requirements.txt -f json",
+		},
+		{
+			name: "pip-audit legacy array", files: map[string]string{"pyproject.toml": "[project]\nname = \"x\"\n"},
+			installed: "pip-audit", out: "pip-audit-legacy.json", code: 1,
+			want:     SecurityResult{Ecosystem: "python", Tool: "pip-audit", Status: AuditVulnerable, Vulnerabilities: 2, LowSeverity: 2, Summary: "2 vulnerabilities (2 low) (audited the active Python environment)"},
+			wantCall: "pip-audit -f json",
+		},
+		{
+			name: "pip-audit failure", files: map[string]string{"requirements.txt": "x\n"},
+			installed: "pip-audit", out: "", code: 1,
+			want: SecurityResult{Ecosystem: "python", Tool: "pip-audit", Status: AuditUnavailable, Summary: "unavailable: could not parse pip-audit output: unexpected end of JSON input"},
+		},
+		{
+			name: "composer vulnerable", files: map[string]string{"composer.json": "{}", "composer.lock": "{}"},
+			installed: "composer", out: "composer-vulnerable.json", code: 1,
+			want: SecurityResult{Ecosystem: "php", Tool: "composer audit", Status: AuditVulnerable, Vulnerabilities: 2, HighSeverity: 1, MediumSeverity: 1, Summary: "2 vulnerabilities (1 high, 1 moderate)"},
+		},
+		{
+			name: "composer clean uses an empty array", files: map[string]string{"composer.json": "{}", "composer.lock": "{}"},
+			installed: "composer", out: "composer-clean.json", code: 0,
+			want: SecurityResult{Ecosystem: "php", Tool: "composer audit", Status: AuditOK, Summary: "no known vulnerabilities"},
+		},
+		{
+			name: "cargo audit", files: map[string]string{"Cargo.toml": "[package]\nname = \"x\"\n"},
+			installed: "cargo-audit", out: "cargo-audit-vulnerable.json", code: 1,
+			want:     SecurityResult{Ecosystem: "rust", Tool: "cargo audit", Status: AuditVulnerable, Vulnerabilities: 1, LowSeverity: 1, Summary: "1 vulnerabilities (1 low)"},
+			wantCall: "cargo audit --json",
+		},
+		{
+			name: "cargo-audit missing", files: map[string]string{"Cargo.toml": "[package]\nname = \"x\"\n"},
+			installed: "cargo",
+			want:      SecurityResult{Ecosystem: "rust", Tool: "cargo audit", Status: AuditNotInstalled, Summary: "cargo-audit not installed"},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := &fakeAudit{installed: map[string]bool{c.installed: true}, out: c.out, code: c.code, err: c.runErr}
+			withFakeAudit(t, f)
+			dir, scan := projectWith(t, c.files)
+			got := RunSecurityAudit(dir, scan)
+			if len(got) != 1 {
+				t.Fatalf("results = %+v, want exactly one", got)
+			}
+			if !reflect.DeepEqual(got[0], c.want) {
+				t.Errorf("result =\n  %+v\nwant\n  %+v", got[0], c.want)
+			}
+			if c.wantCall != "" {
+				want := filepath.Base(dir) + ": " + c.wantCall
+				if len(f.calls) != 1 || f.calls[0] != want {
+					t.Errorf("calls = %q, want [%q] (run in the project dir)", f.calls, want)
+				}
+			}
+			if c.want.Status == AuditNotInstalled && len(f.calls) != 0 {
+				t.Errorf("a missing tool was run: %q", f.calls)
+			}
+		})
+	}
+}
+
+func TestAuditParsersNeverPanicOnMalformedOutput(t *testing.T) {
+	parsers := map[string]func([]byte) (severities, error){
+		"npm": parseNpmAudit, "yarn": parseYarnAudit, "bun": parseBunAudit,
+		"pip": parsePipAudit, "composer": parseComposerAudit, "cargo": parseCargoAudit,
+	}
+	inputs := []string{"", "null", "[]", "{}", "{", "[1,2]", `{"metadata": 3}`, `{"advisories": 7}`, `{"advisories": [[{"severity": 1}]]}`, `{"vulnerabilities": []}`, "\x00\xff", `{"dependencies": null}`}
+	for name, parse := range parsers {
+		for _, in := range inputs {
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						t.Errorf("%s parser panicked on %q: %v", name, in, r)
+					}
+				}()
+				s, err := parse([]byte(in))
+				if err == nil && s.total != 0 {
+					t.Errorf("%s parser invented %d vulnerabilities from %q", name, s.total, in)
+				}
+			}()
+		}
+	}
+}
+
+func TestUnavailableAuditIsAWarningNeverOK(t *testing.T) {
+	results := []SecurityResult{{Status: AuditUnavailable}, {Status: AuditNotInstalled}, {Status: AuditOK}}
+	ok, vulnerable, unavailable := CountSecurityIssues(results)
+	if ok != 1 || vulnerable != 0 || unavailable != 2 {
+		t.Fatalf("CountSecurityIssues = %d %d %d, want 1 0 2", ok, vulnerable, unavailable)
+	}
+	if HasSecurityIssues(results) {
+		t.Fatal("HasSecurityIssues = true for audits that did not run")
+	}
+}
+```
+
+`internal/doctor/drift_test.go`:
+
+```go
+package doctor
+
+import (
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+	"time"
+)
+
+const (
+	pkgJSONExpressJest = `{
+  "name": "app",
+  "version": "1.0.0",
+  "dependencies": {"express": "^4.18.2"},
+  "devDependencies": {"jest": "^29.7.0"}
+}`
+	npmLockExpressJest = `{
+  "name": "app",
+  "version": "1.0.0",
+  "lockfileVersion": 3,
+  "requires": true,
+  "packages": {
+    "": {
+      "name": "app",
+      "version": "1.0.0",
+      "dependencies": {"express": "^4.18.2"},
+      "devDependencies": {"jest": "^29.7.0"}
+    },
+    "node_modules/express": {"version": "4.18.2"},
+    "node_modules/jest": {"version": "29.7.0", "dev": true}
+  }
+}`
+	npmLockV1 = `{
+  "name": "app",
+  "version": "1.0.0",
+  "lockfileVersion": 1,
+  "requires": true,
+  "dependencies": {"express": {"version": "4.18.2"}}
+}`
+	pnpmV9ExpressJest = `lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    dependencies:
+      express:
+        specifier: ^4.18.2
+        version: 4.18.2
+    devDependencies:
+      jest:
+        specifier: ^29.7.0
+        version: 29.7.0
+
+packages:
+
+  express@4.18.2:
+    resolution: {integrity: sha512-aaaa}
+
+  jest@29.7.0:
+    resolution: {integrity: sha512-bbbb}
+`
+	pnpmV6ExpressOnly = `lockfileVersion: '6.0'
+
+dependencies:
+  express:
+    specifier: ^4.18.2
+    version: 4.18.2
+
+packages:
+
+  /express@4.18.2:
+    resolution: {integrity: sha512-aaaa}
+    dev: false
+`
+	cargoToml = `[package]
+name = "app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+json = { package = "serde_json", version = "1" }
+
+[dev-dependencies]
+tempfile = "3"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[workspace.dependencies]
+unused-by-members = "1"
+`
+	cargoLockFull = `# This file is automatically @generated by Cargo.
+version = 3
+
+[[package]]
+name = "app"
+version = "0.1.0"
+
+[[package]]
+name = "libc"
+version = "0.2.153"
+
+[[package]]
+name = "serde"
+version = "1.0.197"
+
+[[package]]
+name = "serde_json"
+version = "1.0.114"
+
+[[package]]
+name = "tempfile"
+version = "3.10.1"
+`
+	goModTwoRequires = `module example.com/app
+
+go 1.22
+
+require (
+	github.com/BurntSushi/toml v1.3.2
+	gopkg.in/yaml.v3 v3.0.1 // indirect
+)
+
+require example.com/local v0.0.0
+
+replace example.com/local => ../local
+`
+	goSumTwoRequires = `github.com/BurntSushi/toml v1.3.2 h1:o7IhLm0Msx3BaB+n3Ag7L8EVlByGnpq14C4YWiu/gL8=
+github.com/BurntSushi/toml v1.3.2/go.mod h1:CxXYINrC8qIiEnFrOxCa7Jy5BFHlXnUU2pbicEuybxQ=
+gopkg.in/yaml.v3 v3.0.1/go.mod h1:K4uyk7z7BCEPqu6E4C/ADh5gWJ+FNkKDhzpBmIfmJlc=
+`
+)
+
+func TestCheckDriftComparesContents(t *testing.T) {
+	cases := []struct {
+		name   string
+		files  map[string]string
+		status DriftStatus
+		detail string
+	}{
+		{"npm v3 aligned", map[string]string{"package.json": pkgJSONExpressJest, "package-lock.json": npmLockExpressJest}, DriftStatusOK, ""},
+		{"npm dependency added to package.json", map[string]string{
+			"package.json":      strings.Replace(pkgJSONExpressJest, `"express": "^4.18.2"`, `"express": "^4.18.2", "lodash": "^4.17.21"`, 1),
+			"package-lock.json": npmLockExpressJest,
+		}, DriftStatusOutdated, "in package.json but not package-lock.json: lodash"},
+		{"npm dependency removed from package.json", map[string]string{
+			"package.json": strings.Replace(pkgJSONExpressJest, `,
+  "devDependencies": {"jest": "^29.7.0"}`, "", 1),
+			"package-lock.json": npmLockExpressJest,
+		}, DriftStatusOutdated, "in package-lock.json but not package.json: jest"},
+		{"npm lockfile v1 is not compared", map[string]string{"package.json": pkgJSONExpressJest, "package-lock.json": npmLockV1}, DriftStatusUnknown, "lockfileVersion 1 has no root entry; contents not compared"},
+		{"npm lockfile malformed", map[string]string{"package.json": pkgJSONExpressJest, "package-lock.json": "{"}, DriftStatusInvalid, "package-lock.json: unexpected end of JSON input"},
+		{"pnpm v9 importers aligned", map[string]string{"package.json": pkgJSONExpressJest, "pnpm-lock.yaml": pnpmV9ExpressJest}, DriftStatusOK, ""},
+		{"pnpm v6 single project lacks jest", map[string]string{"package.json": pkgJSONExpressJest, "pnpm-lock.yaml": pnpmV6ExpressOnly}, DriftStatusOutdated, "in package.json but not pnpm-lock.yaml: jest"},
+		{"yarn is not compared", map[string]string{"package.json": pkgJSONExpressJest, "yarn.lock": "# yarn lockfile v1\n"}, DriftStatusUnknown, "contents not compared"},
+		{"cargo aligned (rename, target deps)", map[string]string{"Cargo.toml": cargoToml, "Cargo.lock": cargoLockFull}, DriftStatusOK, ""},
+		{"cargo lock lacks a dependency", map[string]string{"Cargo.toml": cargoToml, "Cargo.lock": strings.Replace(cargoLockFull, "name = \"libc\"", "name = \"other\"", 1)}, DriftStatusOutdated, "in Cargo.toml but not Cargo.lock: libc"},
+		{"go aligned (replaced module skipped)", map[string]string{"go.mod": goModTwoRequires, "go.sum": goSumTwoRequires}, DriftStatusOK, ""},
+		{"go version bumped without tidy", map[string]string{"go.mod": strings.Replace(goModTwoRequires, "toml v1.3.2", "toml v1.4.0", 1), "go.sum": goSumTwoRequires}, DriftStatusOutdated, "in go.mod but not go.sum: github.com/BurntSushi/toml v1.4.0"},
+		{"composer parses", map[string]string{"composer.json": "{}", "composer.lock": `{"packages": []}`}, DriftStatusUnknown, "lockfile parses; contents not compared"},
+		{"composer malformed", map[string]string{"composer.json": "{}", "composer.lock": "{"}, DriftStatusInvalid, "unexpected end of JSON input"},
+		{"uv.lock parses", map[string]string{"pyproject.toml": "[project]\nname = \"x\"\n", "uv.lock": "version = 1\n"}, DriftStatusUnknown, "lockfile parses; contents not compared"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir, _ := projectWith(t, c.files)
+			got := CheckDrift(dir)
+			if len(got) != 1 {
+				t.Fatalf("CheckDrift = %+v, want one result", got)
+			}
+			if got[0].Status != c.status || got[0].Detail != c.detail {
+				t.Errorf("CheckDrift = status %v detail %q, want %v %q", got[0].Status, got[0].Detail, c.status, c.detail)
+			}
+		})
+	}
+}
+
+func TestCheckDriftIgnoresModificationTimes(t *testing.T) {
+	dir, _ := projectWith(t, map[string]string{"package.json": pkgJSONExpressJest, "package-lock.json": npmLockExpressJest})
+	past := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(filepath.Join(dir, "package-lock.json"), past, past); err != nil {
+		t.Fatal(err)
+	}
+	got := CheckDrift(dir)
+	if len(got) != 1 || got[0].Status != DriftStatusOK {
+		t.Fatalf("CheckDrift = %+v, want OK: a newer package.json with the same deps is not drift", got)
+	}
+}
+
+func TestCheckDriftMalformedFilesNeverPanic(t *testing.T) {
+	names := []string{"package.json", "package-lock.json", "pnpm-lock.yaml", "Cargo.toml", "Cargo.lock", "go.mod", "go.sum", "composer.json", "composer.lock", "pyproject.toml", "poetry.lock", "Pipfile", "Pipfile.lock"}
+	for _, garbage := range []string{"", "{", "\x00\xff", "[[package]]\nname = ", "importers:\n  .: [\n", "require (\n", "packages: 7\n", "{\"packages\": {\"\": 5}}"} {
+		files := map[string]string{}
+		for _, n := range names {
+			files[n] = garbage
+		}
+		dir, _ := projectWith(t, files)
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("CheckDrift panicked on %q: %v", garbage, r)
+				}
+			}()
+			for _, d := range CheckDrift(dir) {
+				if d.Status == DriftStatusOutdated && garbage == "" {
+					t.Errorf("empty files reported as outdated: %+v", d)
+				}
+			}
+			_ = ScanProject(dir)
+		}()
+	}
+}
+
+func TestScanProjectRequiresOnlyRealLockfiles(t *testing.T) {
+	cases := []struct {
+		name  string
+		files map[string]string
+		want  []string
+	}{
+		{"PEP 621 pyproject needs no lockfile", map[string]string{"pyproject.toml": "[project]\nname = \"x\"\ndependencies = [\"requests\"]\n"}, nil},
+		{"PEP 621 with uv.lock", map[string]string{"pyproject.toml": "[project]\nname = \"x\"\n", "uv.lock": "version = 1\n"}, nil},
+		{"poetry project needs poetry.lock", map[string]string{"pyproject.toml": "[tool.poetry]\nname = \"x\"\n"}, []string{"poetry.lock"}},
+		{"poetry project with poetry.lock", map[string]string{"pyproject.toml": "[tool.poetry]\nname = \"x\"\n", "poetry.lock": ""}, nil},
+		{"requirements.txt never needs requirements.lock", map[string]string{"requirements.txt": "requests\n"}, nil},
+		{"package.json with bun.lock", map[string]string{"package.json": "{}", "bun.lock": "{}"}, nil},
+		{"package.json alone", map[string]string{"package.json": "{}"}, []string{"package-lock.json"}},
+		{"go.mod without requirements", map[string]string{"go.mod": "module example.com/x\n\ngo 1.22\n"}, nil},
+		{"go.mod requiring only a local replacement", map[string]string{"go.mod": "module example.com/x\n\ngo 1.22\n\nrequire example.com/y v0.0.0\n\nreplace example.com/y => ../y\n"}, nil},
+		{"go.mod with requirements", map[string]string{"go.mod": goModTwoRequires}, []string{"go.sum"}},
+		{"Cargo.toml alone", map[string]string{"Cargo.toml": cargoToml}, []string{"Cargo.lock"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, scan := projectWith(t, c.files)
+			if !reflect.DeepEqual(scan.MissingLockFiles, c.want) {
+				t.Errorf("MissingLockFiles = %q, want %q", scan.MissingLockFiles, c.want)
+			}
+		})
+	}
+}
+
+func TestMissingLockfileIsCountedOnce(t *testing.T) {
+	dir, scan := projectWith(t, map[string]string{"package.json": pkgJSONExpressJest})
+	report := Report{Project: scan, Drift: CheckDrift(dir)}
+	if len(report.Drift) != 0 {
+		t.Fatalf("Drift = %+v, want no entry for an absent lockfile", report.Drift)
+	}
+	cfg := Config{SkipEnv: true, SkipSecurity: true, SkipConflicts: true}
+	good, bad, warn := summarize(report, cfg)
+	if good != 0 || bad != 1 || warn != 0 {
+		t.Fatalf("summarize = %d passed, %d failed, %d warnings; want 0 1 0", good, bad, warn)
+	}
+	if !HasIssues(report) {
+		t.Fatal("HasIssues = false with a missing lockfile")
+	}
+}
+
+func TestRunUsesConfigDir(t *testing.T) {
+	dir, _ := projectWith(t, map[string]string{"package.json": pkgJSONExpressJest})
+	// No binary is "installed", so the package-manager checks run nothing.
+	withFakeAudit(t, &fakeAudit{})
+	report := Run(Config{Dir: dir, SkipEnv: true, SkipSecurity: true})
+	if !reflect.DeepEqual(report.Project.MissingLockFiles, []string{"package-lock.json"}) {
+		t.Fatalf("MissingLockFiles = %q, want [package-lock.json] from Config.Dir", report.Project.MissingLockFiles)
+	}
+}
+```
+
+- [ ] **Step 3: Run the tests to verify they fail**
+
+Run: `go test ./internal/doctor/`
+Expected: FAIL — build errors such as `undefined: lookPath`, `undefined: runCommand`, `undefined: AuditVulnerable`, `undefined: DriftStatusUnknown`, `undefined: summarize`, `unknown field Dir in struct literal`, `too many arguments in call to RunSecurityAudit`.
+
+- [ ] **Step 4: Write the implementation**
+
+Create `exec.go` and `manifest.go`, replace `security.go`, `drift.go`, `project.go` and `doctor.go` with exactly this content.
+
+`internal/doctor/exec.go`:
+
+```go
+package doctor
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"os/exec"
+	"time"
+)
+
+// auditTimeout bounds one audit tool run (audits query the network).
+const auditTimeout = 2 * time.Minute
+
+// lookPath finds an executable on PATH. Tests replace it.
+var lookPath = exec.LookPath
+
+// runCommand runs name with args in dir and returns its stdout and exit code.
+// A non-zero exit is not an error (audit tools exit 1 when they find
+// vulnerabilities); err is set only when the command could not be run or
+// timed out. Stderr is discarded so warnings never corrupt JSON output.
+// Tests replace it.
+var runCommand = func(dir, name string, args ...string) (stdout []byte, exitCode int, err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), auditTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = dir
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	err = cmd.Run()
+	if ctx.Err() != nil {
+		return out.Bytes(), -1, ctx.Err()
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return out.Bytes(), exitErr.ExitCode(), nil
+	}
+	if err != nil {
+		return out.Bytes(), -1, err
+	}
+	return out.Bytes(), 0, nil
+}
+```
+
+`internal/doctor/manifest.go`:
+
+```go
+package doctor
+
+import (
+	"bufio"
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+
+	"github.com/BurntSushi/toml"
+	"golang.org/x/mod/modfile"
+	"gopkg.in/yaml.v3"
+)
+
+// nameSet is a set of dependency names.
+type nameSet map[string]bool
+
+func (s nameSet) addKeys(m map[string]json.RawMessage) {
+	for k := range m {
+		s[k] = true
+	}
+}
+
+// minus returns the sorted names in s that are not in other.
+func (s nameSet) minus(other nameSet) []string {
+	var out []string
+	for k := range s {
+		if !other[k] {
+			out = append(out, k)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// npmDepFields are the package.json fields npm records in the root entry of
+// package-lock.json.
+type npmDepFields struct {
+	Dependencies         map[string]json.RawMessage `json:"dependencies"`
+	DevDependencies      map[string]json.RawMessage `json:"devDependencies"`
+	OptionalDependencies map[string]json.RawMessage `json:"optionalDependencies"`
+	PeerDependencies     map[string]json.RawMessage `json:"peerDependencies"`
+}
+
+func (f npmDepFields) names(withPeers bool) nameSet {
+	s := nameSet{}
+	s.addKeys(f.Dependencies)
+	s.addKeys(f.DevDependencies)
+	s.addKeys(f.OptionalDependencies)
+	if withPeers {
+		s.addKeys(f.PeerDependencies)
+	}
+	return s
+}
+
+// readPackageJSON returns package.json's declared dependency fields.
+func readPackageJSON(dir string) (npmDepFields, error) {
+	var f npmDepFields
+	data, err := os.ReadFile(filepath.Join(dir, "package.json"))
+	if err != nil {
+		return f, err
+	}
+	if err := json.Unmarshal(data, &f); err != nil {
+		return f, fmt.Errorf("package.json: %w", err)
+	}
+	return f, nil
+}
+
+// npmLockRoot returns the root package entry (packages[""]) of a
+// package-lock.json; ok is false for lockfileVersion 1 files, which have none.
+func npmLockRoot(dir string) (root npmDepFields, ok bool, err error) {
+	data, err := os.ReadFile(filepath.Join(dir, "package-lock.json"))
+	if err != nil {
+		return root, false, err
+	}
+	var lf struct {
+		Packages map[string]npmDepFields `json:"packages"`
+	}
+	if err := json.Unmarshal(data, &lf); err != nil {
+		return root, false, fmt.Errorf("package-lock.json: %w", err)
+	}
+	root, ok = lf.Packages[""]
+	return root, ok, nil
+}
+
+// pnpmImporterNames returns the direct dependency names pnpm-lock.yaml records
+// for the root project: importers["."] (workspaces and lockfile v9), or the
+// top-level dependency maps of single-project v5/v6 lockfiles.
+func pnpmImporterNames(dir string) (nameSet, error) {
+	data, err := os.ReadFile(filepath.Join(dir, "pnpm-lock.yaml"))
+	if err != nil {
+		return nil, err
+	}
+	type depMaps struct {
+		Dependencies         map[string]yaml.Node `yaml:"dependencies"`
+		DevDependencies      map[string]yaml.Node `yaml:"devDependencies"`
+		OptionalDependencies map[string]yaml.Node `yaml:"optionalDependencies"`
+	}
+	var lf struct {
+		depMaps   `yaml:",inline"`
+		Importers map[string]depMaps `yaml:"importers"`
+	}
+	if err := yaml.Unmarshal(data, &lf); err != nil {
+		return nil, fmt.Errorf("pnpm-lock.yaml: %w", err)
+	}
+	maps := lf.depMaps
+	if root, ok := lf.Importers["."]; ok {
+		maps = root
+	}
+	s := nameSet{}
+	for _, m := range []map[string]yaml.Node{maps.Dependencies, maps.DevDependencies, maps.OptionalDependencies} {
+		for k := range m {
+			s[k] = true
+		}
+	}
+	return s, nil
+}
+
+// cargoManifestNames returns the package names Cargo.toml depends on, from
+// [dependencies], [dev-dependencies], [build-dependencies] and their
+// [target.*] variants. A renamed dependency (`alias = { package = "real" }`)
+// contributes its real package name. [workspace.dependencies] is not
+// included: it only declares versions members may use.
+func cargoManifestNames(dir string) (nameSet, error) {
+	var m map[string]interface{}
+	if _, err := toml.DecodeFile(filepath.Join(dir, "Cargo.toml"), &m); err != nil {
+		return nil, fmt.Errorf("parse Cargo.toml: %w", err)
+	}
+	s := nameSet{}
+	addTables := func(t map[string]interface{}) {
+		for _, field := range []string{"dependencies", "dev-dependencies", "build-dependencies"} {
+			deps, _ := t[field].(map[string]interface{})
+			for key, spec := range deps {
+				name := key
+				if table, ok := spec.(map[string]interface{}); ok {
+					if pkg, ok := table["package"].(string); ok && pkg != "" {
+						name = pkg
+					}
+				}
+				s[name] = true
+			}
+		}
+	}
+	addTables(m)
+	targets, _ := m["target"].(map[string]interface{})
+	for _, t := range targets {
+		if table, ok := t.(map[string]interface{}); ok {
+			addTables(table)
+		}
+	}
+	return s, nil
+}
+
+// cargoLockNames returns the package names recorded in Cargo.lock.
+func cargoLockNames(dir string) (nameSet, error) {
+	var lf struct {
+		Package []struct {
+			Name string `toml:"name"`
+		} `toml:"package"`
+	}
+	if _, err := toml.DecodeFile(filepath.Join(dir, "Cargo.lock"), &lf); err != nil {
+		return nil, fmt.Errorf("parse Cargo.lock: %w", err)
+	}
+	s := nameSet{}
+	for _, p := range lf.Package {
+		s[p.Name] = true
+	}
+	return s, nil
+}
+
+// goRequirements returns "path version" for each go.mod requirement whose
+// checksum must be in go.sum: requirements that a replace directive redirects
+// (to a local directory or another module) are skipped, because go.sum then
+// holds the replacement, or nothing at all.
+func goRequirements(dir string) (nameSet, error) {
+	data, err := os.ReadFile(filepath.Join(dir, "go.mod"))
+	if err != nil {
+		return nil, err
+	}
+	// Parse, not ParseLax: ParseLax drops replace directives.
+	f, err := modfile.Parse("go.mod", data, nil)
+	if err != nil {
+		return nil, fmt.Errorf("go.mod: %w", err)
+	}
+	replaced := map[string]bool{}
+	for _, r := range f.Replace {
+		replaced[r.Old.Path] = true
+	}
+	s := nameSet{}
+	for _, r := range f.Require {
+		if replaced[r.Mod.Path] {
+			continue
+		}
+		s[r.Mod.Path+" "+r.Mod.Version] = true
+	}
+	return s, nil
+}
+
+// goSumEntries returns "path version" for every module version go.sum lists
+// ("v1.2.3/go.mod" lines count as v1.2.3).
+func goSumEntries(dir string) (nameSet, error) {
+	data, err := os.ReadFile(filepath.Join(dir, "go.sum"))
+	if err != nil {
+		return nil, err
+	}
+	s := nameSet{}
+	sc := bufio.NewScanner(bytes.NewReader(data))
+	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	for sc.Scan() {
+		fields := strings.Fields(sc.Text())
+		if len(fields) < 2 {
+			continue
+		}
+		s[fields[0]+" "+strings.TrimSuffix(fields[1], "/go.mod")] = true
+	}
+	return s, nil
+}
+
+// isPoetryProject reports whether pyproject.toml has a [tool.poetry] table.
+// A PEP 621 project (uv, pdm, hatch, setuptools…) needs no poetry.lock.
+func isPoetryProject(dir string) bool {
+	var m struct {
+		Tool map[string]interface{} `toml:"tool"`
+	}
+	if _, err := toml.DecodeFile(filepath.Join(dir, "pyproject.toml"), &m); err != nil {
+		return false
+	}
+	_, ok := m.Tool["poetry"]
+	return ok
+}
+
+// parsesAsJSON reports a parse error for a JSON lockfile.
+func parsesAsJSON(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var v interface{}
+	return json.Unmarshal(data, &v)
+}
+
+// parsesAsTOML reports a parse error for a TOML lockfile.
+func parsesAsTOML(path string) error {
+	var v map[string]interface{}
+	_, err := toml.DecodeFile(path, &v)
+	return err
+}
+```
+
+`internal/doctor/security.go`:
+
+```go
+package doctor
+
+import (
+	"bufio"
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+)
+
+// AuditStatus is the outcome of one security audit.
+type AuditStatus int
+
+const (
+	// AuditOK: the tool ran and its output reports no vulnerabilities.
+	AuditOK AuditStatus = iota
+	// AuditVulnerable: the tool ran and reported vulnerabilities.
+	AuditVulnerable
+	// AuditNotInstalled: the audit tool is not on PATH; nothing was run.
+	AuditNotInstalled
+	// AuditUnavailable: the tool ran but failed, or its output could not be
+	// parsed. The project's vulnerability status is unknown.
+	AuditUnavailable
+)
+
+// SecurityResult holds the result of a security audit.
+type SecurityResult struct {
+	Ecosystem       string
+	Tool            string
+	Status          AuditStatus
+	Vulnerabilities int
+	HighSeverity    int // high + critical
+	MediumSeverity  int // moderate / medium
+	LowSeverity     int // low + info
+	Summary         string
+}
+
+// severities accumulates vulnerability counts from an audit report.
+type severities struct {
+	total, high, medium, low int
+}
+
+func (s *severities) add(severity string) {
+	s.total++
+	switch strings.ToLower(severity) {
+	case "critical", "high":
+		s.high++
+	case "moderate", "medium":
+		s.medium++
+	default:
+		s.low++
+	}
+}
+
+// auditSpec describes how to run one audit tool and read its output.
+type auditSpec struct {
+	ecosystem string
+	tool      string // shown to the user, e.g. "npm audit"
+	binary    string // looked up on PATH
+	name      string // command actually run
+	args      []string
+	okExit    func(code int) bool // exit codes that still carry a valid report
+	parse     func(stdout []byte) (severities, error)
+	note      string // appended to the summary, e.g. what was audited
+}
+
+func exitZeroOrOne(code int) bool { return code == 0 || code == 1 }
+
+// RunSecurityAudit runs the audit tool of each ecosystem detected in dir.
+func RunSecurityAudit(dir string, project ProjectScanResult) []SecurityResult {
+	var results []SecurityResult
+
+	if HasFile(project, "package.json") {
+		switch {
+		case HasFile(project, "yarn.lock"):
+			if isYarnBerry(filepath.Join(dir, "yarn.lock")) {
+				results = append(results, SecurityResult{
+					Ecosystem: "node", Tool: "yarn audit", Status: AuditUnavailable,
+					Summary: "unavailable: yarn 2+ projects are audited with `yarn npm audit`, whose output xpm does not read",
+				})
+			} else {
+				results = append(results, runAudit(dir, yarnAudit))
+			}
+		case HasFile(project, "pnpm-lock.yaml"):
+			results = append(results, runAudit(dir, pnpmAudit))
+		case HasFile(project, "bun.lock") || HasFile(project, "bun.lockb"):
+			results = append(results, runAudit(dir, bunAudit))
+		default:
+			results = append(results, runAudit(dir, npmAudit))
+		}
+	}
+
+	if HasFile(project, "requirements.txt") {
+		spec := pipAudit
+		spec.args = []string{"-r", "requirements.txt", "-f", "json"}
+		results = append(results, runAudit(dir, spec))
+	} else if HasFile(project, "pyproject.toml") {
+		spec := pipAudit
+		spec.args = []string{"-f", "json"}
+		spec.note = "audited the active Python environment"
+		results = append(results, runAudit(dir, spec))
+	}
+
+	if HasFile(project, "composer.json") {
+		results = append(results, runAudit(dir, composerAudit))
+	}
+
+	if HasFile(project, "Cargo.toml") {
+		results = append(results, runAudit(dir, cargoAudit))
+	}
+
+	return results
+}
+
+var (
+	npmAudit = auditSpec{
+		ecosystem: "node", tool: "npm audit", binary: "npm", name: "npm",
+		args: []string{"audit", "--json"}, okExit: exitZeroOrOne, parse: parseNpmAudit,
+	}
+	pnpmAudit = auditSpec{
+		ecosystem: "node", tool: "pnpm audit", binary: "pnpm", name: "pnpm",
+		args: []string{"audit", "--json"}, okExit: exitZeroOrOne, parse: parseNpmAudit,
+	}
+	// yarn v1 exits with a bitmask of the severities found (1 info … 16 critical).
+	yarnAudit = auditSpec{
+		ecosystem: "node", tool: "yarn audit", binary: "yarn", name: "yarn",
+		args: []string{"audit", "--json"}, okExit: func(c int) bool { return c >= 0 && c < 32 }, parse: parseYarnAudit,
+	}
+	bunAudit = auditSpec{
+		ecosystem: "node", tool: "bun audit", binary: "bun", name: "bun",
+		args: []string{"audit", "--json"}, okExit: exitZeroOrOne, parse: parseBunAudit,
+	}
+	pipAudit = auditSpec{
+		ecosystem: "python", tool: "pip-audit", binary: "pip-audit", name: "pip-audit",
+		okExit: exitZeroOrOne, parse: parsePipAudit,
+	}
+	// composer audit exits with a bitmask: 1 vulnerable, 2 abandoned packages.
+	composerAudit = auditSpec{
+		ecosystem: "php", tool: "composer audit", binary: "composer", name: "composer",
+		args: []string{"audit", "--format=json"}, okExit: func(c int) bool { return c >= 0 && c <= 3 }, parse: parseComposerAudit,
+	}
+	cargoAudit = auditSpec{
+		ecosystem: "rust", tool: "cargo audit", binary: "cargo-audit", name: "cargo",
+		args: []string{"audit", "--json"}, okExit: exitZeroOrOne, parse: parseCargoAudit,
+	}
+)
+
+// runAudit runs one audit and classifies the outcome. A missing tool is
+// AuditNotInstalled; a tool that cannot start, exits with an unexpected
+// code, or prints output that does not parse is AuditUnavailable, never OK.
+func runAudit(dir string, spec auditSpec) SecurityResult {
+	r := SecurityResult{Ecosystem: spec.ecosystem, Tool: spec.tool}
+	if _, err := lookPath(spec.binary); err != nil {
+		r.Status = AuditNotInstalled
+		r.Summary = spec.binary + " not installed"
+		return r
+	}
+	out, code, err := runCommand(dir, spec.name, spec.args...)
+	if err != nil {
+		r.Status = AuditUnavailable
+		r.Summary = "unavailable: " + err.Error()
+		return r
+	}
+	if !spec.okExit(code) {
+		r.Status = AuditUnavailable
+		r.Summary = "unavailable: " + spec.tool + " exited with status " + strconv.Itoa(code)
+		return r
+	}
+	sev, err := spec.parse(out)
+	if err != nil {
+		r.Status = AuditUnavailable
+		r.Summary = "unavailable: " + err.Error()
+		return r
+	}
+	r.Vulnerabilities = sev.total
+	r.HighSeverity = sev.high
+	r.MediumSeverity = sev.medium
+	r.LowSeverity = sev.low
+	if sev.total == 0 {
+		r.Status = AuditOK
+		r.Summary = "no known vulnerabilities"
+	} else {
+		r.Status = AuditVulnerable
+		r.Summary = formatSeverities(sev)
+	}
+	if spec.note != "" {
+		r.Summary += " (" + spec.note + ")"
+	}
+	return r
+}
+
+func formatSeverities(s severities) string {
+	text := strconv.Itoa(s.total) + " vulnerabilities"
+	var parts []string
+	if s.high > 0 {
+		parts = append(parts, strconv.Itoa(s.high)+" high")
+	}
+	if s.medium > 0 {
+		parts = append(parts, strconv.Itoa(s.medium)+" moderate")
+	}
+	if s.low > 0 {
+		parts = append(parts, strconv.Itoa(s.low)+" low")
+	}
+	if len(parts) > 0 {
+		text += " (" + strings.Join(parts, ", ") + ")"
+	}
+	return text
+}
+
+// npmSeverityCounts is metadata.vulnerabilities in npm (v6 and v7+) and
+// pnpm audit reports.
+type npmSeverityCounts struct {
+	Info     int  `json:"info"`
+	Low      int  `json:"low"`
+	Moderate int  `json:"moderate"`
+	High     int  `json:"high"`
+	Critical int  `json:"critical"`
+	Total    *int `json:"total"`
+}
+
+func (c npmSeverityCounts) severities() severities {
+	s := severities{
+		high:   c.High + c.Critical,
+		medium: c.Moderate,
+		low:    c.Low + c.Info,
+	}
+	s.total = s.high + s.medium + s.low
+	if c.Total != nil && *c.Total > s.total {
+		s.total = *c.Total
+	}
+	return s
+}
+
+// parseNpmAudit reads `npm audit --json` (v6 and v7+) and `pnpm audit --json`.
+// The report must carry metadata.vulnerabilities; npm's error object
+// ({"error": {...}}) is reported as an error.
+func parseNpmAudit(out []byte) (severities, error) {
+	var report struct {
+		Error *struct {
+			Code    string `json:"code"`
+			Summary string `json:"summary"`
+		} `json:"error"`
+		Metadata *struct {
+			Vulnerabilities *npmSeverityCounts `json:"vulnerabilities"`
+		} `json:"metadata"`
+	}
+	if err := json.Unmarshal(out, &report); err != nil {
+		return severities{}, fmt.Errorf("could not parse audit output: %w", err)
+	}
+	if report.Error != nil {
+		msg := strings.TrimSpace(report.Error.Code + " " + firstLine(report.Error.Summary))
+		return severities{}, fmt.Errorf("audit failed: %s", msg)
+	}
+	if report.Metadata == nil || report.Metadata.Vulnerabilities == nil {
+		return severities{}, errors.New("audit output has no vulnerability summary")
+	}
+	return report.Metadata.Vulnerabilities.severities(), nil
+}
+
+// parseYarnAudit reads `yarn audit --json` (yarn v1): one JSON object per
+// line, ending with an "auditSummary" object.
+func parseYarnAudit(out []byte) (severities, error) {
+	sc := bufio.NewScanner(bytes.NewReader(out))
+	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	for sc.Scan() {
+		line := bytes.TrimSpace(sc.Bytes())
+		if len(line) == 0 || line[0] != '{' {
+			continue
+		}
+		var entry struct {
+			Type string `json:"type"`
+			Data struct {
+				Vulnerabilities *npmSeverityCounts `json:"vulnerabilities"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(line, &entry); err != nil {
+			continue
+		}
+		if entry.Type == "auditSummary" && entry.Data.Vulnerabilities != nil {
+			return entry.Data.Vulnerabilities.severities(), nil
+		}
+	}
+	return severities{}, errors.New("yarn audit printed no auditSummary")
+}
+
+// parseBunAudit reads `bun audit --json`: an object mapping package names to
+// lists of advisories, each with a "severity".
+func parseBunAudit(out []byte) (severities, error) {
+	var report map[string][]struct {
+		Severity string `json:"severity"`
+	}
+	if err := json.Unmarshal(out, &report); err != nil {
+		return severities{}, fmt.Errorf("could not parse bun audit output: %w", err)
+	}
+	if report == nil {
+		return severities{}, errors.New("bun audit printed no report")
+	}
+	var s severities
+	for _, advisories := range report {
+		for _, a := range advisories {
+			s.add(a.Severity)
+		}
+	}
+	return s, nil
+}
+
+// pipAuditDependency is one entry of pip-audit's JSON report.
+type pipAuditDependency struct {
+	Name  string `json:"name"`
+	Vulns []struct {
+		ID string `json:"id"`
+	} `json:"vulns"`
+}
+
+// parsePipAudit reads `pip-audit -f json` in both formats: the current object
+// {"dependencies": [...], "fixes": [...]} and the legacy top-level array.
+// pip-audit reports no severities, so every finding counts as low.
+func parsePipAudit(out []byte) (severities, error) {
+	trimmed := bytes.TrimSpace(out)
+	var deps []pipAuditDependency
+	switch {
+	case len(trimmed) > 0 && trimmed[0] == '[':
+		if err := json.Unmarshal(trimmed, &deps); err != nil {
+			return severities{}, fmt.Errorf("could not parse pip-audit output: %w", err)
+		}
+	default:
+		var report struct {
+			Dependencies *[]pipAuditDependency `json:"dependencies"`
+		}
+		if err := json.Unmarshal(trimmed, &report); err != nil {
+			return severities{}, fmt.Errorf("could not parse pip-audit output: %w", err)
+		}
+		if report.Dependencies == nil {
+			return severities{}, errors.New("pip-audit output has no dependencies list")
+		}
+		deps = *report.Dependencies
+	}
+	var s severities
+	for _, d := range deps {
+		for range d.Vulns {
+			s.add("")
+		}
+	}
+	return s, nil
+}
+
+// parseComposerAudit reads `composer audit --format=json`. "advisories" maps
+// package names to advisory lists, or is [] when there are none (PHP encodes
+// an empty array that way).
+func parseComposerAudit(out []byte) (severities, error) {
+	var report struct {
+		Advisories json.RawMessage `json:"advisories"`
+	}
+	if err := json.Unmarshal(out, &report); err != nil {
+		return severities{}, fmt.Errorf("could not parse composer audit output: %w", err)
+	}
+	raw := bytes.TrimSpace(report.Advisories)
+	if len(raw) == 0 {
+		return severities{}, errors.New("composer audit output has no advisories field")
+	}
+	type advisory struct {
+		Severity string `json:"severity"`
+	}
+	var lists [][]advisory
+	switch raw[0] {
+	case '[':
+		if err := json.Unmarshal(raw, &lists); err != nil {
+			return severities{}, fmt.Errorf("could not parse composer advisories: %w", err)
+		}
+	case '{':
+		var byPkg map[string][]advisory
+		if err := json.Unmarshal(raw, &byPkg); err != nil {
+			return severities{}, fmt.Errorf("could not parse composer advisories: %w", err)
+		}
+		for _, l := range byPkg {
+			lists = append(lists, l)
+		}
+	default:
+		return severities{}, errors.New("composer advisories is neither an object nor an array")
+	}
+	var s severities
+	for _, l := range lists {
+		for _, a := range l {
+			s.add(a.Severity)
+		}
+	}
+	return s, nil
+}
+
+// parseCargoAudit reads `cargo audit --json`. RustSec advisories carry a
+// CVSS vector rather than a severity word, so findings count as low unless
+// an advisory has an explicit "severity".
+func parseCargoAudit(out []byte) (severities, error) {
+	var report struct {
+		Vulnerabilities *struct {
+			Count int `json:"count"`
+			List  []struct {
+				Advisory struct {
+					Severity string `json:"severity"`
+				} `json:"advisory"`
+			} `json:"list"`
+		} `json:"vulnerabilities"`
+	}
+	if err := json.Unmarshal(out, &report); err != nil {
+		return severities{}, fmt.Errorf("could not parse cargo audit output: %w", err)
+	}
+	if report.Vulnerabilities == nil {
+		return severities{}, errors.New("cargo audit output has no vulnerabilities section")
+	}
+	var s severities
+	for _, v := range report.Vulnerabilities.List {
+		s.add(v.Advisory.Severity)
+	}
+	if report.Vulnerabilities.Count > s.total {
+		s.low += report.Vulnerabilities.Count - s.total
+		s.total = report.Vulnerabilities.Count
+	}
+	return s, nil
+}
+
+// isYarnBerry reports whether a yarn.lock was written by yarn 2+.
+func isYarnBerry(path string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	return bytes.Contains(data, []byte("\n__metadata:")) || bytes.HasPrefix(data, []byte("__metadata:"))
+}
+
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
+}
+
+// PrintSecurityReport prints the security audit results.
+func PrintSecurityReport(results []SecurityResult) {
+	Section("Security Scan")
+
+	if len(results) == 0 {
+		Info("No ecosystems to audit")
+		return
+	}
+
+	for _, r := range results {
+		label := r.Ecosystem + " (" + r.Tool + ")"
+		switch r.Status {
+		case AuditOK:
+			StatusLine(true, label, r.Summary)
+		case AuditVulnerable:
+			switch {
+			case r.HighSeverity > 0:
+				Bad(label + ": " + r.Summary)
+			case r.MediumSeverity > 0:
+				Warn(label + ": " + r.Summary)
+			default:
+				WarnLine(label, r.Summary)
+			}
+		default:
+			WarnLine(label, r.Summary)
+		}
+	}
+}
+
+// CountSecurityIssues counts audits that passed, found vulnerabilities, or
+// could not run (not installed or unavailable).
+func CountSecurityIssues(results []SecurityResult) (ok, vulnerable, unavailable int) {
+	for _, r := range results {
+		switch r.Status {
+		case AuditOK:
+			ok++
+		case AuditVulnerable:
+			vulnerable++
+		default:
+			unavailable++
+		}
+	}
+	return
+}
+
+// GetSecuritySuggestions returns suggestions for security issues.
+func GetSecuritySuggestions(results []SecurityResult) []string {
+	var suggestions []string
+
+	for _, r := range results {
+		switch r.Status {
+		case AuditNotInstalled:
+			switch r.Ecosystem {
+			case "rust":
+				suggestions = append(suggestions, "Install cargo-audit for Rust security scanning: cargo install cargo-audit")
+			case "python":
+				suggestions = append(suggestions, "Install pip-audit for Python security scanning: pip install pip-audit")
+			}
+		case AuditUnavailable:
+			suggestions = append(suggestions, "Run `"+r.Tool+"` yourself to see why the audit failed")
+		case AuditVulnerable:
+			switch r.Ecosystem {
+			case "node":
+				switch {
+				case strings.Contains(r.Tool, "yarn"):
+					suggestions = append(suggestions, "Run `yarn audit` to see details, then update vulnerable packages")
+				case strings.Contains(r.Tool, "pnpm"):
+					suggestions = append(suggestions, "Run `pnpm audit` to see details, then update vulnerable packages")
+				case strings.Contains(r.Tool, "bun"):
+					suggestions = append(suggestions, "Run `bun audit` to see details, then update vulnerable packages")
+				default:
+					suggestions = append(suggestions, "Run `npm audit fix` to fix npm vulnerabilities")
+				}
+			case "php":
+				suggestions = append(suggestions, "Run `composer update` to update vulnerable PHP packages")
+			case "rust":
+				suggestions = append(suggestions, "Run `cargo update` to update vulnerable Rust crates")
+			case "python":
+				suggestions = append(suggestions, "Update vulnerable Python packages listed in pip-audit output")
+			}
+		}
+	}
+
+	return suggestions
+}
+
+// HasSecurityIssues reports whether any audit found vulnerabilities. Audits
+// that could not run are warnings, not failures.
+func HasSecurityIssues(results []SecurityResult) bool {
+	for _, r := range results {
+		if r.Status == AuditVulnerable {
+			return true
+		}
+	}
+	return false
+}
+```
+
+`internal/doctor/drift.go`:
+
+```go
+package doctor
+
+import (
+	"path/filepath"
+	"strings"
+)
+
+// DriftInfo is the result of comparing a dependency file with its lockfile.
+type DriftInfo struct {
+	DepFile   string
+	LockFile  string
+	Ecosystem string
+	Status    DriftStatus
+	Detail    string // what differs, why it could not be compared, or the parse error
+}
+
+// DriftStatus categorizes drift status.
+type DriftStatus int
+
+const (
+	// DriftStatusOK: contents were compared and agree.
+	DriftStatusOK DriftStatus = iota
+	// DriftStatusOutdated: contents were compared and the lockfile does not
+	// match the dependency file.
+	DriftStatusOutdated
+	// DriftStatusUnknown: this lockfile format is not compared; nothing is
+	// claimed either way.
+	DriftStatusUnknown
+	// DriftStatusInvalid: the dependency file or lockfile could not be parsed.
+	DriftStatusInvalid
+)
+
+// nodeLockfiles lists Node lockfiles in the order drift checks prefer them.
+var nodeLockfiles = []string{"package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb"}
+
+// pythonProjectLockfiles lists lockfiles that may accompany pyproject.toml.
+var pythonProjectLockfiles = []string{"poetry.lock", "uv.lock", "pdm.lock"}
+
+// CheckDrift compares each dependency file in dir with its lockfile by
+// content (file modification times are never used). A dependency file whose
+// lockfile is absent produces no entry: ScanProject reports missing
+// lockfiles, so each one is counted once.
+func CheckDrift(dir string) []DriftInfo {
+	var results []DriftInfo
+	exists := func(name string) bool { return fileExists(filepath.Join(dir, name)) }
+	first := func(names []string) string {
+		for _, n := range names {
+			if exists(n) {
+				return n
+			}
+		}
+		return ""
+	}
+
+	if exists("package.json") {
+		if lf := first(nodeLockfiles); lf != "" {
+			results = append(results, checkNodeDrift(dir, lf))
+		}
+	}
+	if exists("composer.json") && exists("composer.lock") {
+		results = append(results, parseOnly("composer.json", "composer.lock", "php", parsesAsJSON(filepath.Join(dir, "composer.lock"))))
+	}
+	if exists("pyproject.toml") {
+		if lf := first(pythonProjectLockfiles); lf != "" {
+			results = append(results, parseOnly("pyproject.toml", lf, "python", parsesAsTOML(filepath.Join(dir, lf))))
+		}
+	}
+	if exists("Pipfile") && exists("Pipfile.lock") {
+		results = append(results, parseOnly("Pipfile", "Pipfile.lock", "python", parsesAsJSON(filepath.Join(dir, "Pipfile.lock"))))
+	}
+	if exists("Cargo.toml") && exists("Cargo.lock") {
+		results = append(results, checkCargoDrift(dir))
+	}
+	if exists("go.mod") && exists("go.sum") {
+		results = append(results, checkGoDrift(dir))
+	}
+	return results
+}
+
+// checkNodeDrift compares package.json's dependency names with the root
+// entry of package-lock.json (v2/v3) or importers["."] of pnpm-lock.yaml.
+// Other Node lockfiles are not compared.
+func checkNodeDrift(dir, lockFile string) DriftInfo {
+	d := DriftInfo{DepFile: "package.json", LockFile: lockFile, Ecosystem: "node"}
+	if lockFile != "package-lock.json" && lockFile != "pnpm-lock.yaml" {
+		d.Status = DriftStatusUnknown
+		d.Detail = "contents not compared"
+		return d
+	}
+	manifest, err := readPackageJSON(dir)
+	if err != nil {
+		return invalid(d, err)
+	}
+
+	var declared, locked nameSet
+	if lockFile == "package-lock.json" {
+		root, ok, err := npmLockRoot(dir)
+		if err != nil {
+			return invalid(d, err)
+		}
+		if !ok {
+			d.Status = DriftStatusUnknown
+			d.Detail = "lockfileVersion 1 has no root entry; contents not compared"
+			return d
+		}
+		declared, locked = manifest.names(true), root.names(true)
+	} else {
+		locked, err = pnpmImporterNames(dir)
+		if err != nil {
+			return invalid(d, err)
+		}
+		declared = manifest.names(false)
+	}
+	return compareNames(d, declared, locked, true)
+}
+
+// checkCargoDrift requires every dependency named in Cargo.toml to be a
+// package in Cargo.lock.
+func checkCargoDrift(dir string) DriftInfo {
+	d := DriftInfo{DepFile: "Cargo.toml", LockFile: "Cargo.lock", Ecosystem: "rust"}
+	declared, err := cargoManifestNames(dir)
+	if err != nil {
+		return invalid(d, err)
+	}
+	locked, err := cargoLockNames(dir)
+	if err != nil {
+		return invalid(d, err)
+	}
+	return compareNames(d, declared, locked, false)
+}
+
+// checkGoDrift requires every go.mod requirement (path and version) to have
+// a go.sum entry.
+func checkGoDrift(dir string) DriftInfo {
+	d := DriftInfo{DepFile: "go.mod", LockFile: "go.sum", Ecosystem: "go"}
+	declared, err := goRequirements(dir)
+	if err != nil {
+		return invalid(d, err)
+	}
+	locked, err := goSumEntries(dir)
+	if err != nil {
+		return invalid(d, err)
+	}
+	return compareNames(d, declared, locked, false)
+}
+
+// compareNames sets d's status from the declared and locked name sets. With
+// both, names locked but no longer declared also count as drift.
+func compareNames(d DriftInfo, declared, locked nameSet, both bool) DriftInfo {
+	var parts []string
+	if missing := declared.minus(locked); len(missing) > 0 {
+		parts = append(parts, "in "+d.DepFile+" but not "+d.LockFile+": "+strings.Join(missing, ", "))
+	}
+	if both {
+		if extra := locked.minus(declared); len(extra) > 0 {
+			parts = append(parts, "in "+d.LockFile+" but not "+d.DepFile+": "+strings.Join(extra, ", "))
+		}
+	}
+	if len(parts) == 0 {
+		d.Status = DriftStatusOK
+		return d
+	}
+	d.Status = DriftStatusOutdated
+	d.Detail = strings.Join(parts, "; ")
+	return d
+}
+
+// parseOnly builds the result for lockfiles that are only checked for
+// well-formedness.
+func parseOnly(depFile, lockFile, ecosystem string, parseErr error) DriftInfo {
+	d := DriftInfo{DepFile: depFile, LockFile: lockFile, Ecosystem: ecosystem}
+	if parseErr != nil {
+		return invalid(d, parseErr)
+	}
+	d.Status = DriftStatusUnknown
+	d.Detail = "lockfile parses; contents not compared"
+	return d
+}
+
+func invalid(d DriftInfo, err error) DriftInfo {
+	d.Status = DriftStatusInvalid
+	d.Detail = err.Error()
+	return d
+}
+
+// PrintDriftReport prints the drift check results.
+func PrintDriftReport(results []DriftInfo) {
+	Section("Dependency Drift")
+
+	if len(results) == 0 {
+		Info("No dependency files to check")
+		return
+	}
+
+	for _, info := range results {
+		switch info.Status {
+		case DriftStatusOK:
+			Good(info.DepFile + " and " + info.LockFile + " agree")
+		case DriftStatusOutdated:
+			Bad(info.LockFile + " is out of date with " + info.DepFile + " (" + info.Detail + ")")
+		case DriftStatusInvalid:
+			Bad(info.DepFile + " / " + info.LockFile + " could not be read: " + info.Detail)
+		default:
+			Info(info.DepFile + " / " + info.LockFile + ": " + info.Detail)
+		}
+	}
+}
+
+// CountDriftIssues counts compared-and-OK, outdated, and unreadable pairs.
+// Pairs whose contents are not compared are not counted.
+func CountDriftIssues(results []DriftInfo) (ok, outdated, invalidCount int) {
+	for _, info := range results {
+		switch info.Status {
+		case DriftStatusOK:
+			ok++
+		case DriftStatusOutdated:
+			outdated++
+		case DriftStatusInvalid:
+			invalidCount++
+		}
+	}
+	return
+}
+
+// GetDriftSuggestions returns suggestions for drift issues.
+func GetDriftSuggestions(results []DriftInfo) []string {
+	var suggestions []string
+	seen := make(map[string]bool)
+
+	for _, info := range results {
+		if info.Status != DriftStatusOutdated && info.Status != DriftStatusInvalid {
+			continue
+		}
+		suggestion := getSyncCommand(info)
+		if suggestion != "" && !seen[suggestion] {
+			suggestions = append(suggestions, suggestion)
+			seen[suggestion] = true
+		}
+	}
+
+	return suggestions
+}
+
+// getSyncCommand returns the command to sync a lockfile.
+func getSyncCommand(info DriftInfo) string {
+	switch info.LockFile {
+	case "package-lock.json":
+		return "Run `npm install` to sync package-lock.json"
+	case "pnpm-lock.yaml":
+		return "Run `pnpm install` to sync pnpm-lock.yaml"
+	case "yarn.lock":
+		return "Run `yarn install` to sync yarn.lock"
+	case "bun.lock", "bun.lockb":
+		return "Run `bun install` to sync " + info.LockFile
+	case "composer.lock":
+		return "Run `composer update --lock` to sync composer.lock"
+	case "poetry.lock":
+		return "Run `poetry lock` to sync poetry.lock"
+	case "uv.lock":
+		return "Run `uv lock` to sync uv.lock"
+	case "pdm.lock":
+		return "Run `pdm lock` to sync pdm.lock"
+	case "Pipfile.lock":
+		return "Run `pipenv lock` to sync Pipfile.lock"
+	case "Cargo.lock":
+		return "Run `cargo update --workspace` to sync Cargo.lock"
+	case "go.sum":
+		return "Run `go mod tidy` to sync go.sum"
+	}
+	return ""
+}
+
+// HasDriftIssues reports whether any pair is outdated or unreadable.
+func HasDriftIssues(results []DriftInfo) bool {
+	for _, info := range results {
+		if info.Status == DriftStatusOutdated || info.Status == DriftStatusInvalid {
+			return true
+		}
+	}
+	return false
+}
+```
+
+`internal/doctor/project.go`:
+
+```go
+package doctor
+
+import (
+	"os"
+	"path/filepath"
+)
+
+// ProjectFileInfo holds information about a detected project file.
+type ProjectFileInfo struct {
+	Name      string
+	Path      string
+	Exists    bool
+	Type      FileType
+	Ecosystem string
+}
+
+// FileType categorizes project files.
+type FileType int
+
+const (
+	FileTypeDependency FileType = iota
+	FileTypeLock
+	FileTypeBuild
+)
+
+// ProjectFileSpec defines a project file to detect.
+type ProjectFileSpec struct {
+	Name      string
+	Type      FileType
+	Ecosystem string
+}
+
+// projectFileSpecs defines all project files to check.
+var projectFileSpecs = []ProjectFileSpec{
+	// Node.js
+	{Name: "package.json", Type: FileTypeDependency, Ecosystem: "node"},
+	{Name: "package-lock.json", Type: FileTypeLock, Ecosystem: "node"},
+	{Name: "yarn.lock", Type: FileTypeLock, Ecosystem: "node"},
+	{Name: "pnpm-lock.yaml", Type: FileTypeLock, Ecosystem: "node"},
+	{Name: "bun.lock", Type: FileTypeLock, Ecosystem: "node"},
+	{Name: "bun.lockb", Type: FileTypeLock, Ecosystem: "node"},
+
+	// PHP
+	{Name: "composer.json", Type: FileTypeDependency, Ecosystem: "php"},
+	{Name: "composer.lock", Type: FileTypeLock, Ecosystem: "php"},
+
+	// Python
+	{Name: "pyproject.toml", Type: FileTypeDependency, Ecosystem: "python"},
+	{Name: "requirements.txt", Type: FileTypeDependency, Ecosystem: "python"},
+	{Name: "poetry.lock", Type: FileTypeLock, Ecosystem: "python"},
+	{Name: "uv.lock", Type: FileTypeLock, Ecosystem: "python"},
+	{Name: "pdm.lock", Type: FileTypeLock, Ecosystem: "python"},
+	{Name: "Pipfile", Type: FileTypeDependency, Ecosystem: "python"},
+	{Name: "Pipfile.lock", Type: FileTypeLock, Ecosystem: "python"},
+
+	// Rust
+	{Name: "Cargo.toml", Type: FileTypeDependency, Ecosystem: "rust"},
+	{Name: "Cargo.lock", Type: FileTypeLock, Ecosystem: "rust"},
+
+	// Go
+	{Name: "go.mod", Type: FileTypeDependency, Ecosystem: "go"},
+	{Name: "go.sum", Type: FileTypeLock, Ecosystem: "go"},
+
+	// Java
+	{Name: "pom.xml", Type: FileTypeBuild, Ecosystem: "maven"},
+	{Name: "build.gradle", Type: FileTypeBuild, Ecosystem: "gradle"},
+	{Name: "build.gradle.kts", Type: FileTypeBuild, Ecosystem: "gradle"},
+	{Name: "gradle.lockfile", Type: FileTypeLock, Ecosystem: "gradle"},
+}
+
+// ProjectScanResult holds the results of scanning a project directory.
+type ProjectScanResult struct {
+	Files            []ProjectFileInfo
+	MissingLockFiles []string
+	Ecosystems       map[string]bool
+}
+
+// ScanProject scans dir for project files and lists the lockfiles that a
+// present dependency file needs but that are absent.
+func ScanProject(dir string) ProjectScanResult {
+	result := ProjectScanResult{
+		Files:      make([]ProjectFileInfo, 0, len(projectFileSpecs)),
+		Ecosystems: make(map[string]bool),
+	}
+	present := make(map[string]bool)
+
+	for _, spec := range projectFileSpecs {
+		path := filepath.Join(dir, spec.Name)
+		exists := fileExists(path)
+		if exists {
+			present[spec.Name] = true
+			result.Ecosystems[spec.Ecosystem] = true
+		}
+		result.Files = append(result.Files, ProjectFileInfo{
+			Name:      spec.Name,
+			Path:      path,
+			Exists:    exists,
+			Type:      spec.Type,
+			Ecosystem: spec.Ecosystem,
+		})
+	}
+
+	for _, spec := range projectFileSpecs {
+		if spec.Type != FileTypeDependency || !present[spec.Name] {
+			continue
+		}
+		if lf := missingLockfile(dir, spec.Name, present); lf != "" {
+			result.MissingLockFiles = append(result.MissingLockFiles, lf)
+		}
+	}
+
+	return result
+}
+
+// missingLockfile returns the lockfile that depFile (present in dir) needs
+// but that is absent, or "" when it needs none or has one:
+//   - package.json: any Node lockfile will do (else package-lock.json);
+//   - pyproject.toml: poetry.lock only for a [tool.poetry] project; PEP 621
+//     projects may use uv.lock, pdm.lock, or no lockfile at all;
+//   - requirements.txt: never (pip has no lockfile);
+//   - go.mod: go.sum only when go.mod has requirements whose sums it must hold.
+func missingLockfile(dir, depFile string, present map[string]bool) string {
+	switch depFile {
+	case "package.json":
+		for _, lf := range nodeLockfiles {
+			if present[lf] {
+				return ""
+			}
+		}
+		return "package-lock.json"
+	case "composer.json":
+		if !present["composer.lock"] {
+			return "composer.lock"
+		}
+	case "pyproject.toml":
+		if !present["poetry.lock"] && isPoetryProject(dir) {
+			return "poetry.lock"
+		}
+	case "Pipfile":
+		if !present["Pipfile.lock"] {
+			return "Pipfile.lock"
+		}
+	case "Cargo.toml":
+		if !present["Cargo.lock"] {
+			return "Cargo.lock"
+		}
+	case "go.mod":
+		if !present["go.sum"] {
+			if reqs, err := goRequirements(dir); err == nil && len(reqs) > 0 {
+				return "go.sum"
+			}
+		}
+	}
+	return ""
+}
+
+// fileExists checks if a file exists.
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return !info.IsDir()
+}
+
+// PrintProjectReport prints the project file scan results.
+func PrintProjectReport(result ProjectScanResult) {
+	Section("Project Files")
+
+	hasAnyFiles := false
+
+	// Print dependency files
+	for _, info := range result.Files {
+		if info.Exists && info.Type == FileTypeDependency {
+			hasAnyFiles = true
+			StatusLine(true, info.Name, "")
+		}
+	}
+
+	// Print lock files
+	for _, info := range result.Files {
+		if info.Exists && info.Type == FileTypeLock {
+			hasAnyFiles = true
+			StatusLine(true, info.Name, "")
+		}
+	}
+
+	// Print build files
+	for _, info := range result.Files {
+		if info.Exists && info.Type == FileTypeBuild {
+			hasAnyFiles = true
+			StatusLine(true, info.Name, "")
+		}
+	}
+
+	// Print missing lock files
+	for _, name := range result.MissingLockFiles {
+		Bad(name + " missing")
+	}
+
+	if !hasAnyFiles {
+		Info("No project files detected")
+	}
+}
+
+// GetDetectedEcosystems returns a list of detected ecosystems.
+func GetDetectedEcosystems(result ProjectScanResult) []string {
+	ecosystems := make([]string, 0, len(result.Ecosystems))
+	for eco := range result.Ecosystems {
+		ecosystems = append(ecosystems, eco)
+	}
+	return ecosystems
+}
+
+// HasFile checks if a specific file exists in the scan result.
+func HasFile(result ProjectScanResult, name string) bool {
+	for _, info := range result.Files {
+		if info.Name == name {
+			return info.Exists
+		}
+	}
+	return false
+}
+
+// GetFilesForEcosystem returns all files for a specific ecosystem.
+func GetFilesForEcosystem(result ProjectScanResult, ecosystem string) []ProjectFileInfo {
+	var files []ProjectFileInfo
+	for _, info := range result.Files {
+		if info.Ecosystem == ecosystem && info.Exists {
+			files = append(files, info)
+		}
+	}
+	return files
+}
+```
+
+`internal/doctor/doctor.go`:
+
+```go
+package doctor
+
+import (
+	"os"
+)
+
+// Config holds configuration for the doctor command.
+type Config struct {
+	// Dir is the project directory to diagnose; "" means the current directory.
+	Dir           string
+	SkipEnv       bool
+	SkipSecurity  bool
+	SkipConflicts bool
+	SkipDrift     bool
+}
+
+// Report holds the complete diagnostic report.
+type Report struct {
+	Environment     []RuntimeInfo
+	PackageManagers []PMInfo
+	Project         ProjectScanResult
+	Conflicts       []Conflict
+	Drift           []DriftInfo
+	Security        []SecurityResult
+	Recommendations []string
+}
+
+// Run executes the full diagnostic and returns a report.
+func Run(cfg Config) Report {
+	report := Report{}
+
+	dir := cfg.Dir
+	if dir == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			cwd = "."
+		}
+		dir = cwd
+	}
+
+	// Environment check
+	if !cfg.SkipEnv {
+		report.Environment = CheckEnvironment()
+	}
+
+	// Package manager check
+	report.PackageManagers = CheckPackageManagers()
+
+	// Project file scan
+	report.Project = ScanProject(dir)
+
+	// Conflict detection
+	if !cfg.SkipConflicts {
+		report.Conflicts = DetectConflicts(report.Project)
+	}
+
+	// Drift detection
+	if !cfg.SkipDrift {
+		report.Drift = CheckDrift(dir)
+	}
+
+	// Security audit
+	if !cfg.SkipSecurity {
+		report.Security = RunSecurityAudit(dir, report.Project)
+	}
+
+	// Generate recommendations
+	report.Recommendations = GenerateRecommendations(report)
+
+	return report
+}
+
+// PrintReport prints the complete diagnostic report.
+func PrintReport(report Report, cfg Config) {
+	Header()
+
+	// Environment
+	if !cfg.SkipEnv && len(report.Environment) > 0 {
+		PrintEnvironmentReport(report.Environment)
+	}
+
+	// Package managers
+	if len(report.PackageManagers) > 0 {
+		PrintPMReport(report.PackageManagers)
+	}
+
+	// Project files
+	PrintProjectReport(report.Project)
+
+	// Conflicts
+	if !cfg.SkipConflicts {
+		PrintConflictsReport(report.Conflicts)
+	}
+
+	// Drift
+	if !cfg.SkipDrift && len(report.Drift) > 0 {
+		PrintDriftReport(report.Drift)
+	}
+
+	// Security
+	if !cfg.SkipSecurity && len(report.Security) > 0 {
+		PrintSecurityReport(report.Security)
+	}
+
+	// Recommendations
+	PrintRecommendations(report.Recommendations)
+
+	// Summary
+	PrintSummary(report, cfg)
+
+	Footer()
+}
+
+// GenerateRecommendations generates actionable recommendations based on the report.
+func GenerateRecommendations(report Report) []string {
+	var recommendations []string
+	seen := make(map[string]bool)
+
+	// Add conflict suggestions
+	for _, suggestion := range GetConflictSuggestions(report.Conflicts) {
+		if !seen[suggestion] {
+			recommendations = append(recommendations, suggestion)
+			seen[suggestion] = true
+		}
+	}
+
+	// Add drift suggestions
+	for _, suggestion := range GetDriftSuggestions(report.Drift) {
+		if !seen[suggestion] {
+			recommendations = append(recommendations, suggestion)
+			seen[suggestion] = true
+		}
+	}
+
+	// Add security suggestions
+	for _, suggestion := range GetSecuritySuggestions(report.Security) {
+		if !seen[suggestion] {
+			recommendations = append(recommendations, suggestion)
+			seen[suggestion] = true
+		}
+	}
+
+	// Add missing lockfile suggestions
+	for _, lockFile := range report.Project.MissingLockFiles {
+		suggestion := "Generate missing " + lockFile
+		if !seen[suggestion] {
+			recommendations = append(recommendations, suggestion)
+			seen[suggestion] = true
+		}
+	}
+
+	// Add optional tool suggestions
+	for _, pm := range GetMissingOptionalPMs(report.PackageManagers) {
+		switch pm {
+		case "cargo-audit":
+			suggestion := "Install cargo-audit for Rust security scanning: cargo install cargo-audit"
+			if !seen[suggestion] {
+				recommendations = append(recommendations, suggestion)
+				seen[suggestion] = true
+			}
+		}
+	}
+
+	return recommendations
+}
+
+// PrintRecommendations prints the recommendations section.
+func PrintRecommendations(recommendations []string) {
+	if len(recommendations) == 0 {
+		return
+	}
+
+	Section("Recommendations")
+	for _, r := range recommendations {
+		Recommendation(r)
+	}
+}
+
+// PrintSummary prints a summary of the diagnostic.
+func PrintSummary(report Report, cfg Config) {
+	good, bad, warn := summarize(report, cfg)
+	Summary(good, bad, warn)
+}
+
+// summarize counts passed, failed and warning checks. A missing lockfile is
+// counted once, from the project scan (drift checks skip absent lockfiles).
+func summarize(report Report, cfg Config) (good, bad, warn int) {
+	if !cfg.SkipEnv {
+		installed, missing := CountEnvResults(report.Environment)
+		good += installed
+		bad += missing
+	}
+
+	// Missing package managers are not failures: not all are needed.
+	pmInstalled, _, pmOptional := CountPMResults(report.PackageManagers)
+	good += pmInstalled
+	warn += pmOptional
+
+	if !cfg.SkipConflicts {
+		warn += CountConflicts(report.Conflicts)
+	}
+
+	if !cfg.SkipDrift {
+		ok, outdated, invalid := CountDriftIssues(report.Drift)
+		good += ok
+		bad += outdated + invalid
+	}
+
+	if !cfg.SkipSecurity {
+		secOK, secVuln, secUnavail := CountSecurityIssues(report.Security)
+		good += secOK
+		bad += secVuln
+		warn += secUnavail
+	}
+
+	bad += len(report.Project.MissingLockFiles)
+	return good, bad, warn
+}
+
+// HasIssues checks if the report contains any issues.
+func HasIssues(report Report) bool {
+	// Check for missing lock files
+	if len(report.Project.MissingLockFiles) > 0 {
+		return true
+	}
+
+	// Check for conflicts
+	if len(report.Conflicts) > 0 {
+		return true
+	}
+
+	// Check for drift issues
+	if HasDriftIssues(report.Drift) {
+		return true
+	}
+
+	// Check for security issues
+	if HasSecurityIssues(report.Security) {
+		return true
+	}
+
+	return false
+}
+
+// QuickCheck performs a quick check and returns true if there are issues.
+func QuickCheck() bool {
+	cfg := Config{
+		SkipSecurity: true, // Skip security for quick check
+	}
+	report := Run(cfg)
+	return HasIssues(report)
+}
+```
+
+Then the two one-line edits (both files keep their `os/exec` import for `exec.Command`):
+
+`internal/doctor/pm.go` in `checkPM`:
+
+```go
+	path, err := lookPath(check.Binary)
+```
+
+replaces `path, err := exec.LookPath(check.Binary)`.
+
+`internal/doctor/env.go` in `getVersion`:
+
+```go
+	path, err := lookPath(binary)
+```
+
+replaces `path, err := exec.LookPath(binary)`.
+
+- [ ] **Step 5: Run the tests and the gates**
+
+Run: `go test ./internal/doctor/ -v -run 'Audit|Drift|ScanProject|Missing|RunUses|Unavailable'`
+Expected: PASS — `TestRunSecurityAuditClassifiesToolOutput` (19 subtests), `TestAuditParsersNeverPanicOnMalformedOutput`, `TestUnavailableAuditIsAWarningNeverOK`, `TestCheckDriftComparesContents` (15 subtests), `TestCheckDriftIgnoresModificationTimes`, `TestCheckDriftMalformedFilesNeverPanic`, `TestScanProjectRequiresOnlyRealLockfiles` (11 subtests), `TestMissingLockfileIsCountedOnce`, `TestRunUsesConfigDir`.
+
+Run: `go build ./... && go vet ./... && go test ./... && gofmt -l . && go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.5.0 run ./...`
+Expected: all `ok`, no gofmt output, `0 issues.` (Error strings start lower-case — staticcheck ST1005 rejects `"Cargo.toml: ..."`, hence `"parse Cargo.toml: ..."`.)
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add internal/doctor/
+git commit -m "doctor: failed audits are unavailable, pip-audit object format, no false missing lockfiles, drift compared by content"
+```
+
+---
+## Rulings made in this section
+
+- Ruling: `lock.Generate` returns warnings (`[]string`) instead of writing to stderr or taking an `io.Writer` — the library stays free of I/O side effects and tests assert warnings directly; `cmdLock` prints them to stderr as `warning: ...` — Cost if wrong: a second caller must remember to print them.
+- Ruling: `LockInfo.Hash` stays plain lowercase hex (v1 format); `Verify` also accepts a `sha256:` prefix and any case — v1 files then verify without regeneration — Cost if wrong: none beyond a cosmetic prefix.
+- Ruling: a lockfile that cannot be read fails `xpm lock`; one that cannot be counted is recorded with `packages: 0` and a warning; `bun.lockb` is always 0 with a warning (the size/100 estimate is gone) — `xpm-lock.yaml` must never silently omit a file or show invented numbers — Cost if wrong: a permission problem blocks `xpm lock` until fixed.
+- Ruling: path containment rules are identical on every OS (backslash, drive letter, NUL, `..`, absolute all rejected) and also apply to detection (a lockfile symlinked outside the root is not hashed) — a lock file must not behave differently on Windows CI — Cost if wrong: a Unix file name containing `\` or a leading `X:` cannot be tracked (no real lockfile is named that way).
+- Ruling: `xpm lock` prints results on stdout and warnings/errors on stderr, and drops the "Scanning…"/"Verifying…" banners — consistent with `search`/`workspaces` (human result on stdout) while keeping stdout free of noise — Cost if wrong: cosmetic.
+- Ruling: an audit that could not run (`AuditUnavailable`/`AuditNotInstalled`) is a summary warning and does not make `xpm doctor` exit 1 — a network hiccup must not fail doctor, and the line says "unavailable" — Cost if wrong: a CI that gates only on doctor's exit code passes when an audit silently failed (it is still visible in the output).
+- Ruling: yarn ≥2 projects are reported "unavailable" without running anything (`yarn audit` does not exist there; `yarn npm audit` output is not parsed) — Cost if wrong: Berry users get no audit until a parser is added.
+- Ruling: pip-audit runs `pip-audit -r requirements.txt -f json` when requirements.txt exists; otherwise `pip-audit -f json` on the active environment, labelled "(audited the active Python environment)" — pip-audit cannot audit a PEP 621 project without building it — Cost if wrong: pyproject-only results describe the environment, as before, but now say so.
+- Ruling: pip-audit and cargo-audit findings count as "low" (neither reports a severity word) — never under-report the total — Cost if wrong: severity breakdown is coarse for Python/Rust.
+- Ruling: doctor parses go.mod with `modfile.Parse` (strict), because `ParseLax` silently drops `replace` directives; a go.mod with directives newer than x/mod v0.23.0 knows yields drift "could not be read" and no go.sum requirement — Cost if wrong: a future-directive go.mod shows one Invalid drift line until x/mod is bumped.
+- Ruling: go.sum is required only when go.mod has requirements not redirected by `replace` (fixes a false "go.sum missing" for dependency-free modules) — Cost if wrong: none known.
+- Ruling: composer/poetry/Pipfile/uv/pdm drift is parse-only and reported as `Unknown` ("lockfile parses; contents not compared", an Info line, not counted as passed); unparseable is `Invalid` (failed) — the header's (c) "exists and is parseable" is a check, and passing it does not prove alignment — Cost if wrong: these ecosystems show an info line instead of a green tick.
+- Ruling: doctor's `pm.go`/`env.go` binary lookups go through the same `lookPath` seam — lets `TestRunUsesConfigDir` call `Run` without executing any real tool — Cost if wrong: none (production value is `exec.LookPath`).
+
+## Conflicts with the header
+
+- None with the fixed interfaces (they cover graph and workspace only).
+- Ordering dependency: Task 11 imports `golang.org/x/mod/modfile`, which Task 5 adds to go.mod. The task map already orders 5 before 11; noted in Task 11's Interfaces.
+- The repository's own `xpm-lock.yaml` (v1, go.sum hash from the first commit) is stale today and will be more so after Task 5 changes go.sum. Suggest Task 14 (or the controller) regenerate it with the new `xpm lock` or delete it; P6 file ownership does not list it.
+
+---
+
 ## Section D — Docs (Task 14)
 
 ### Task 14: README — graph, lock, workspaces, cache, doctor
@@ -5311,10 +9990,12 @@ The dependency cache (`xpm cache`) was removed: npm, pip, Cargo, Go and the othe
 
 - [ ] **Step 5: Verify every claim.** For each bullet/line added, point to the code or the test that proves it (write the mapping into your report). Remove or reword anything you cannot prove. `grep -n 'xpm cache\|cache gc\|cache clean' README.md` must only match the removal sentence.
 
+- [ ] **Step 5b: Regenerate the repo's own `xpm-lock.yaml`** (v1, stale) with the new binary: `/tmp/xpm-p6 lock` in the worktree root; check the diff is a v2 file without timestamps; include it in the commit (controller ruling: the file is an xpm artifact).
+
 - [ ] **Step 6: Gates + commit.**
 
 ```bash
 go build ./... && go vet ./... && go test ./... && test -z "$(gofmt -l .)"
-git add README.md
+git add README.md xpm-lock.yaml
 git commit -m "docs(readme): graph, lock, workspaces and doctor match P6 behaviour; cache removed"
 ```
