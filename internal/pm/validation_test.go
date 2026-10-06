@@ -19,7 +19,7 @@ func TestValidatorsRejectLeadingDash(t *testing.T) {
 }
 
 func TestValidatorsStillAcceptRealNames(t *testing.T) {
-	ok := map[ID]string{Npm: "@types/node", Pip: "requests", Composer: "monolog/monolog", Cargo: "serde", GoMod: "github.com/gin-gonic/gin", Maven: "com.google.guava:guava"}
+	ok := map[ID]string{Npm: "@types/node", Pip: "requests", Poetry: "requests", Pipenv: "requests", Composer: "monolog/monolog", Cargo: "serde", GoMod: "github.com/gin-gonic/gin", Maven: "com.google.guava:guava"}
 	for id, name := range ok {
 		if err := ValidatePackageName(name, id); err != nil {
 			t.Errorf("ValidatePackageName(%q, %s) = %v", name, id, err)
@@ -29,6 +29,7 @@ func TestValidatorsStillAcceptRealNames(t *testing.T) {
 		t.Error(err)
 	}
 }
+
 func TestComposerNamesMustBeVendorPackage(t *testing.T) {
 	for _, ok := range []string{"monolog/monolog", "symfony/http-kernel", "doctrine/dbal"} {
 		if err := ValidatePackageName(ok, Composer); err != nil {

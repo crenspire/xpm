@@ -66,7 +66,7 @@ func ValidatePackageName(pkg string, manager ID) error {
 		if !npmPackagePattern.MatchString(pkg) {
 			return NewValidationError("package name", pkg, "invalid npm package name format")
 		}
-	case Pip:
+	case Pip, Poetry, Pipenv:
 		if !pipPackagePattern.MatchString(pkg) {
 			return NewValidationError("package name", pkg, "invalid PyPI package name format")
 		}

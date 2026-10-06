@@ -234,7 +234,7 @@ func TestInstallCandidateRefusesFuzzyMatchNonInteractively(t *testing.T) {
 	ensurePM = func(pm.ID) error { called = true; return nil }
 	t.Cleanup(func() { ensurePM = old })
 	c := candidate{Result: search.Result{Manager: pm.Composer, Name: "expressive/expressive"}}
-	if code := installCandidate(c, "expresss", "", false); code != 1 || called {
+	if code := installCandidate(c, "axioss", "", false); code != 1 || called {
 		t.Fatalf("exit %d, ensurePM called=%v; want refusal before running anything", code, called)
 	}
 }

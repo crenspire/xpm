@@ -100,8 +100,8 @@ func goModuleCandidate(path string) candidate {
 }
 
 // needsRenameConfirmation reports whether installing c would run a tool on a
-// name the user did not type (a fuzzy registry hit such as `expresss` ->
-// `express`). Maven and Gradle only print a snippet, so they never need it.
+// name the user did not type (a fuzzy registry hit such as `axioss` ->
+// `axios`). Maven and Gradle only print a snippet, so they never need it.
 func needsRenameConfirmation(query string, c candidate) bool {
 	if c.Result.Manager == pm.Maven || c.Result.Manager == pm.Gradle {
 		return false

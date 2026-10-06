@@ -141,13 +141,3 @@ func DetectLockFilesForEcosystem(dir string, eco Ecosystem) []ID {
 func HasLockFile(dir string, eco Ecosystem) bool {
 	return len(DetectLockFilesForEcosystem(dir, eco)) > 0
 }
-
-// GetLockFileName returns the first lock file name for a package manager.
-func GetLockFileName(id ID) string {
-	for _, f := range lockFiles {
-		if f.Manager == id {
-			return f.Name
-		}
-	}
-	return ""
-}
