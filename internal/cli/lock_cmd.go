@@ -42,10 +42,13 @@ func generateLock(dir string) int {
 	fmt.Println("Scanning for lockfiles...")
 	fmt.Println()
 
-	unified, err := lock.Generate(dir)
+	unified, warnings, err := lock.Generate(dir)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error generating lock:", err)
 		return 1
+	}
+	for _, w := range warnings {
+		fmt.Fprintln(os.Stderr, "warning:", w)
 	}
 
 	if unified.IsEmpty() {
@@ -58,7 +61,7 @@ func generateLock(dir string) int {
 		return 0
 	}
 
-	if err := lock.WriteUnifiedLock(dir, unified); err != nil {
+	if _, err := lock.WriteUnifiedLock(dir, unified); err != nil {
 		fmt.Fprintln(os.Stderr, "error writing lock file:", err)
 		return 1
 	}
@@ -77,7 +80,7 @@ func generateLock(dir string) int {
 	for _, key := range keys {
 		info := unified.Locks[key]
 		name := formatEcosystemName(key, info.Manager)
-		fmt.Printf("  - %s: %d packages\n", name, info.PackageCnt)
+		fmt.Printf("  - %s: %d packages\n", name, info.Packages)
 	}
 
 	fmt.Println()
