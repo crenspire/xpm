@@ -2,19 +2,24 @@ package runtimes
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
-	"runtime"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/crenspire/xpm/internal/env"
 )
 
-// JavaInstaller installs Java (JDK) versions.
+// adoptiumAPI is the Eclipse Temurin (Adoptium) API.
+var adoptiumAPI = "https://api.adoptium.net"
+
+var javaMajorRe = regexp.MustCompile(`^[0-9]+$`)
+
+// JavaInstaller installs Eclipse Temurin JDKs via the Adoptium API,
+// verified against the checksum the API publishes for each package.
 type JavaInstaller struct{}
 
 func init() {
@@ -22,172 +27,154 @@ func init() {
 }
 
 // Name returns the runtime name.
-func (j *JavaInstaller) Name() string {
-	return "java"
+func (j *JavaInstaller) Name() string { return "java" }
+
+type adoptiumReleases struct {
+	AvailableReleases []int `json:"available_releases"`
+	MostRecentFeature int   `json:"most_recent_feature_release"`
+	MostRecentLTS     int   `json:"most_recent_lts"`
 }
 
-// ListRemote fetches available Java versions from Adoptium API.
-func (j *JavaInstaller) ListRemote(_ context.Context) ([]string, error) {
-	// Use Adoptium API
-	url := "https://api.adoptium.net/v3/info/available_releases"
-	resp, err := http.Get(url)
+type adoptiumPackage struct {
+	Checksum string `json:"checksum"`
+	Link     string `json:"link"`
+	Name     string `json:"name"`
+}
+
+func (j *JavaInstaller) available(ctx context.Context) (adoptiumReleases, error) {
+	var r adoptiumReleases
+	err := fetchJSON(ctx, adoptiumAPI+"/v3/info/available_releases", &r)
+	return r, err
+}
+
+// ListRemote returns the available feature releases (majors: "21", "17", ...).
+func (j *JavaInstaller) ListRemote(ctx context.Context) ([]string, error) {
+	r, err := j.available(ctx)
 	if err != nil {
-		// Fallback to common versions
-		return []string{
-			"21", "20", "19", "17", "11", "8",
-		}, nil
+		return nil, err
 	}
-	defer resp.Body.Close()
-
-	var data struct {
-		Releases []int `json:"available_releases"`
+	versions := make([]string, 0, len(r.AvailableReleases))
+	for _, v := range r.AvailableReleases {
+		versions = append(versions, strconv.Itoa(v))
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		// Fallback
-		return []string{"21", "20", "19", "17", "11", "8"}, nil
-	}
-
-	var versions []string
-	for _, release := range data.Releases {
-		versions = append(versions, fmt.Sprintf("%d", release))
-	}
-
 	return versions, nil
 }
 
-// ValidateVersion validates a Java version string.
-func (j *JavaInstaller) ValidateVersion(version string) error {
-	if version == "" {
-		return fmt.Errorf("version cannot be empty")
+// adoptiumPlatform maps Go's GOOS/GOARCH to Adoptium's os/architecture.
+func adoptiumPlatform(goos, goarch string) (osName, arch string, err error) {
+	osName = map[string]string{"darwin": "mac", "linux": "linux", "windows": "windows"}[goos]
+	arch = map[string]string{"amd64": "x64", "arm64": "aarch64"}[goarch]
+	if osName == "" || arch == "" {
+		return "", "", fmt.Errorf("adoptium publishes no JDK for %s/%s", goos, goarch)
 	}
-	// Java versions are typically single numbers (8, 11, 17, etc.) or semantic versions
-	if version[0] < '0' || version[0] > '9' {
-		return fmt.Errorf("invalid version format")
+	return osName, arch, nil
+}
+
+// javaVersionFromRelease turns "jdk-21.0.12.1+1" into "21.0.12.1+1" and
+// "jdk8u422-b05" into "8u422-b05".
+func javaVersionFromRelease(name string) string {
+	if v, ok := strings.CutPrefix(name, "jdk-"); ok {
+		return v
+	}
+	return strings.TrimPrefix(name, "jdk")
+}
+
+// javaReleaseName is the inverse of javaVersionFromRelease.
+func javaReleaseName(version string) string {
+	if strings.HasPrefix(version, "8u") {
+		return "jdk" + version
+	}
+	return "jdk-" + version
+}
+
+// Resolve maps "latest" (newest feature release), "lts" (newest LTS) and a
+// major ("21") to that major's newest exact release; anything else that
+// starts with a digit is taken as an exact release ("21.0.4+7").
+func (j *JavaInstaller) Resolve(ctx context.Context, spec string) (string, error) {
+	major := spec
+	switch {
+	case spec == "latest" || spec == "lts":
+		r, err := j.available(ctx)
+		if err != nil {
+			return "", err
+		}
+		n := r.MostRecentFeature
+		if spec == "lts" {
+			n = r.MostRecentLTS
+		}
+		if n == 0 {
+			return "", fmt.Errorf("adoptium did not report a %s release", spec)
+		}
+		major = strconv.Itoa(n)
+	case javaMajorRe.MatchString(spec):
+	case spec[0] >= '0' && spec[0] <= '9':
+		return spec, nil
+	default:
+		return "", fmt.Errorf("unknown java version %q: use a major (21), latest, lts or an exact release (21.0.4+7)", spec)
+	}
+	osName, arch, err := adoptiumPlatform(hostOS, hostArch)
+	if err != nil {
+		return "", err
+	}
+	q := url.Values{"architecture": {arch}, "image_type": {"jdk"}, "os": {osName}, "vendor": {"eclipse"}}
+	var assets []struct {
+		ReleaseName string `json:"release_name"`
+	}
+	if err := fetchJSON(ctx, fmt.Sprintf("%s/v3/assets/latest/%s/hotspot?%s", adoptiumAPI, major, q.Encode()), &assets); err != nil {
+		return "", err
+	}
+	if len(assets) == 0 || assets[0].ReleaseName == "" {
+		return "", fmt.Errorf("adoptium has no JDK %s for %s/%s", major, osName, arch)
+	}
+	return javaVersionFromRelease(assets[0].ReleaseName), nil
+}
+
+// Install downloads, verifies and unpacks the JDK. The archive's single top
+// directory is hoisted; on macOS the JDK home (Contents/Home) becomes the root.
+func (j *JavaInstaller) Install(ctx context.Context, req env.InstallRequest) error {
+	osName, arch, err := adoptiumPlatform(hostOS, hostArch)
+	if err != nil {
+		return err
+	}
+	q := url.Values{"architecture": {arch}, "heap_size": {"normal"}, "image_type": {"jdk"}, "jvm_impl": {"hotspot"}, "os": {osName}}
+	name := strings.ReplaceAll(url.PathEscape(javaReleaseName(req.Version)), "+", "%2B")
+	var release struct {
+		Binaries []struct {
+			Package adoptiumPackage `json:"package"`
+		} `json:"binaries"`
+	}
+	if err := fetchJSON(ctx, fmt.Sprintf("%s/v3/assets/release_name/eclipse/%s?%s", adoptiumAPI, name, q.Encode()), &release); err != nil {
+		if isNotFound(err) {
+			return fmt.Errorf("adoptium has no release %s (see: xpm env ls-remote java)", javaReleaseName(req.Version))
+		}
+		return err
+	}
+	if len(release.Binaries) == 0 || release.Binaries[0].Package.Link == "" {
+		return fmt.Errorf("adoptium has no %s JDK package for %s/%s", javaReleaseName(req.Version), osName, arch)
+	}
+	pkg := release.Binaries[0].Package
+	archive, err := downloadVerified(ctx, pkg.Link, pkg.Checksum)
+	if err != nil {
+		return err
+	}
+	defer os.Remove(archive)
+	if err := extractArchive(archive, req.Dest); err != nil {
+		return err
+	}
+	top, err := singleTopDir(req.Dest)
+	if err != nil {
+		return err
+	}
+	if err := hoistDir(req.Dest, top); err != nil {
+		return err
+	}
+	if fi, err := os.Stat(filepath.Join(req.Dest, "Contents", "Home")); err == nil && fi.IsDir() {
+		return hoistDir(req.Dest, "Contents/Home")
 	}
 	return nil
 }
 
-// Install adapts the v1 installer to the v2 interface; the installer
-// rewrite replaces it.
-func (j *JavaInstaller) Install(_ context.Context, req env.InstallRequest) error {
-	if err := j.install(req.Version, req.Dest); err != nil {
-		return err
-	}
-	return j.PostInstall(req.Version, req.Dest)
-}
-
-// Install downloads and installs a Java version.
-func (j *JavaInstaller) install(version string, dest string) error {
-	// Determine platform
-	goos := runtime.GOOS
-	goarch := runtime.GOARCH
-
-	// Map Go arch to Java arch names
-	arch := goarch
-	if goarch == "amd64" {
-		arch = "x64"
-	} else if goarch == "arm64" {
-		arch = "aarch64"
-	}
-
-	// Map Go OS to Java OS names
-	osName := goos
-	if goos == "darwin" {
-		osName = "mac"
-	}
-
-	// Use Adoptium API to get download URL
-	apiURL := fmt.Sprintf("https://api.adoptium.net/v3/binary/latest/%s/ga/%s/%s/jdk/hotspot/normal/adoptium", version, osName, arch)
-	if goos == "darwin" && goarch == "arm64" {
-		apiURL = fmt.Sprintf("https://api.adoptium.net/v3/binary/latest/%s/ga/%s/%s/jdk/hotspot/normal/adoptium", version, "mac", "aarch64")
-	}
-
-	fmt.Printf("Fetching download URL from Adoptium API...\n")
-
-	// Get download link
-	resp, err := http.Get(apiURL + "?redirect=true")
-	if err != nil {
-		return fmt.Errorf("failed to get download URL: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// Follow redirect to get actual download URL
-	downloadURL := resp.Request.URL.String()
-	if downloadURL == "" {
-		return fmt.Errorf("no download URL found")
-	}
-
-	fmt.Printf("Downloading from %s...\n", downloadURL)
-
-	// Download
-	downloadResp, err := http.Get(downloadURL)
-	if err != nil {
-		return fmt.Errorf("failed to download: %w", err)
-	}
-	defer downloadResp.Body.Close()
-
-	if downloadResp.StatusCode != http.StatusOK {
-		return fmt.Errorf("download failed with status %d", downloadResp.StatusCode)
-	}
-
-	// Determine file extension
-	ext := "tar.gz"
-	if goos == "windows" {
-		ext = "zip"
-	}
-
-	// Create temp file
-	tmpFile, err := os.CreateTemp("", "java-*.tmp")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tmpFile.Name())
-
-	if _, err := io.Copy(tmpFile, downloadResp.Body); err != nil {
-		tmpFile.Close()
-		return err
-	}
-	tmpFile.Close()
-
-	// Extract
-	if ext == "zip" {
-		if err := extractZip(tmpFile.Name(), dest); err != nil {
-			return err
-		}
-	} else {
-		if err := extractTarGz(tmpFile.Name(), dest); err != nil {
-			return err
-		}
-	}
-
-	// JDK extracts to jdk-<version>/, move contents up
-	entries, _ := os.ReadDir(dest)
-	for _, entry := range entries {
-		if entry.IsDir() && strings.HasPrefix(entry.Name(), "jdk-") {
-			jdkDir := filepath.Join(dest, entry.Name())
-			subEntries, _ := os.ReadDir(jdkDir)
-			for _, subEntry := range subEntries {
-				oldPath := filepath.Join(jdkDir, subEntry.Name())
-				newPath := filepath.Join(dest, subEntry.Name())
-				os.Rename(oldPath, newPath)
-			}
-			os.Remove(jdkDir)
-			break
-		}
-	}
-
-	return nil
-}
-
-// PostInstall performs post-installation setup.
-func (j *JavaInstaller) PostInstall(version, dest string) error {
-	return nil
-}
-
-// BinaryPaths returns the paths to Java binaries.
+// BinaryPaths returns the JDK binaries.
 func (j *JavaInstaller) BinaryPaths() []string {
-	if runtime.GOOS == "windows" {
-		return []string{"bin\\java.exe", "bin\\javac.exe", "bin\\keytool.exe"}
-	}
-	return []string{"bin/java", "bin/javac", "bin/keytool"}
+	return []string{"bin/java", "bin/javac", "bin/jar", "bin/keytool"}
 }

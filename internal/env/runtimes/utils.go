@@ -391,6 +391,28 @@ func hoistDir(dest, sub string) error {
 	return os.RemoveAll(parked)
 }
 
+// hidden entries), as found in JDK archives ("jdk-21.0.4+7/").
+func singleTopDir(dest string) (string, error) {
+	entries, err := os.ReadDir(dest)
+	if err != nil {
+		return "", err
+	}
+	var dirs []string
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		if !e.IsDir() {
+			return "", fmt.Errorf("archive has %s at its root; expected a single directory", e.Name())
+		}
+		dirs = append(dirs, e.Name())
+	}
+	if len(dirs) != 1 {
+		return "", fmt.Errorf("archive has %d top-level directories; expected 1", len(dirs))
+	}
+	return dirs[0], nil
+}
+
 // copyDirectory copies a directory recursively, handling symlinks.
 func copyDirectory(src, dest string) error {
 	// Ensure destination exists
