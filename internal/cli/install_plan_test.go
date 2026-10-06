@@ -241,3 +241,27 @@ func TestInstallCandidateRefusesFuzzyMatchNonInteractively(t *testing.T) {
 		t.Fatalf("exit %d, ensurePM called=%v; want refusal before running anything", code, called)
 	}
 }
+
+func TestEnsureManagerExplainsManualInstallAndPath(t *testing.T) {
+	withConfig(t, config.Config{AutoInstallPM: true, Interactive: true})
+	oldAsk := askYesNo
+	askYesNo = func(string) (bool, error) { return true, nil }
+	t.Cleanup(func() { askYesNo = oldAsk })
+	ran := 0
+	restoreRun := pm.SetCommandRunner(func(string, ...string) error { ran++; return nil })
+	restoreLook := pm.SetLookPath(func(string) (string, error) { return "", errors.New("not found") })
+	t.Cleanup(func() { restoreRun(); restoreLook() })
+
+	err := ensureManager(pm.Bun)
+	if err == nil {
+		t.Fatal("want an error for bun")
+	}
+	for _, want := range []string{"does not run remote install scripts", "https://bun.sh/docs/installation", "~/.bun/bin", "PATH"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q lacks %q", err, want)
+		}
+	}
+	if ran != 0 {
+		t.Fatalf("ran %d commands; none may run", ran)
+	}
+}

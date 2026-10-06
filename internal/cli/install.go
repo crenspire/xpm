@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -238,7 +239,20 @@ func ensureManager(id pm.ID) error {
 		return fmt.Errorf("%s is not installed", meta.Name)
 	}
 	if err := pm.InstallPM(id); err != nil {
+		var manual *pm.ManualInstallError
+		if errors.As(err, &manual) {
+			return manualInstallError(meta, manual)
+		}
 		return fmt.Errorf("failed to install %s: %w", meta.Name, err)
 	}
 	return nil
+}
+
+// manualInstallError explains a tool xpm will not install itself. If the
+// user installed it already but the shell cannot see it (bun puts itself in
+// ~/.bun/bin, rustup in ~/.cargo/bin), the PATH advice is what they need.
+func manualInstallError(meta pm.Meta, manual *pm.ManualInstallError) error {
+	return fmt.Errorf("%s is not installed; xpm does not run remote install scripts. To install it, %s, then re-run xpm. "+
+		"If it is already installed, restart your shell or add its bin directory to PATH (installers usually print where it went, e.g. ~/.bun/bin or ~/.cargo/bin) so that %q is found",
+		meta.Name, manual.Steps, meta.Binary)
 }
