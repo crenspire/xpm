@@ -44,6 +44,11 @@ func ValidatePackageName(pkg string, manager ID) error {
 		return NewValidationError("package name", "", "cannot be empty")
 	}
 
+	// A leading dash would be parsed as an option by npm/composer/pip/cargo.
+	if strings.HasPrefix(pkg, "-") {
+		return NewValidationError("package name", pkg, "cannot start with '-'")
+	}
+
 	// Check length
 	if len(pkg) < MinPackageNameLength {
 		return NewValidationError("package name", pkg, "too short")
@@ -99,6 +104,11 @@ func ValidatePackageName(pkg string, manager ID) error {
 func ValidateGenericPackageName(pkg string) error {
 	if pkg == "" {
 		return NewValidationError("package name", "", "cannot be empty")
+	}
+
+	// A leading dash would be parsed as an option by npm/composer/pip/cargo.
+	if strings.HasPrefix(pkg, "-") {
+		return NewValidationError("package name", pkg, "cannot start with '-'")
 	}
 
 	if len(pkg) > MaxPackageNameLength {
@@ -201,6 +211,11 @@ func NormalizePackageName(pkg string) string {
 func ValidateVersion(version string) error {
 	if version == "" {
 		return NewValidationError("version", "", "cannot be empty")
+	}
+
+	// A leading dash would be parsed as an option by package managers.
+	if strings.HasPrefix(version, "-") {
+		return NewValidationError("version", version, "cannot start with '-'")
 	}
 
 	// Check length (very long versions are suspicious)
