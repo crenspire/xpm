@@ -121,3 +121,11 @@ func TestSearchWithPipedStdinUsesPlainOutput(t *testing.T) {
 		t.Fatalf("code=%d out=%q, want plain results", code, out)
 	}
 }
+
+func TestFormatAvailabilityStripsControlSequences(t *testing.T) {
+	st := registryStatus{Unavailable: []search.RegistryFailure{{Manager: pm.Npm, Err: errors.New("bad \x1b[2Jresponse\x1b]0;t\x07")}}}
+	out := formatAvailability(st)
+	if strings.Contains(out, "\x1b") || !strings.Contains(out, ": bad response\n") {
+		t.Fatalf("formatAvailability = %q, want sanitized error text", out)
+	}
+}

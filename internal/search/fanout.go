@@ -116,11 +116,16 @@ collect:
 	var rep Report
 	for i, o := range outcomes {
 		if o.err != nil {
-			logx.Info("registry %s failed: %v", calls[i].id, o.err)
-			rep.Unavailable = append(rep.Unavailable, RegistryFailure{Manager: calls[i].id, Err: o.err})
+			err := sanitizedError{o.err}
+			logx.Info("registry %s failed: %v", calls[i].id, err)
+			rep.Unavailable = append(rep.Unavailable, RegistryFailure{Manager: calls[i].id, Err: err})
 			continue
 		}
-		rep.Results = append(rep.Results, o.res...)
+		// Registry text reaches the terminal; strip control sequences here,
+		// once, for every caller.
+		for _, r := range o.res {
+			rep.Results = append(rep.Results, sanitizeResult(r))
+		}
 	}
 	return rep
 }
