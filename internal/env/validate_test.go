@@ -3,8 +3,6 @@ package env
 import (
 	"context"
 	"errors"
-	"go/parser"
-	"go/token"
 	"io"
 	"os"
 	"path/filepath"
@@ -28,8 +26,8 @@ func chdir(t *testing.T, dir string) {
 }
 
 // isolate points HOME at a temp dir, chdirs into another (the repo root has
-// its own .xpm-env) and returns a Manager rooted in a third. Progress
-// output is discarded.
+// its own .xpm-env) and returns a Manager rooted in a third. Shims link to a
+// fake executable path and progress output is discarded.
 func isolate(t *testing.T) *Manager {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
@@ -39,6 +37,7 @@ func isolate(t *testing.T) *Manager {
 	if err != nil {
 		t.Fatal(err)
 	}
+	m.SetExecutable(filepath.Join(t.TempDir(), "xpm"))
 	m.SetOutput(io.Discard)
 	return m
 }
@@ -108,18 +107,5 @@ func TestLocalEnvRejectsPathLikeVersion(t *testing.T) {
 	}
 	if strings.Contains(a.Version, "..") {
 		t.Fatalf("returned path-like version %q", a.Version)
-	}
-}
-
-func TestShimTemplateGuardsVersion(t *testing.T) {
-	code, err := generateShimCode("node", "node", "/opt/xpm env")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := parser.ParseFile(token.NewFileSet(), "shim.go", code, 0); err != nil {
-		t.Fatalf("generated shim is not valid Go: %v", err)
-	}
-	if !strings.Contains(code, "!safeVersion(version)") {
-		t.Fatal("shim does not validate the resolved version before using it as a path")
 	}
 }

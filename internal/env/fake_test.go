@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+
+	"github.com/crenspire/xpm/internal/config"
 )
 
 // fakeRT is the test-only runtime name; the real installers live in
@@ -97,3 +99,7 @@ func installFake(t *testing.T, m *Manager, version, alias string) string {
 	}
 	return dir
 }
+
+// configWithDefaults is the default config (env enabled, ~/.xpm/env), as
+// RunShim sees it when no config file exists.
+func configWithDefaults() config.Config { return config.Load() }

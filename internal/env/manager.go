@@ -11,6 +11,10 @@ import (
 	"github.com/crenspire/xpm/internal/config"
 )
 
+// osExecutable finds the running xpm binary; shims link to it. A seam so
+// tests never point shims at the test binary.
+var osExecutable = os.Executable
+
 // Manager manages runtime versions and environment.
 type Manager struct {
 	config       config.Config
@@ -18,6 +22,7 @@ type Manager struct {
 	runtimesPath string
 	shimsPath    string
 	activePath   string
+	executable   string    // what shims link to (os.Executable, not EvalSymlinks'd)
 	out          io.Writer // progress and status messages
 }
 
@@ -38,12 +43,18 @@ func NewManager(cfg config.Config) (*Manager, error) {
 		envPath = filepath.Join(homeDir, envPath[2:])
 	}
 
+	exe, err := osExecutable()
+	if err != nil {
+		exe = ""
+	}
+
 	m := &Manager{
 		config:       cfg,
 		envPath:      envPath,
 		runtimesPath: filepath.Join(envPath, "runtimes"),
 		shimsPath:    filepath.Join(envPath, "shims"),
 		activePath:   filepath.Join(envPath, "active.json"),
+		executable:   exe,
 		out:          os.Stdout,
 	}
 
@@ -53,6 +64,9 @@ func NewManager(cfg config.Config) (*Manager, error) {
 
 	return m, nil
 }
+
+// SetExecutable changes the path shims link to (tests use a fake binary).
+func (m *Manager) SetExecutable(path string) { m.executable = path }
 
 // SetOutput redirects progress and status messages.
 func (m *Manager) SetOutput(w io.Writer) { m.out = w }
