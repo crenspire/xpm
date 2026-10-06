@@ -6,7 +6,7 @@ Releases are cut from `main` by pushing a `v*` tag. The tag triggers `.github/wo
 
 - CI is green on `develop` and on `main` (`.github/workflows/ci.yml`, including the `env-smoke` job).
 - You have push rights to `crenspire/xpm` (branch `main` and tags).
-- The first release is `v0.1.0`; no tag exists before it, so the install script, the Homebrew cask and `go install ...@latest` have nothing to serve until it is pushed.
+- The first release is `v0.1.0`; no tag exists before it, so the install script and the Homebrew cask have nothing to serve until it is pushed, and `go install ...@latest` installs a pseudo-version of the default branch rather than a release.
 
 ## Cutting a release
 
@@ -57,7 +57,7 @@ The cask is published to a separate repository. Once, before (or after) a tag:
 1. Create the public repository `crenspire/homebrew-tap`.
 2. Create a fine-grained personal access token limited to that repository with **Contents: read and write**.
 3. In `crenspire/xpm`, add it as the repository secret `HOMEBREW_TAP_GITHUB_TOKEN`.
-4. Re-run the release workflow for the tag, or let the next tag publish the cask.
+4. The cask is published by the next tag pushed after the secret exists. Re-running the workflow for an already-released tag is not supported (GoReleaser cannot re-upload existing assets); to publish the cask for a release that is already out, cut a patch tag (for example v0.1.1).
 
 Users then install with `brew install --cask crenspire/tap/xpm` (macOS). The release binaries are not notarized, so the cask strips the quarantine attribute when it installs.
 

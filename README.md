@@ -64,7 +64,7 @@ xpm is young. The core commands are solid; the bigger subsystems are being rebui
 
 ## Install
 
-The first release (v0.1.0) has not been tagged yet. Until it is, the install script, the Homebrew cask and `@latest` below have nothing to download; use `go install …@develop` or build from source. See [docs/RELEASING.md](docs/RELEASING.md) for how a release is cut.
+The first release (v0.1.0) has not been tagged yet. Until it is, the install script and the Homebrew cask have nothing to download, and `go install …@latest` installs a pseudo-version of the default branch rather than a release; use `go install …@develop` or build from source. See [docs/RELEASING.md](docs/RELEASING.md) for how a release is cut.
 
 Install script (Linux and macOS; verifies the archive's SHA-256 against the release's `checksums.txt` before installing anything):
 
@@ -211,7 +211,7 @@ xpm outdated --workspace    # all three accept -w / --workspace
 All three read your lockfiles and manifests (the same sources as `xpm graph`) and never run a build tool. A dependency without a locked version, or in an ecosystem the check does not cover, is not checked: xpm says so on stderr and lists the reason under `unchecked` in the JSON.
 
 - `outdated` queries the registries in parallel and prints a table of ecosystem, package, current and latest version and status (up-to-date rows are left out). Each row of the JSON has `ecosystem`, `name`, `current`, `latest` (when known), `status` (`outdated`, `current`, `unavailable` or `not found`) and `error`.
-- `audit` sends the names and versions of your locked packages to `api.osv.dev` (one batched request, nothing else) and prints each vulnerability with its ID, aliases, severity and the versions that fix it. `--timeout` takes a duration such as `30s` or a number of seconds (default `30s`). The JSON has `scanned`, `vulnerable` (each with `ecosystem`, `name`, `version` and `vulns` of `id`, `aliases`, `summary`, `severity`, `fixed`) and `unchecked`.
+- `audit` sends the names and versions of your locked packages to `api.osv.dev` (one batch request per 1000 packages, plus one details request per distinct vulnerability found; only package names and versions are sent) and prints each vulnerability with its ID, aliases, severity and the versions that fix it. `--timeout` takes a duration such as `30s` or a number of seconds (default `30s`). The JSON has `scanned`, `vulnerable` (each with `ecosystem`, `name`, `version` and `vulns` of `id`, `aliases`, `summary`, `severity`, `fixed`) and `unchecked`.
 - `why` takes exactly one package and prints, for each version of it in the graph, the dependency chains that lead to it, shortest first. `--limit N` caps the paths shown **per version** (default 10; `0` shows all); the JSON has `package` and `targets` of `id`, `paths` and `truncated`.
 
 Exit codes, the same for all three: `0` nothing to report, `1` something to report, `2` a usage error or a check that could not be completed (see [Scripts and CI](#scripts-and-ci)).
