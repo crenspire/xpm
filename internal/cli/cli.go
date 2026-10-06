@@ -76,39 +76,9 @@ func usage() {
 
 	fmt.Printf("%s%sCommands:%s\n", colorBold, colorYellow, colorReset)
 
-	commands := []struct {
-		name        string
-		aliases     []string
-		description string
-	}{
-		{"install", []string{"i"}, "Install packages or project dependencies"},
-		{"run", []string{"r"}, "Run project scripts (from package.json, etc.)"},
-		{"which", []string{"w"}, "Check which ecosystems have a package"},
-		{"list", []string{"l"}, "List installed packages for current project"},
-		{"update", []string{"u"}, "Update packages in the current project"},
-		{"remove", []string{"rm"}, "Remove a package from the current project"},
-		{"info", nil, "Show detailed package information"},
-		{"lock", nil, "Generate or verify unified lockfile (xpm-lock.yaml)"},
-		{"cache", nil, "Manage dependency cache (tree, size, clean, gc)"},
-		{"graph", []string{"g"}, "Show unified dependency graph across all ecosystems"},
-		{"search", []string{"s"}, "Interactive TUI package search"},
-		{"workspaces", nil, "List detected workspaces/monorepos"},
-		{"env", nil, "Manage runtime versions (node, python, go, java, rust, bun, deno)"},
-		{"doctor", []string{"d"}, "Comprehensive environment & project diagnostics"},
-		{"config", nil, "View or edit configuration"},
-		{"version", []string{"-v"}, "Show version information"},
-		{"help", []string{"-h"}, "Show this help message"},
-		{"man", nil, "Show detailed manual for commands"},
-	}
-
-	for _, cmd := range commands {
-		name := cmd.name
-		if len(cmd.aliases) > 0 {
-			name += ", " + strings.Join(cmd.aliases, ", ")
-		}
-		fmt.Printf("  %s%s%-20s%s %s\n", colorBold, colorCyan, name, colorReset, cmd.description)
-	}
-
+	printCommandTable()
+	fmt.Println()
+	fmt.Println(experimentalNote)
 	fmt.Printf("\n%sRun%s '%sxpm man <command>%s' for detailed help on a specific command.\n", colorBold, colorReset, colorCyan, colorReset)
 }
 

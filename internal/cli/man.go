@@ -53,42 +53,59 @@ func cmdMan(args []string) int {
 	return 0
 }
 
-// listCommands lists all available commands with their descriptions.
-func listCommands() {
-	fmt.Printf("%s%sAvailable commands:%s\n\n", colorBold, colorYellow, colorReset)
+// commandInfo describes one command for the usage and man listings.
+type commandInfo struct {
+	name         string
+	aliases      []string
+	description  string
+	experimental bool
+}
 
-	commands := []struct {
-		name        string
-		aliases     []string
-		description string
-	}{
-		{"install", []string{"i"}, "Install packages or project dependencies"},
-		{"run", []string{"r"}, "Run project scripts (from package.json, etc.)"},
-		{"which", []string{"w"}, "Check which ecosystems have a package"},
-		{"list", []string{"l"}, "List installed packages for current project"},
-		{"update", []string{"u"}, "Update packages in the current project"},
-		{"remove", []string{"rm"}, "Remove a package from the current project"},
-		{"info", nil, "Show detailed package information"},
-		{"lock", nil, "Generate or verify unified lockfile (xpm-lock.yaml)"},
-		{"cache", nil, "Manage dependency cache (tree, size, clean, gc)"},
-		{"graph", []string{"g"}, "Show unified dependency graph across all ecosystems"},
-		{"search", []string{"s"}, "Interactive TUI package search"},
-		{"workspaces", nil, "List detected workspaces/monorepos"},
-		{"env", nil, "Manage runtime versions (node, python, go, java, rust, bun, deno)"},
-		{"doctor", []string{"d"}, "Comprehensive environment & project diagnostics"},
-		{"config", nil, "View or edit configuration"},
-		{"version", []string{"-v"}, "Show version information"},
-		{"help", []string{"-h"}, "Show this help message"},
-		{"man", nil, "Show detailed manual for commands"},
-	}
+// commandTable lists every command Run dispatches, in help order.
+var commandTable = []commandInfo{
+	{"install", []string{"i"}, "Install packages (several at once) or this project's dependencies", false},
+	{"ci", nil, "Frozen install from lockfiles; deletes nothing unasked", false},
+	{"run", []string{"r"}, "Run project scripts (package.json, composer.json, pyproject.toml, Cargo.toml)", false},
+	{"which", []string{"w"}, "Check which ecosystems have a package", false},
+	{"search", []string{"s"}, "Search all registries (TUI on a terminal, plain output otherwise)", false},
+	{"info", nil, "Show detailed package information", false},
+	{"list", []string{"l"}, "List installed packages for the current project", false},
+	{"update", []string{"u"}, "Update packages in the current project", false},
+	{"remove", []string{"rm"}, "Remove a package from the current project", false},
+	{"doctor", []string{"d"}, "Environment & project diagnostics", false},
+	{"config", nil, "View or edit configuration", false},
+	{"env", nil, "Manage runtime versions (node, go, ...)", true},
+	{"graph", []string{"g"}, "Dependency graph across ecosystems", true},
+	{"lock", nil, "Generate or verify the unified lockfile (xpm-lock.yaml)", true},
+	{"workspaces", nil, "List detected workspaces/monorepos", true},
+	{"cache", []string{"cc", "cg"}, "Manage the dependency cache (cc = cache clean, cg = cache gc)", true},
+	{"version", []string{"-v", "-V", "--version"}, "Show version information", false},
+	{"help", []string{"-h", "--help"}, "Show this help message", false},
+	{"man", nil, "Show the detailed manual for a command", false},
+}
 
-	for _, cmd := range commands {
+const experimentalNote = "Experimental commands are being reworked; their behaviour and output may change."
+
+// printCommandTable prints commandTable; shared by usage and `xpm man`.
+func printCommandTable() {
+	for _, cmd := range commandTable {
 		name := cmd.name
 		if len(cmd.aliases) > 0 {
 			name += ", " + strings.Join(cmd.aliases, ", ")
 		}
-		fmt.Printf("  %s%s%-20s%s %s\n", colorBold, colorCyan, name, colorReset, cmd.description)
+		desc := cmd.description
+		if cmd.experimental {
+			desc += " (experimental)"
+		}
+		fmt.Printf("  %s%s%-28s%s %s\n", colorBold, colorCyan, name, colorReset, desc)
 	}
+}
+
+// listCommands lists all available commands with their descriptions.
+func listCommands() {
+	fmt.Printf("%s%sAvailable commands:%s\n\n", colorBold, colorYellow, colorReset)
+
+	printCommandTable()
 	fmt.Println()
 	fmt.Printf("%sRun%s '%sxpm man <command>%s' for detailed help on a specific command.\n", colorBold, colorReset, colorCyan, colorReset)
 }
@@ -143,23 +160,15 @@ func showCommandHelp(command string) {
 
 // normalizeCommand converts aliases to their canonical command names.
 func normalizeCommand(cmd string) string {
-	aliases := map[string]string{
-		"i":      "install",
-		"r":      "run",
-		"w":      "which",
-		"l":      "list",
-		"u":      "update",
-		"rm":     "remove",
-		"g":      "graph",
-		"s":      "search",
-		"d":      "doctor",
-		"-v":     "version",
-		"-h":     "help",
-		"--help": "help",
-	}
-
-	if canonical, ok := aliases[cmd]; ok {
-		return canonical
+	for _, c := range commandTable {
+		if cmd == c.name {
+			return c.name
+		}
+		for _, a := range c.aliases {
+			if cmd == a {
+				return c.name
+			}
+		}
 	}
 	return cmd
 }
