@@ -1,566 +1,441 @@
 package doctor
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
-	"os/exec"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
+)
+
+// AuditStatus is the outcome of one security audit.
+type AuditStatus int
+
+const (
+	// AuditOK: the tool ran and its output reports no vulnerabilities.
+	AuditOK AuditStatus = iota
+	// AuditVulnerable: the tool ran and reported vulnerabilities.
+	AuditVulnerable
+	// AuditNotInstalled: the audit tool is not on PATH; nothing was run.
+	AuditNotInstalled
+	// AuditUnavailable: the tool ran but failed, or its output could not be
+	// parsed. The project's vulnerability status is unknown.
+	AuditUnavailable
 )
 
 // SecurityResult holds the result of a security audit.
 type SecurityResult struct {
 	Ecosystem       string
 	Tool            string
-	Available       bool
+	Status          AuditStatus
 	Vulnerabilities int
-	HighSeverity    int
-	MediumSeverity  int
-	LowSeverity     int
+	HighSeverity    int // high + critical
+	MediumSeverity  int // moderate / medium
+	LowSeverity     int // low + info
 	Summary         string
-	Error           string
 }
 
-// RunSecurityAudit runs security audits for detected ecosystems.
-func RunSecurityAudit(projectResult ProjectScanResult, pmResults []PMInfo) []SecurityResult {
+// severities accumulates vulnerability counts from an audit report.
+type severities struct {
+	total, high, medium, low int
+}
+
+func (s *severities) add(severity string) {
+	s.total++
+	switch strings.ToLower(severity) {
+	case "critical", "high":
+		s.high++
+	case "moderate", "medium":
+		s.medium++
+	default:
+		s.low++
+	}
+}
+
+// auditSpec describes how to run one audit tool and read its output.
+type auditSpec struct {
+	ecosystem string
+	tool      string // shown to the user, e.g. "npm audit"
+	binary    string // looked up on PATH
+	name      string // command actually run
+	args      []string
+	okExit    func(code int) bool // exit codes that still carry a valid report
+	parse     func(stdout []byte) (severities, error)
+	note      string // appended to the summary, e.g. what was audited
+}
+
+func exitZeroOrOne(code int) bool { return code == 0 || code == 1 }
+
+// RunSecurityAudit runs the audit tool of each ecosystem detected in dir.
+func RunSecurityAudit(dir string, project ProjectScanResult) []SecurityResult {
 	var results []SecurityResult
 
-	// Check Node.js projects - detect which package manager to use
-	if HasFile(projectResult, "package.json") {
-		// Detect which package manager based on lockfiles
-		if HasFile(projectResult, "yarn.lock") {
-			results = append(results, auditYarn())
-		} else if HasFile(projectResult, "pnpm-lock.yaml") {
-			results = append(results, auditPnpm())
-		} else if HasFile(projectResult, "bun.lockb") {
-			results = append(results, auditBun())
-		} else {
-			// Default to npm if no lockfile or package-lock.json exists
-			results = append(results, auditNpm())
+	if HasFile(project, "package.json") {
+		switch {
+		case HasFile(project, "yarn.lock"):
+			if isYarnBerry(filepath.Join(dir, "yarn.lock")) {
+				results = append(results, SecurityResult{
+					Ecosystem: "node", Tool: "yarn audit", Status: AuditUnavailable,
+					Summary: "unavailable: yarn 2+ projects are audited with `yarn npm audit`, whose output xpm does not read",
+				})
+			} else {
+				results = append(results, runAudit(dir, yarnAudit))
+			}
+		case HasFile(project, "pnpm-lock.yaml"):
+			results = append(results, runAudit(dir, pnpmAudit))
+		case HasFile(project, "bun.lock") || HasFile(project, "bun.lockb"):
+			results = append(results, runAudit(dir, bunAudit))
+		default:
+			results = append(results, runAudit(dir, npmAudit))
 		}
 	}
 
-	// Check pip if Python project detected
-	if HasFile(projectResult, "requirements.txt") || HasFile(projectResult, "pyproject.toml") {
-		results = append(results, auditPip())
+	if HasFile(project, "requirements.txt") {
+		spec := pipAudit
+		spec.args = []string{"-r", "requirements.txt", "-f", "json"}
+		results = append(results, runAudit(dir, spec))
+	} else if HasFile(project, "pyproject.toml") {
+		spec := pipAudit
+		spec.args = []string{"-f", "json"}
+		spec.note = "audited the active Python environment"
+		results = append(results, runAudit(dir, spec))
 	}
 
-	// Check composer if composer.json exists
-	if HasFile(projectResult, "composer.json") {
-		results = append(results, auditComposer())
+	if HasFile(project, "composer.json") {
+		results = append(results, runAudit(dir, composerAudit))
 	}
 
-	// Check cargo if Cargo.toml exists
-	if HasFile(projectResult, "Cargo.toml") {
-		results = append(results, auditCargo(pmResults))
+	if HasFile(project, "Cargo.toml") {
+		results = append(results, runAudit(dir, cargoAudit))
 	}
 
 	return results
 }
 
-// auditNpm runs npm audit.
-func auditNpm() SecurityResult {
-	result := SecurityResult{
-		Ecosystem: "node",
-		Tool:      "npm audit",
+var (
+	npmAudit = auditSpec{
+		ecosystem: "node", tool: "npm audit", binary: "npm", name: "npm",
+		args: []string{"audit", "--json"}, okExit: exitZeroOrOne, parse: parseNpmAudit,
 	}
-
-	// Check if npm is available
-	if _, err := exec.LookPath("npm"); err != nil {
-		result.Available = false
-		result.Summary = "npm not available"
-		return result
+	pnpmAudit = auditSpec{
+		ecosystem: "node", tool: "pnpm audit", binary: "pnpm", name: "pnpm",
+		args: []string{"audit", "--json"}, okExit: exitZeroOrOne, parse: parseNpmAudit,
 	}
-
-	result.Available = true
-
-	// Run npm audit --json
-	cmd := exec.Command("npm", "audit", "--json")
-	output, _ := cmd.CombinedOutput()
-
-	// Parse JSON output
-	var auditResult struct {
-		Metadata struct {
-			Vulnerabilities struct {
-				Info     int `json:"info"`
-				Low      int `json:"low"`
-				Moderate int `json:"moderate"`
-				High     int `json:"high"`
-				Critical int `json:"critical"`
-				Total    int `json:"total"`
-			} `json:"vulnerabilities"`
-		} `json:"metadata"`
-		// npm v7+ format
-		Vulnerabilities map[string]interface{} `json:"vulnerabilities"`
+	// yarn v1 exits with a bitmask of the severities found (1 info … 16 critical).
+	yarnAudit = auditSpec{
+		ecosystem: "node", tool: "yarn audit", binary: "yarn", name: "yarn",
+		args: []string{"audit", "--json"}, okExit: func(c int) bool { return c >= 0 && c < 32 }, parse: parseYarnAudit,
 	}
-
-	if err := json.Unmarshal(output, &auditResult); err != nil {
-		// Try to parse old format or handle error
-		result.Summary = "OK (no vulnerabilities or unable to parse)"
-		return result
+	bunAudit = auditSpec{
+		ecosystem: "node", tool: "bun audit", binary: "bun", name: "bun",
+		args: []string{"audit", "--json"}, okExit: exitZeroOrOne, parse: parseBunAudit,
 	}
-
-	// Calculate totals
-	total := auditResult.Metadata.Vulnerabilities.Total
-	if total == 0 && len(auditResult.Vulnerabilities) > 0 {
-		total = len(auditResult.Vulnerabilities)
+	pipAudit = auditSpec{
+		ecosystem: "python", tool: "pip-audit", binary: "pip-audit", name: "pip-audit",
+		okExit: exitZeroOrOne, parse: parsePipAudit,
 	}
-
-	result.Vulnerabilities = total
-	result.HighSeverity = auditResult.Metadata.Vulnerabilities.High + auditResult.Metadata.Vulnerabilities.Critical
-	result.MediumSeverity = auditResult.Metadata.Vulnerabilities.Moderate
-	result.LowSeverity = auditResult.Metadata.Vulnerabilities.Low + auditResult.Metadata.Vulnerabilities.Info
-
-	if total == 0 {
-		result.Summary = "OK"
-	} else {
-		result.Summary = strconv.Itoa(total) + " vulnerabilities"
-		if result.HighSeverity > 0 {
-			result.Summary += " (" + strconv.Itoa(result.HighSeverity) + " high)"
-		}
+	// composer audit exits with a bitmask: 1 vulnerable, 2 abandoned packages.
+	composerAudit = auditSpec{
+		ecosystem: "php", tool: "composer audit", binary: "composer", name: "composer",
+		args: []string{"audit", "--format=json"}, okExit: func(c int) bool { return c >= 0 && c <= 3 }, parse: parseComposerAudit,
 	}
-
-	return result
-}
-
-// auditYarn runs yarn audit.
-func auditYarn() SecurityResult {
-	result := SecurityResult{
-		Ecosystem: "node",
-		Tool:      "yarn audit",
+	cargoAudit = auditSpec{
+		ecosystem: "rust", tool: "cargo audit", binary: "cargo-audit", name: "cargo",
+		args: []string{"audit", "--json"}, okExit: exitZeroOrOne, parse: parseCargoAudit,
 	}
+)
 
-	// Check if yarn is available
-	if _, err := exec.LookPath("yarn"); err != nil {
-		result.Available = false
-		result.Summary = "yarn not available"
-		return result
+// runAudit runs one audit and classifies the outcome. A missing tool is
+// AuditNotInstalled; a tool that cannot start, exits with an unexpected
+// code, or prints output that does not parse is AuditUnavailable, never OK.
+func runAudit(dir string, spec auditSpec) SecurityResult {
+	r := SecurityResult{Ecosystem: spec.ecosystem, Tool: spec.tool}
+	if _, err := lookPath(spec.binary); err != nil {
+		r.Status = AuditNotInstalled
+		r.Summary = spec.binary + " not installed"
+		return r
 	}
-
-	result.Available = true
-
-	// Run yarn audit --json
-	cmd := exec.Command("yarn", "audit", "--json")
-	output, _ := cmd.CombinedOutput()
-
-	// Parse yarn audit JSON output (line-delimited JSON)
-	lines := strings.Split(string(output), "\n")
-	total := 0
-	high := 0
-	moderate := 0
-	low := 0
-	vulnDetails := make([]map[string]interface{}, 0)
-
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-
-		var entry map[string]interface{}
-		if err := json.Unmarshal([]byte(line), &entry); err != nil {
-			continue
-		}
-
-		// Yarn audit outputs different types of entries
-		if entryType, ok := entry["type"].(string); ok {
-			if entryType == "auditSummary" {
-				// Summary entry
-				if data, ok := entry["data"].(map[string]interface{}); ok {
-					if vulns, ok := data["vulnerabilities"].(map[string]interface{}); ok {
-						if info, ok := vulns["info"].(float64); ok {
-							low += int(info)
-						}
-						if lowVal, ok := vulns["low"].(float64); ok {
-							low += int(lowVal)
-						}
-						if moderateVal, ok := vulns["moderate"].(float64); ok {
-							moderate += int(moderateVal)
-						}
-						if highVal, ok := vulns["high"].(float64); ok {
-							high += int(highVal)
-						}
-						if critical, ok := vulns["critical"].(float64); ok {
-							high += int(critical)
-						}
-						if totalVal, ok := vulns["total"].(float64); ok {
-							total = int(totalVal)
-						}
-					}
-				}
-			} else if entryType == "auditAdvisory" {
-				// Individual vulnerability entry
-				if data, ok := entry["data"].(map[string]interface{}); ok {
-					vulnDetails = append(vulnDetails, data)
-				}
-			}
-		}
-	}
-
-	// If we didn't get totals from summary, count from details
-	if total == 0 && len(vulnDetails) > 0 {
-		total = len(vulnDetails)
-		// Try to extract severity from details
-		for _, vuln := range vulnDetails {
-			if severity, ok := vuln["severity"].(string); ok {
-				severity = strings.ToLower(severity)
-				if severity == "critical" || severity == "high" {
-					high++
-				} else if severity == "moderate" {
-					moderate++
-				} else {
-					low++
-				}
-			}
-		}
-	}
-
-	result.Vulnerabilities = total
-	result.HighSeverity = high
-	result.MediumSeverity = moderate
-	result.LowSeverity = low
-
-	if total == 0 {
-		result.Summary = "OK"
-	} else {
-		result.Summary = strconv.Itoa(total) + " vulnerabilities"
-		parts := []string{}
-		if high > 0 {
-			parts = append(parts, strconv.Itoa(high)+" high")
-		}
-		if moderate > 0 {
-			parts = append(parts, strconv.Itoa(moderate)+" moderate")
-		}
-		if low > 0 {
-			parts = append(parts, strconv.Itoa(low)+" low")
-		}
-		if len(parts) > 0 {
-			result.Summary += " (" + strings.Join(parts, ", ") + ")"
-		}
-	}
-
-	return result
-}
-
-// auditPnpm runs pnpm audit.
-func auditPnpm() SecurityResult {
-	result := SecurityResult{
-		Ecosystem: "node",
-		Tool:      "pnpm audit",
-	}
-
-	// Check if pnpm is available
-	if _, err := exec.LookPath("pnpm"); err != nil {
-		result.Available = false
-		result.Summary = "pnpm not available"
-		return result
-	}
-
-	result.Available = true
-
-	// Run pnpm audit --json
-	cmd := exec.Command("pnpm", "audit", "--json")
-	output, _ := cmd.CombinedOutput()
-
-	// Parse pnpm audit JSON (similar to npm)
-	var auditResult struct {
-		Metadata struct {
-			Vulnerabilities struct {
-				Info     int `json:"info"`
-				Low      int `json:"low"`
-				Moderate int `json:"moderate"`
-				High     int `json:"high"`
-				Critical int `json:"critical"`
-				Total    int `json:"total"`
-			} `json:"vulnerabilities"`
-		} `json:"metadata"`
-		Vulnerabilities map[string]interface{} `json:"vulnerabilities"`
-	}
-
-	if err := json.Unmarshal(output, &auditResult); err != nil {
-		result.Summary = "OK (no vulnerabilities or unable to parse)"
-		return result
-	}
-
-	total := auditResult.Metadata.Vulnerabilities.Total
-	if total == 0 && len(auditResult.Vulnerabilities) > 0 {
-		total = len(auditResult.Vulnerabilities)
-	}
-
-	result.Vulnerabilities = total
-	result.HighSeverity = auditResult.Metadata.Vulnerabilities.High + auditResult.Metadata.Vulnerabilities.Critical
-	result.MediumSeverity = auditResult.Metadata.Vulnerabilities.Moderate
-	result.LowSeverity = auditResult.Metadata.Vulnerabilities.Low + auditResult.Metadata.Vulnerabilities.Info
-
-	if total == 0 {
-		result.Summary = "OK"
-	} else {
-		result.Summary = strconv.Itoa(total) + " vulnerabilities"
-		parts := []string{}
-		if result.HighSeverity > 0 {
-			parts = append(parts, strconv.Itoa(result.HighSeverity)+" high")
-		}
-		if result.MediumSeverity > 0 {
-			parts = append(parts, strconv.Itoa(result.MediumSeverity)+" moderate")
-		}
-		if result.LowSeverity > 0 {
-			parts = append(parts, strconv.Itoa(result.LowSeverity)+" low")
-		}
-		if len(parts) > 0 {
-			result.Summary += " (" + strings.Join(parts, ", ") + ")"
-		}
-	}
-
-	return result
-}
-
-// auditBun runs bun audit.
-func auditBun() SecurityResult {
-	result := SecurityResult{
-		Ecosystem: "node",
-		Tool:      "bun audit",
-	}
-
-	// Check if bun is available
-	if _, err := exec.LookPath("bun"); err != nil {
-		result.Available = false
-		result.Summary = "bun not available"
-		return result
-	}
-
-	result.Available = true
-
-	// Run bun audit (bun uses npm-compatible audit)
-	cmd := exec.Command("bun", "audit", "--json")
-	output, _ := cmd.CombinedOutput()
-
-	// Parse similar to npm
-	var auditResult struct {
-		Metadata struct {
-			Vulnerabilities struct {
-				Info     int `json:"info"`
-				Low      int `json:"low"`
-				Moderate int `json:"moderate"`
-				High     int `json:"high"`
-				Critical int `json:"critical"`
-				Total    int `json:"total"`
-			} `json:"vulnerabilities"`
-		} `json:"metadata"`
-		Vulnerabilities map[string]interface{} `json:"vulnerabilities"`
-	}
-
-	if err := json.Unmarshal(output, &auditResult); err != nil {
-		result.Summary = "OK (no vulnerabilities or unable to parse)"
-		return result
-	}
-
-	total := auditResult.Metadata.Vulnerabilities.Total
-	if total == 0 && len(auditResult.Vulnerabilities) > 0 {
-		total = len(auditResult.Vulnerabilities)
-	}
-
-	result.Vulnerabilities = total
-	result.HighSeverity = auditResult.Metadata.Vulnerabilities.High + auditResult.Metadata.Vulnerabilities.Critical
-	result.MediumSeverity = auditResult.Metadata.Vulnerabilities.Moderate
-	result.LowSeverity = auditResult.Metadata.Vulnerabilities.Low + auditResult.Metadata.Vulnerabilities.Info
-
-	if total == 0 {
-		result.Summary = "OK"
-	} else {
-		result.Summary = strconv.Itoa(total) + " vulnerabilities"
-		parts := []string{}
-		if result.HighSeverity > 0 {
-			parts = append(parts, strconv.Itoa(result.HighSeverity)+" high")
-		}
-		if result.MediumSeverity > 0 {
-			parts = append(parts, strconv.Itoa(result.MediumSeverity)+" moderate")
-		}
-		if result.LowSeverity > 0 {
-			parts = append(parts, strconv.Itoa(result.LowSeverity)+" low")
-		}
-		if len(parts) > 0 {
-			result.Summary += " (" + strings.Join(parts, ", ") + ")"
-		}
-	}
-
-	return result
-}
-
-// auditPip runs pip-audit if available.
-func auditPip() SecurityResult {
-	result := SecurityResult{
-		Ecosystem: "python",
-		Tool:      "pip-audit",
-	}
-
-	// Check if pip-audit is available
-	if _, err := exec.LookPath("pip-audit"); err != nil {
-		result.Available = false
-		result.Summary = "pip-audit not installed"
-		return result
-	}
-
-	result.Available = true
-
-	// Run pip-audit --format json
-	cmd := exec.Command("pip-audit", "--format", "json")
-	output, err := cmd.CombinedOutput()
-
+	out, code, err := runCommand(dir, spec.name, spec.args...)
 	if err != nil {
-		// pip-audit returns non-zero if vulnerabilities found
-		// Try to parse output anyway
+		r.Status = AuditUnavailable
+		r.Summary = "unavailable: " + err.Error()
+		return r
 	}
-
-	// Parse JSON output
-	var vulns []struct {
-		Name    string `json:"name"`
-		Version string `json:"version"`
-		Vulns   []struct {
-			ID          string   `json:"id"`
-			FixVersions []string `json:"fix_versions"`
-		} `json:"vulns"`
+	if !spec.okExit(code) {
+		r.Status = AuditUnavailable
+		r.Summary = "unavailable: " + spec.tool + " exited with status " + strconv.Itoa(code)
+		return r
 	}
-
-	if err := json.Unmarshal(output, &vulns); err != nil {
-		result.Summary = "OK (no vulnerabilities or unable to parse)"
-		return result
+	sev, err := spec.parse(out)
+	if err != nil {
+		r.Status = AuditUnavailable
+		r.Summary = "unavailable: " + err.Error()
+		return r
 	}
-
-	total := 0
-	for _, pkg := range vulns {
-		total += len(pkg.Vulns)
-	}
-
-	result.Vulnerabilities = total
-
-	if total == 0 {
-		result.Summary = "OK"
+	r.Vulnerabilities = sev.total
+	r.HighSeverity = sev.high
+	r.MediumSeverity = sev.medium
+	r.LowSeverity = sev.low
+	if sev.total == 0 {
+		r.Status = AuditOK
+		r.Summary = "no known vulnerabilities"
 	} else {
-		result.Summary = strconv.Itoa(total) + " vulnerabilities"
+		r.Status = AuditVulnerable
+		r.Summary = formatSeverities(sev)
 	}
-
-	return result
+	if spec.note != "" {
+		r.Summary += " (" + spec.note + ")"
+	}
+	return r
 }
 
-// auditComposer runs composer audit.
-func auditComposer() SecurityResult {
-	result := SecurityResult{
-		Ecosystem: "php",
-		Tool:      "composer audit",
+func formatSeverities(s severities) string {
+	text := strconv.Itoa(s.total) + " vulnerabilities"
+	var parts []string
+	if s.high > 0 {
+		parts = append(parts, strconv.Itoa(s.high)+" high")
 	}
-
-	// Check if composer is available
-	if _, err := exec.LookPath("composer"); err != nil {
-		result.Available = false
-		result.Summary = "composer not available"
-		return result
+	if s.medium > 0 {
+		parts = append(parts, strconv.Itoa(s.medium)+" moderate")
 	}
-
-	result.Available = true
-
-	// Run composer audit --format=json
-	cmd := exec.Command("composer", "audit", "--format=json")
-	output, _ := cmd.CombinedOutput()
-
-	// Parse JSON output
-	var auditResult struct {
-		Advisories map[string][]struct {
-			Title    string `json:"title"`
-			Severity string `json:"severity"`
-		} `json:"advisories"`
+	if s.low > 0 {
+		parts = append(parts, strconv.Itoa(s.low)+" low")
 	}
-
-	if err := json.Unmarshal(output, &auditResult); err != nil {
-		// Composer audit might not be available in older versions
-		result.Summary = "audit not available or no vulnerabilities"
-		return result
+	if len(parts) > 0 {
+		text += " (" + strings.Join(parts, ", ") + ")"
 	}
-
-	total := 0
-	high := 0
-	for _, advs := range auditResult.Advisories {
-		total += len(advs)
-		for _, adv := range advs {
-			if strings.ToLower(adv.Severity) == "high" || strings.ToLower(adv.Severity) == "critical" {
-				high++
-			}
-		}
-	}
-
-	result.Vulnerabilities = total
-	result.HighSeverity = high
-
-	if total == 0 {
-		result.Summary = "OK"
-	} else {
-		result.Summary = strconv.Itoa(total) + " vulnerabilities"
-		if high > 0 {
-			result.Summary += " (" + strconv.Itoa(high) + " high)"
-		}
-	}
-
-	return result
+	return text
 }
 
-// auditCargo runs cargo audit if available.
-func auditCargo(pmResults []PMInfo) SecurityResult {
-	result := SecurityResult{
-		Ecosystem: "rust",
-		Tool:      "cargo audit",
-	}
+// npmSeverityCounts is metadata.vulnerabilities in npm (v6 and v7+) and
+// pnpm audit reports.
+type npmSeverityCounts struct {
+	Info     int  `json:"info"`
+	Low      int  `json:"low"`
+	Moderate int  `json:"moderate"`
+	High     int  `json:"high"`
+	Critical int  `json:"critical"`
+	Total    *int `json:"total"`
+}
 
-	// Check if cargo-audit is available
-	if !IsPMInstalled(pmResults, "cargo-audit") {
-		if _, err := exec.LookPath("cargo-audit"); err != nil {
-			result.Available = false
-			result.Summary = "cargo-audit not installed"
-			return result
+func (c npmSeverityCounts) severities() severities {
+	s := severities{
+		high:   c.High + c.Critical,
+		medium: c.Moderate,
+		low:    c.Low + c.Info,
+	}
+	s.total = s.high + s.medium + s.low
+	if c.Total != nil && *c.Total > s.total {
+		s.total = *c.Total
+	}
+	return s
+}
+
+// parseNpmAudit reads `npm audit --json` (v6 and v7+) and `pnpm audit --json`.
+// The report must carry metadata.vulnerabilities; npm's error object
+// ({"error": {...}}) is reported as an error.
+func parseNpmAudit(out []byte) (severities, error) {
+	var report struct {
+		Error *struct {
+			Code    string `json:"code"`
+			Summary string `json:"summary"`
+		} `json:"error"`
+		Metadata *struct {
+			Vulnerabilities *npmSeverityCounts `json:"vulnerabilities"`
+		} `json:"metadata"`
+	}
+	if err := json.Unmarshal(out, &report); err != nil {
+		return severities{}, fmt.Errorf("could not parse audit output: %w", err)
+	}
+	if report.Error != nil {
+		msg := strings.TrimSpace(report.Error.Code + " " + firstLine(report.Error.Summary))
+		return severities{}, fmt.Errorf("audit failed: %s", msg)
+	}
+	if report.Metadata == nil || report.Metadata.Vulnerabilities == nil {
+		return severities{}, errors.New("audit output has no vulnerability summary")
+	}
+	return report.Metadata.Vulnerabilities.severities(), nil
+}
+
+// parseYarnAudit reads `yarn audit --json` (yarn v1): one JSON object per
+// line, ending with an "auditSummary" object.
+func parseYarnAudit(out []byte) (severities, error) {
+	sc := bufio.NewScanner(bytes.NewReader(out))
+	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	for sc.Scan() {
+		line := bytes.TrimSpace(sc.Bytes())
+		if len(line) == 0 || line[0] != '{' {
+			continue
+		}
+		var entry struct {
+			Type string `json:"type"`
+			Data struct {
+				Vulnerabilities *npmSeverityCounts `json:"vulnerabilities"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(line, &entry); err != nil {
+			continue
+		}
+		if entry.Type == "auditSummary" && entry.Data.Vulnerabilities != nil {
+			return entry.Data.Vulnerabilities.severities(), nil
 		}
 	}
+	return severities{}, errors.New("yarn audit printed no auditSummary")
+}
 
-	result.Available = true
+// parseBunAudit reads `bun audit --json`: an object mapping package names to
+// lists of advisories, each with a "severity".
+func parseBunAudit(out []byte) (severities, error) {
+	var report map[string][]struct {
+		Severity string `json:"severity"`
+	}
+	if err := json.Unmarshal(out, &report); err != nil {
+		return severities{}, fmt.Errorf("could not parse bun audit output: %w", err)
+	}
+	if report == nil {
+		return severities{}, errors.New("bun audit printed no report")
+	}
+	var s severities
+	for _, advisories := range report {
+		for _, a := range advisories {
+			s.add(a.Severity)
+		}
+	}
+	return s, nil
+}
 
-	// Run cargo audit --json
-	cmd := exec.Command("cargo", "audit", "--json")
-	output, _ := cmd.CombinedOutput()
+// pipAuditDependency is one entry of pip-audit's JSON report.
+type pipAuditDependency struct {
+	Name  string `json:"name"`
+	Vulns []struct {
+		ID string `json:"id"`
+	} `json:"vulns"`
+}
 
-	// Parse JSON output
-	var auditResult struct {
-		Vulnerabilities struct {
-			List []struct {
+// parsePipAudit reads `pip-audit -f json` in both formats: the current object
+// {"dependencies": [...], "fixes": [...]} and the legacy top-level array.
+// pip-audit reports no severities, so every finding counts as low.
+func parsePipAudit(out []byte) (severities, error) {
+	trimmed := bytes.TrimSpace(out)
+	var deps []pipAuditDependency
+	switch {
+	case len(trimmed) > 0 && trimmed[0] == '[':
+		if err := json.Unmarshal(trimmed, &deps); err != nil {
+			return severities{}, fmt.Errorf("could not parse pip-audit output: %w", err)
+		}
+	default:
+		var report struct {
+			Dependencies *[]pipAuditDependency `json:"dependencies"`
+		}
+		if err := json.Unmarshal(trimmed, &report); err != nil {
+			return severities{}, fmt.Errorf("could not parse pip-audit output: %w", err)
+		}
+		if report.Dependencies == nil {
+			return severities{}, errors.New("pip-audit output has no dependencies list")
+		}
+		deps = *report.Dependencies
+	}
+	var s severities
+	for _, d := range deps {
+		for range d.Vulns {
+			s.add("")
+		}
+	}
+	return s, nil
+}
+
+// parseComposerAudit reads `composer audit --format=json`. "advisories" maps
+// package names to advisory lists, or is [] when there are none (PHP encodes
+// an empty array that way).
+func parseComposerAudit(out []byte) (severities, error) {
+	var report struct {
+		Advisories json.RawMessage `json:"advisories"`
+	}
+	if err := json.Unmarshal(out, &report); err != nil {
+		return severities{}, fmt.Errorf("could not parse composer audit output: %w", err)
+	}
+	raw := bytes.TrimSpace(report.Advisories)
+	if len(raw) == 0 {
+		return severities{}, errors.New("composer audit output has no advisories field")
+	}
+	type advisory struct {
+		Severity string `json:"severity"`
+	}
+	var lists [][]advisory
+	switch raw[0] {
+	case '[':
+		if err := json.Unmarshal(raw, &lists); err != nil {
+			return severities{}, fmt.Errorf("could not parse composer advisories: %w", err)
+		}
+	case '{':
+		var byPkg map[string][]advisory
+		if err := json.Unmarshal(raw, &byPkg); err != nil {
+			return severities{}, fmt.Errorf("could not parse composer advisories: %w", err)
+		}
+		for _, l := range byPkg {
+			lists = append(lists, l)
+		}
+	default:
+		return severities{}, errors.New("composer advisories is neither an object nor an array")
+	}
+	var s severities
+	for _, l := range lists {
+		for _, a := range l {
+			s.add(a.Severity)
+		}
+	}
+	return s, nil
+}
+
+// parseCargoAudit reads `cargo audit --json`. RustSec advisories carry a
+// CVSS vector rather than a severity word, so findings count as low unless
+// an advisory has an explicit "severity".
+func parseCargoAudit(out []byte) (severities, error) {
+	var report struct {
+		Vulnerabilities *struct {
+			Count int `json:"count"`
+			List  []struct {
 				Advisory struct {
 					Severity string `json:"severity"`
 				} `json:"advisory"`
 			} `json:"list"`
-			Count int `json:"count"`
 		} `json:"vulnerabilities"`
 	}
-
-	if err := json.Unmarshal(output, &auditResult); err != nil {
-		result.Summary = "OK (no vulnerabilities or unable to parse)"
-		return result
+	if err := json.Unmarshal(out, &report); err != nil {
+		return severities{}, fmt.Errorf("could not parse cargo audit output: %w", err)
 	}
-
-	total := auditResult.Vulnerabilities.Count
-	high := 0
-	for _, v := range auditResult.Vulnerabilities.List {
-		if strings.ToLower(v.Advisory.Severity) == "high" || strings.ToLower(v.Advisory.Severity) == "critical" {
-			high++
-		}
+	if report.Vulnerabilities == nil {
+		return severities{}, errors.New("cargo audit output has no vulnerabilities section")
 	}
-
-	result.Vulnerabilities = total
-	result.HighSeverity = high
-
-	if total == 0 {
-		result.Summary = "OK"
-	} else {
-		result.Summary = strconv.Itoa(total) + " vulnerabilities"
-		if high > 0 {
-			result.Summary += " (" + strconv.Itoa(high) + " high)"
-		}
+	var s severities
+	for _, v := range report.Vulnerabilities.List {
+		s.add(v.Advisory.Severity)
 	}
+	if report.Vulnerabilities.Count > s.total {
+		s.low += report.Vulnerabilities.Count - s.total
+		s.total = report.Vulnerabilities.Count
+	}
+	return s, nil
+}
 
-	return result
+// isYarnBerry reports whether a yarn.lock was written by yarn 2+.
+func isYarnBerry(path string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	return bytes.Contains(data, []byte("\n__metadata:")) || bytes.HasPrefix(data, []byte("__metadata:"))
+}
+
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
 }
 
 // PrintSecurityReport prints the security audit results.
@@ -573,33 +448,36 @@ func PrintSecurityReport(results []SecurityResult) {
 	}
 
 	for _, r := range results {
-		if !r.Available {
-			WarnLine(r.Ecosystem+" ("+r.Tool+")", r.Summary)
-		} else if r.Vulnerabilities == 0 {
-			StatusLine(true, r.Ecosystem+" ("+r.Tool+")", r.Summary)
-		} else {
-			// Show detailed breakdown
-			details := r.Summary
-			if r.HighSeverity > 0 {
-				Bad(r.Ecosystem + " (" + r.Tool + "): " + details)
-			} else if r.MediumSeverity > 0 {
-				Warn(r.Ecosystem + " (" + r.Tool + "): " + details)
-			} else {
-				WarnLine(r.Ecosystem+" ("+r.Tool+")", details)
+		label := r.Ecosystem + " (" + r.Tool + ")"
+		switch r.Status {
+		case AuditOK:
+			StatusLine(true, label, r.Summary)
+		case AuditVulnerable:
+			switch {
+			case r.HighSeverity > 0:
+				Bad(label + ": " + r.Summary)
+			case r.MediumSeverity > 0:
+				Warn(label + ": " + r.Summary)
+			default:
+				WarnLine(label, r.Summary)
 			}
+		default:
+			WarnLine(label, r.Summary)
 		}
 	}
 }
 
-// CountSecurityIssues counts security issues.
+// CountSecurityIssues counts audits that passed, found vulnerabilities, or
+// could not run (not installed or unavailable).
 func CountSecurityIssues(results []SecurityResult) (ok, vulnerable, unavailable int) {
 	for _, r := range results {
-		if !r.Available {
-			unavailable++
-		} else if r.Vulnerabilities == 0 {
+		switch r.Status {
+		case AuditOK:
 			ok++
-		} else {
+		case AuditVulnerable:
 			vulnerable++
+		default:
+			unavailable++
 		}
 	}
 	return
@@ -610,21 +488,27 @@ func GetSecuritySuggestions(results []SecurityResult) []string {
 	var suggestions []string
 
 	for _, r := range results {
-		if !r.Available {
+		switch r.Status {
+		case AuditNotInstalled:
 			switch r.Ecosystem {
 			case "rust":
 				suggestions = append(suggestions, "Install cargo-audit for Rust security scanning: cargo install cargo-audit")
 			case "python":
 				suggestions = append(suggestions, "Install pip-audit for Python security scanning: pip install pip-audit")
 			}
-		} else if r.Vulnerabilities > 0 {
+		case AuditUnavailable:
+			suggestions = append(suggestions, "Run `"+r.Tool+"` yourself to see why the audit failed")
+		case AuditVulnerable:
 			switch r.Ecosystem {
 			case "node":
-				if strings.Contains(r.Tool, "yarn") {
+				switch {
+				case strings.Contains(r.Tool, "yarn"):
 					suggestions = append(suggestions, "Run `yarn audit` to see details, then update vulnerable packages")
-				} else if strings.Contains(r.Tool, "pnpm") {
+				case strings.Contains(r.Tool, "pnpm"):
 					suggestions = append(suggestions, "Run `pnpm audit` to see details, then update vulnerable packages")
-				} else {
+				case strings.Contains(r.Tool, "bun"):
+					suggestions = append(suggestions, "Run `bun audit` to see details, then update vulnerable packages")
+				default:
 					suggestions = append(suggestions, "Run `npm audit fix` to fix npm vulnerabilities")
 				}
 			case "php":
@@ -640,10 +524,11 @@ func GetSecuritySuggestions(results []SecurityResult) []string {
 	return suggestions
 }
 
-// HasSecurityIssues checks if there are any security vulnerabilities.
+// HasSecurityIssues reports whether any audit found vulnerabilities. Audits
+// that could not run are warnings, not failures.
 func HasSecurityIssues(results []SecurityResult) bool {
 	for _, r := range results {
-		if r.Available && r.Vulnerabilities > 0 {
+		if r.Status == AuditVulnerable {
 			return true
 		}
 	}

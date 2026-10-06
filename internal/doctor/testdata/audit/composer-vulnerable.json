@@ -1,0 +1,29 @@
+{
+    "advisories": {
+        "guzzlehttp/guzzle": [
+            {
+                "advisoryId": "PKSA-yfw5-9gnj-n2c7",
+                "packageName": "guzzlehttp/guzzle",
+                "affectedVersions": ">=7,<7.4.5",
+                "title": "Change in port should be considered a change in origin",
+                "cve": "CVE-2022-31091",
+                "link": "https://github.com/guzzle/guzzle/security/advisories/GHSA-q559-8m2m-g699",
+                "reportedAt": "2022-06-20T22:24:00+00:00",
+                "sources": [{"name": "GitHub", "remoteId": "GHSA-q559-8m2m-g699"}],
+                "severity": "high"
+            },
+            {
+                "advisoryId": "PKSA-8qx3-n5y5-vvnd",
+                "packageName": "guzzlehttp/guzzle",
+                "affectedVersions": ">=7,<7.4.4",
+                "title": "Cross-domain cookie leakage",
+                "cve": "CVE-2022-29248",
+                "link": "https://github.com/guzzle/guzzle/security/advisories/GHSA-cwmx-hcrq-mhc3",
+                "reportedAt": "2022-05-25T13:21:00+00:00",
+                "sources": [{"name": "GitHub", "remoteId": "GHSA-cwmx-hcrq-mhc3"}],
+                "severity": "medium"
+            }
+        ]
+    },
+    "abandoned": []
+}
