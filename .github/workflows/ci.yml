@@ -18,6 +18,11 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         go-version: ['1.22', 'stable']
+        exclude:
+          # Go 1.22 (EOL) links test binaries without LC_UUID, which current macOS dyld rejects.
+          # 1.22 stays covered as the module floor on Linux and Windows.
+          - os: macos-latest
+            go-version: '1.22'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -25,7 +30,9 @@ jobs:
           go-version: ${{ matrix.go-version }}
           cache: true
       - run: go mod verify
-      - run: go test -race -coverprofile=coverage.out ./...
+      - name: go test
+        shell: bash # PowerShell would split -coverprofile=coverage.out at the dot
+        run: go test -race -coverprofile=coverage.out ./...
       - if: matrix.os == 'ubuntu-latest' && matrix.go-version == 'stable'
         uses: codecov/codecov-action@v4
         with:
@@ -41,7 +48,7 @@ jobs:
           fetch-depth: 0 # needed for new-from-rev
       - uses: actions/setup-go@v5
         with:
-          go-version: stable
+          go-version: '1.25' # must not be newer than the Go that built golangci-lint v2.5.0
       - uses: golangci/golangci-lint-action@v8
         with:
           version: v2.5.0
