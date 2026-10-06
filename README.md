@@ -69,7 +69,7 @@ Or build from source:
 
 ```bash
 git clone https://github.com/crenspire/xpm.git && cd xpm
-make build          # stripped binary at ./xpm (~10 MB)
+make build          # stripped binary at ./xpm (~10–11 MB)
 sudo mv xpm /usr/local/bin/
 ```
 

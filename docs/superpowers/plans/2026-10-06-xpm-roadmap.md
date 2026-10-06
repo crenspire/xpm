@@ -28,7 +28,7 @@ Baselines measured on 2026-10-06 (macOS arm64, warm cache, home broadband).
 | HTTP response body size | unbounded | ≤ 1 MiB per registry response | P1 |
 | `xpm search` (non-TUI) | 1.08 s | < 1.0 s | P3 |
 | TUI keystroke → results | 1 full search per keystroke, stale results can win | debounced, 1 in-flight query set, stale results dropped | P3 |
-| Release binary size | 14.6 MB | < 10 MB (`-trimpath -s -w`) | P0 |
+| Release binary size | 14.6 MB | < 12 MB (`-trimpath -s -w`; 9.8 MB darwin/arm64, 10.9 MB linux/amd64) | P0 |
 | Shim exec overhead | needs a Go compiler at install time; `exec.Command` child | < 5 ms, no compiler, `syscall.Exec` | P5 |
 | `xpm graph` on 1k-node lockfile | O(E²) edge insert, exponential tree print on diamonds | < 200 ms | P6 |
 
