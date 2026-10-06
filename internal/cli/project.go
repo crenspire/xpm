@@ -402,14 +402,20 @@ func cmdCleanInstall(args []string) int {
 		fmt.Println(noProjectFiles)
 		return 1
 	}
-	for _, t := range targets {
-		fmt.Printf("Detected: %s\n", t.Label)
+	// Resolve every target's command first so a failure cannot happen
+	// after something was already deleted or installed.
+	pcs := make([]projectCmd, len(targets))
+	for i, t := range targets {
 		pc, err := projectCmdFor(t)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			return 1
 		}
-		for _, dir := range cleanDirs(pc) {
+		pcs[i] = pc
+	}
+	for i, t := range targets {
+		fmt.Printf("Detected: %s\n", t.Label)
+		for _, dir := range cleanDirs(pcs[i]) {
 			if !fileExists(dir) {
 				continue
 			}

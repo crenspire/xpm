@@ -58,7 +58,6 @@ func TestExtraArgumentsAreAnError(t *testing.T) {
 		"remove": func() int { return cmdRemove([]string{"axios", "lodash"}) },
 		"update": func() int { return cmdUpdate([]string{"axios", "lodash"}) },
 		"list":   func() int { return cmdList([]string{"axios"}) },
-		"search": func() int { return cmdSearch([]string{"axios", "lodash"}) },
 	} {
 		var code int
 		captureStdout(t, func() { code = run() })

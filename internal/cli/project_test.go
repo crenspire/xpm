@@ -194,3 +194,20 @@ func TestGlobalWithoutPackagesIsAnError(t *testing.T) {
 		t.Fatalf("code=%d ran=%v", code, *ran)
 	}
 }
+
+func TestCIValidatesArgumentsBeforeTouchingAnything(t *testing.T) {
+	withConfig(t, config.Config{Interactive: false})
+	dir := inProject(t, "package.json", "pnpm-lock.yaml", "node_modules/")
+	ran := recordTools(t)
+	var code int
+	captureStdout(t, func() { code = cmdCleanInstall([]string{"--bogus"}) })
+	if code == 0 {
+		t.Fatal("ci --bogus exited 0")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "node_modules")); err != nil {
+		t.Errorf("node_modules was touched: %v", err)
+	}
+	if len(*ran) != 0 {
+		t.Errorf("tools ran: %q", *ran)
+	}
+}

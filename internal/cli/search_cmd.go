@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/crenspire/xpm/internal/pm"
 	"github.com/crenspire/xpm/internal/search"
@@ -11,25 +12,18 @@ import (
 
 // cmdSearch handles the search command.
 func cmdSearch(args []string) int {
-	if _, ok := atMostOneArg("search", args); !ok {
-		return 1
-	}
+	// Free text: several words are one query.
+	query := strings.Join(args, " ")
 
 	// The TUI needs a terminal; pipes and CI get plain output.
 	if !cfg.SearchUI.Enabled || !stdoutIsTerminal() {
-		return cmdSearchNonInteractive(args)
-	}
-
-	// Get initial query
-	initialQuery := ""
-	if len(args) > 0 {
-		initialQuery = args[0]
+		return cmdSearchNonInteractive(query)
 	}
 
 	searchOpts := search.OptionsFromConfig(cfg)
 
 	// Run TUI search
-	result, err := tuisearch.Run(initialQuery, searchOpts)
+	result, err := tuisearch.Run(query, searchOpts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return 1
@@ -45,14 +39,13 @@ func cmdSearch(args []string) int {
 }
 
 // cmdSearchNonInteractive provides a fallback non-interactive search.
-func cmdSearchNonInteractive(args []string) int {
-	if len(args) == 0 {
+func cmdSearchNonInteractive(pkg string) int {
+	if pkg == "" {
 		fmt.Fprintln(os.Stderr, "search: missing package name")
 		fmt.Fprintln(os.Stderr, "Usage: xpm search <package>")
 		return 1
 	}
 
-	pkg := args[0]
 	fmt.Printf("Searching for %q...\n\n", pkg)
 
 	searchOpts := search.OptionsFromConfig(cfg)

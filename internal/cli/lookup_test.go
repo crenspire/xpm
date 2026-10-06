@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -86,5 +87,25 @@ func TestAllRegistriesFailedExitsOne(t *testing.T) {
 	captureStdout(t, func() { code = cmdWhich([]string{"axios"}) })
 	if code != 1 {
 		t.Fatalf("exit %d, want 1", code)
+	}
+}
+
+func TestSearchJoinsSeveralWordsIntoOneQuery(t *testing.T) {
+	withConfig(t, config.Config{})
+	old := stdoutIsTerminal
+	stdoutIsTerminal = func() bool { return false }
+	t.Cleanup(func() { stdoutIsTerminal = old })
+	var queries []string
+	oldSearch := searchReport
+	searchReport = func(q string, _ search.Options) (search.Report, error) {
+		queries = append(queries, q)
+		return search.Report{Results: []search.Result{{Manager: pm.Npm, Name: "react-router"}}}, nil
+	}
+	t.Cleanup(func() { searchReport = oldSearch })
+
+	var code int
+	captureStdout(t, func() { code = cmdSearch([]string{"react", "router"}) })
+	if code != 0 || !reflect.DeepEqual(queries, []string{"react router"}) {
+		t.Fatalf("code=%d queries=%q, want 0 and [\"react router\"]", code, queries)
 	}
 }
