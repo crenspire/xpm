@@ -51,10 +51,61 @@ func ensureRealParentWithin(root, target string) error {
 	return nil
 }
 
+// within reports whether path is root or lies under it (both already resolved).
+func within(root, path string) bool {
+	return path == root || strings.HasPrefix(path, root+string(filepath.Separator))
+}
+
+// mkdirWithin creates dir (and missing parents) one component at a time from
+// root, resolving every existing component. Any component that resolves outside
+// root, or is not a directory, is an error; nothing is created through it.
+func mkdirWithin(root, dir string) error {
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return err
+	}
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return err
+	}
+	rel, err := filepath.Rel(filepath.Clean(root), filepath.Clean(dir))
+	if err != nil {
+		return err
+	}
+	sep := string(filepath.Separator)
+	if rel == ".." || strings.HasPrefix(rel, ".."+sep) {
+		return fmt.Errorf("directory %s is outside the destination", dir)
+	}
+	if rel == "." {
+		return nil
+	}
+	cur := filepath.Clean(root)
+	for _, part := range strings.Split(rel, sep) {
+		cur = filepath.Join(cur, part)
+		if _, err := os.Lstat(cur); errors.Is(err, os.ErrNotExist) {
+			if err := os.Mkdir(cur, 0o755); err != nil {
+				return err
+			}
+		} else if err != nil {
+			return err
+		}
+		resolved, err := filepath.EvalSymlinks(cur)
+		if err != nil {
+			return err
+		}
+		if !within(realRoot, resolved) {
+			return fmt.Errorf("refusing to use %s: it resolves outside the destination", cur)
+		}
+		if fi, err := os.Stat(cur); err != nil || !fi.IsDir() {
+			return fmt.Errorf("%s exists and is not a directory", cur)
+		}
+	}
+	return nil
+}
+
 // writeEntry creates target (inside root) with r's contents. Permissions are
 // limited to 0755 and the owner always gets rw.
 func writeEntry(root, target string, mode os.FileMode, r io.Reader) error {
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+	if err := mkdirWithin(root, filepath.Dir(target)); err != nil {
 		return err
 	}
 	if err := ensureRealParentWithin(root, target); err != nil {
@@ -75,23 +126,30 @@ func writeEntry(root, target string, mode os.FileMode, r io.Reader) error {
 // makeSymlink creates target -> linkname only if linkname is relative and
 // resolves (lexically) inside root.
 func makeSymlink(root, target, linkname string) error {
-	if linkname == "" || filepath.IsAbs(linkname) || filepath.VolumeName(linkname) != "" {
+	if linkname == "" || filepath.IsAbs(linkname) || filepath.VolumeName(linkname) != "" ||
+		strings.HasPrefix(linkname, "/") || strings.HasPrefix(linkname, `\`) {
 		return fmt.Errorf("symlink %s -> %q: only relative targets are allowed", target, linkname)
 	}
-	rootClean := filepath.Clean(root)
-	resolved := filepath.Join(filepath.Dir(target), filepath.FromSlash(linkname))
-	sep := string(filepath.Separator)
-	if resolved != rootClean && !strings.HasPrefix(resolved, rootClean+sep) {
-		return fmt.Errorf("symlink %s -> %q escapes the destination", target, linkname)
-	}
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+	if err := mkdirWithin(root, filepath.Dir(target)); err != nil {
 		return err
 	}
 	if err := ensureRealParentWithin(root, target); err != nil {
 		return err
 	}
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return err
+	}
+	realParent, err := filepath.EvalSymlinks(filepath.Dir(target))
+	if err != nil {
+		return err
+	}
+	native := filepath.FromSlash(linkname)
+	if !within(realRoot, filepath.Join(realParent, native)) {
+		return fmt.Errorf("symlink %s -> %q escapes the destination", target, linkname)
+	}
 	_ = os.Remove(target)
-	return os.Symlink(linkname, target)
+	return os.Symlink(native, target)
 }
 
 // extractTarGz extracts a .tar.gz into dest. Every entry is confined to dest;
@@ -125,7 +183,7 @@ func extractTarGz(src, dest string) error {
 		}
 		switch header.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(target, 0o755); err != nil {
+			if err := mkdirWithin(dest, target); err != nil {
 				return err
 			}
 		case tar.TypeReg:
@@ -141,11 +199,25 @@ func extractTarGz(src, dest string) error {
 			if err != nil {
 				return err
 			}
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			if err := mkdirWithin(dest, filepath.Dir(target)); err != nil {
 				return err
 			}
 			if err := ensureRealParentWithin(dest, target); err != nil {
 				return err
+			}
+			realRoot, err := filepath.EvalSymlinks(dest)
+			if err != nil {
+				return err
+			}
+			realSrc, err := filepath.EvalSymlinks(linkSrc)
+			if err != nil {
+				return err
+			}
+			if !within(realRoot, realSrc) {
+				return fmt.Errorf("hardlink %s -> %q resolves outside the destination", target, header.Linkname)
+			}
+			if fi, err := os.Lstat(linkSrc); err != nil || !fi.Mode().IsRegular() {
+				return fmt.Errorf("hardlink %s -> %q: source is not a regular file", target, header.Linkname)
 			}
 			_ = os.Remove(target)
 			if err := os.Link(linkSrc, target); err != nil {
@@ -172,7 +244,7 @@ func extractZip(src, dest string) error {
 		mode := f.Mode()
 		switch {
 		case mode.IsDir():
-			if err := os.MkdirAll(target, 0o755); err != nil {
+			if err := mkdirWithin(dest, target); err != nil {
 				return err
 			}
 		case mode&os.ModeSymlink != 0:

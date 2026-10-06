@@ -74,11 +74,13 @@ func TestExtractTarGzRejectsTraversal(t *testing.T) {
 
 func TestExtractTarGzRejectsEscapingSymlink(t *testing.T) {
 	for _, link := range []string{"../../etc", "/etc"} {
-		dest, _ := newDest(t)
-		src := makeTarGz(t, []tarEntry{{name: "lnk", link: link, typ: tar.TypeSymlink}})
-		if err := extractTarGz(src, dest); err == nil {
-			t.Fatalf("symlink -> %q accepted; want error", link)
-		}
+		t.Run(link, func(t *testing.T) {
+			dest, _ := newDest(t)
+			src := makeTarGz(t, []tarEntry{{name: "lnk", link: link, typ: tar.TypeSymlink}})
+			if err := extractTarGz(src, dest); err == nil {
+				t.Fatalf("symlink -> %q accepted; want error", link)
+			}
+		})
 	}
 }
 
@@ -139,14 +141,61 @@ func TestExtractZipRejectsTraversal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w.Write([]byte("x"))
-	zw.Close()
-	f.Close()
+	if _, err := w.Write([]byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := extractZip(path, dest); err == nil {
 		t.Fatal("zip traversal accepted")
 	}
 	if _, err := os.Stat(filepath.Join(parent, "evil")); err == nil {
 		t.Fatal("file was written outside dest")
+	}
+}
+
+func TestExtractRejectsSymlinkChainEscape(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks need privileges on Windows")
+	}
+	chain := []tarEntry{
+		{name: "d", link: ".", typ: tar.TypeSymlink},
+		{name: "d/up", link: "..", typ: tar.TypeSymlink},
+	}
+	cases := map[string]tarEntry{
+		"dir":      {name: "up/created-outside/", typ: tar.TypeDir},
+		"hardlink": {name: "stolen", link: "up/secret", typ: tar.TypeLink},
+	}
+	for name, last := range cases {
+		t.Run(name, func(t *testing.T) {
+			dest, parent := newDest(t)
+			if err := os.WriteFile(filepath.Join(parent, "secret"), []byte("s"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			src := makeTarGz(t, append(append([]tarEntry{}, chain...), last))
+			if err := extractTarGz(src, dest); err == nil {
+				t.Fatal("symlink chain escape accepted; want error")
+			}
+			if _, err := os.Stat(filepath.Join(parent, "created-outside")); err == nil {
+				t.Fatal("directory created outside dest")
+			}
+			if _, err := os.Lstat(filepath.Join(dest, "stolen")); err == nil {
+				t.Fatal("hardlink to outside file created")
+			}
+		})
+	}
+}
+
+func TestMakeSymlinkRejectsRootRelativeTargets(t *testing.T) {
+	dest, _ := newDest(t)
+	for _, link := range []string{"/etc", `\evil`} {
+		if err := makeSymlink(dest, filepath.Join(dest, "l"), link); err == nil {
+			t.Fatalf("makeSymlink accepted %q", link)
+		}
 	}
 }
