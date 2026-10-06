@@ -1,15 +1,20 @@
 package cli
 
 import (
+	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 
-	"github.com/crenspire/xpm/internal/config"
 	"github.com/manifoldco/promptui"
+
+	"github.com/crenspire/xpm/internal/config"
+	"github.com/crenspire/xpm/internal/pm"
 )
 
 // cmdConfig handles the config command.
@@ -141,7 +146,7 @@ func editConfig() int {
 
 		switch idx {
 		case 0:
-			currentCfg.Prefer = editPreferList(currentCfg.Prefer)
+			currentCfg.Prefer = editPreferList(os.Stdin, currentCfg.Prefer)
 		case 1:
 			currentCfg.Search = editSearchSettings(currentCfg.Search)
 		case 2:
@@ -164,30 +169,49 @@ func editConfig() int {
 	}
 }
 
-// editPreferList allows editing the prefer list.
-func editPreferList(current []string) []string {
+// editPreferList reads a whole line ("pnpm, pip") from in. Invalid IDs are
+// reported and the current list is kept.
+func editPreferList(in io.Reader, current []string) []string {
 	fmt.Println("\nCurrent prefer list:", strings.Join(current, ", "))
 	fmt.Println("Enter package manager IDs separated by commas (e.g., npm,pip,cargo)")
 	fmt.Println("Leave empty to clear the list.")
 	fmt.Print("> ")
 
-	var input string
-	fmt.Scanln(&input)
-
-	input = strings.TrimSpace(input)
-	if input == "" {
-		return []string{}
+	line, err := bufio.NewReader(in).ReadString('\n')
+	if err != nil && line == "" {
+		return current
 	}
+	list, err := parsePreferList(line)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return current
+	}
+	return list
+}
 
-	parts := strings.Split(input, ",")
-	var result []string
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p != "" {
-			result = append(result, p)
+// parsePreferList splits "pnpm, pip" into IDs and validates them.
+func parsePreferList(s string) ([]string, error) {
+	list := []string{}
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			list = append(list, p)
 		}
 	}
-	return result
+	if errs := pm.ValidateConfig(list, nil); len(errs) > 0 {
+		return nil, errors.Join(errs...)
+	}
+	return list, nil
+}
+
+// parseBool accepts true/false, yes/no, on/off and 1/0.
+func parseBool(s string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "true", "yes", "on", "1":
+		return true, nil
+	case "false", "no", "off", "0":
+		return false, nil
+	}
+	return false, fmt.Errorf("invalid boolean %q (use true or false)", s)
 }
 
 // editSearchSettings allows toggling search ecosystems.
@@ -238,48 +262,51 @@ func editSearchSettings(current map[string]bool) map[string]bool {
 	}
 }
 
-// setConfigValue sets a configuration value from the command line.
+// setConfigValue sets a configuration value from the command line. Values
+// are validated before anything is written.
 func setConfigValue(args []string) int {
-	if len(args) < 2 {
+	if len(args) != 2 {
 		fmt.Fprintln(os.Stderr, "Usage: xpm config set <key> <value>")
 		fmt.Fprintln(os.Stderr, "Keys: prefer, autoInstallPM, interactive, search.<ecosystem>")
 		return 1
 	}
-
-	key := args[0]
-	value := args[1]
-
+	key, value := args[0], args[1]
 	currentCfg := config.Load()
 
-	switch key {
-	case "prefer":
-		if value == "" {
-			currentCfg.Prefer = []string{}
-		} else {
-			currentCfg.Prefer = strings.Split(value, ",")
+	var err error
+	switch {
+	case key == "prefer":
+		currentCfg.Prefer, err = parsePreferList(value)
+	case key == "autoInstallPM":
+		currentCfg.AutoInstallPM, err = parseBool(value)
+	case key == "interactive":
+		currentCfg.Interactive, err = parseBool(value)
+	case strings.HasPrefix(key, "search."):
+		eco := strings.TrimPrefix(key, "search.")
+		var on bool
+		if on, err = parseBool(value); err == nil {
+			if errs := pm.ValidateConfig(nil, map[string]bool{eco: on}); len(errs) > 0 {
+				err = errors.Join(errs...)
+			}
 		}
-	case "autoInstallPM":
-		currentCfg.AutoInstallPM = value == "true" || value == "1" || value == "yes"
-	case "interactive":
-		currentCfg.Interactive = value == "true" || value == "1" || value == "yes"
-	default:
-		if strings.HasPrefix(key, "search.") {
-			eco := strings.TrimPrefix(key, "search.")
+		if err == nil {
 			if currentCfg.Search == nil {
 				currentCfg.Search = map[string]bool{}
 			}
-			currentCfg.Search[eco] = value == "true" || value == "1" || value == "yes"
-		} else {
-			fmt.Fprintf(os.Stderr, "Unknown config key: %s\n", key)
-			return 1
+			currentCfg.Search[eco] = on
 		}
+	default:
+		err = fmt.Errorf("unknown config key %q", key)
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
 	}
 
 	if err := saveConfig(currentCfg); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to save config: %v\n", err)
 		return 1
 	}
-
 	fmt.Printf("Set %s = %s\n", key, value)
 	return 0
 }

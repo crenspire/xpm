@@ -3,8 +3,8 @@ package cli
 import (
 	"fmt"
 	"os"
+	"strings"
 
-	"github.com/crenspire/xpm/internal/config"
 	"github.com/crenspire/xpm/internal/pm"
 	"github.com/crenspire/xpm/internal/search"
 	tuisearch "github.com/crenspire/xpm/internal/tui/search"
@@ -12,37 +12,20 @@ import (
 
 // cmdSearch handles the search command.
 func cmdSearch(args []string) int {
-	cfg := config.Load()
+	// Free text: several words are one query.
+	query := strings.Join(args, " ")
 
-	// Check if TUI is enabled
-	if !cfg.SearchUI.Enabled {
-		// Fallback to non-interactive search
-		return cmdSearchNonInteractive(args)
-	}
-
-	// Get initial query
-	initialQuery := ""
-	if len(args) > 0 {
-		initialQuery = args[0]
+	// The TUI needs a terminal on both stdin and stdout and interactive mode
+	// on; pipes (`echo q | xpm search`) and CI get plain output.
+	if !cfg.SearchUI.Enabled || !cfg.Interactive || !isInteractiveTerminal() {
+		return cmdSearchNonInteractive(query)
 	}
 
-	// Build search options
-	searchOpts := search.Options{
-		Enable: make(map[pm.ID]bool),
-	}
-	for id := range map[pm.ID]struct{}{
-		pm.Npm: {}, pm.Pip: {}, pm.Composer: {}, pm.Cargo: {}, pm.Maven: {},
-	} {
-		name := string(id)
-		enabled := true
-		if v, ok := cfg.Search[name]; ok {
-			enabled = v
-		}
-		searchOpts.Enable[id] = enabled
-	}
+	searchOpts := search.OptionsFromConfig(cfg)
 
 	// Run TUI search
-	result, err := tuisearch.Run(initialQuery, searchOpts)
+	ui := tuisearch.UIOptions{DebounceMs: cfg.SearchUI.DebounceMs, PageSize: cfg.SearchUI.PageSize}
+	result, err := tuisearch.Run(query, searchOpts, ui)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return 1
@@ -58,40 +41,28 @@ func cmdSearch(args []string) int {
 }
 
 // cmdSearchNonInteractive provides a fallback non-interactive search.
-func cmdSearchNonInteractive(args []string) int {
-	if len(args) == 0 {
+func cmdSearchNonInteractive(pkg string) int {
+	if pkg == "" {
 		fmt.Fprintln(os.Stderr, "search: missing package name")
 		fmt.Fprintln(os.Stderr, "Usage: xpm search <package>")
 		return 1
 	}
 
-	pkg := args[0]
 	fmt.Printf("Searching for %q...\n\n", pkg)
 
-	cfg := config.Load()
-	searchOpts := search.Options{
-		Enable: make(map[pm.ID]bool),
-	}
-	for id := range map[pm.ID]struct{}{
-		pm.Npm: {}, pm.Pip: {}, pm.Composer: {}, pm.Cargo: {}, pm.Maven: {},
-	} {
-		name := string(id)
-		enabled := true
-		if v, ok := cfg.Search[name]; ok {
-			enabled = v
-		}
-		searchOpts.Enable[id] = enabled
-	}
+	searchOpts := search.OptionsFromConfig(cfg)
 
-	results, err := search.SearchEverywhereParallel(pkg, searchOpts)
+	rep, err := searchReport(pkg, searchOpts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return 1
 	}
-
+	results := rep.Results
+	st := classify(rep, searchOpts)
 	if len(results) == 0 {
 		fmt.Println("No results found.")
-		return 0
+		fmt.Print(formatAvailability(st))
+		return 1
 	}
 
 	// Print results
@@ -115,58 +86,15 @@ func cmdSearchNonInteractive(args []string) int {
 		fmt.Printf("%s: %s%s - %s\n", ecosystemName, result.Name, version, description)
 	}
 
+	fmt.Print(formatAvailability(registryStatus{Unavailable: st.Unavailable}))
 	return 0
 }
 
-// installFromSearchResult installs a package from a search result.
+// installFromSearchResult installs the package picked in the TUI with the
+// tool picked there. The registry-supplied name is validated before anything
+// else, and no version is pinned (the tool resolves its own latest).
 func installFromSearchResult(result search.Result, pmID pm.ID) int {
-	cfg := config.Load()
-	meta, ok := pm.MetaFor(pmID)
-	if !ok {
-		fmt.Fprintf(os.Stderr, "Unsupported package manager: %s\n", pmID)
-		return 1
-	}
-
-	fmt.Printf("\nInstalling %s via %s...\n\n", result.Name, meta.Name)
-
-	adapter, err := pm.NewAdapter(pmID)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		return 1
-	}
-
-	// Check if PM is installed
-	if !pm.Exists(meta.Binary) {
-		fmt.Printf("%s (%s) is not installed on this system.\n", meta.Name, meta.Binary)
-		if !cfg.AutoInstallPM {
-			fmt.Println("Auto-install is disabled in config. Install it manually and re-run.")
-			return 1
-		}
-
-		yes, err := askYesNo(fmt.Sprintf("Attempt to install %s now?", meta.Name))
-		if err != nil || !yes {
-			fmt.Println("Aborted.")
-			return 1
-		}
-
-		if err := pm.InstallPM(pmID); err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to install package manager: %v\n", err)
-			return 1
-		}
-	}
-
-	// Names here come from registry responses, not the user: validate them too.
-	if err := pm.ValidatePackageName(result.Name, pmID); err != nil {
-		fmt.Fprintf(os.Stderr, "Refusing to install %q: %v\n", result.Name, err)
-		return 1
-	}
-
-	// Install the package
-	if err := adapter.InstallPackage(result.Name, false, nil, result.Extra); err != nil {
-		fmt.Fprintf(os.Stderr, "Package install failed: %v\n", err)
-		return 1
-	}
-
-	fmt.Println("\nDone ✅")
-	return 0
+	c := candidate{Result: result}
+	c.Result.Manager = pmID
+	return installCandidate(c, result.Name, "", false)
 }

@@ -3,6 +3,7 @@ package search
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/crenspire/xpm/internal/pm"
@@ -31,13 +32,7 @@ func (m model) View() string {
 	// Separator (1 line)
 	sections = append(sections, separatorStyle.Render(strings.Repeat("─", m.width)))
 
-	// Calculate available height for results
-	// Header: 2, Query: 1, Separator: 1, Footer: 1 = 5 lines used
-	headerHeight := 5
-	availableHeight := m.height - headerHeight
-	if availableHeight < 1 {
-		availableHeight = 1
-	}
+	availableHeight := m.visibleRows()
 
 	// Results or loading/error
 	if m.loading {
@@ -165,7 +160,7 @@ func renderResult(result search.Result, selected bool, width int) string {
 	}
 
 	// Format description (remaining width after package name)
-	actualUsedWidth := 2 + 12 + len(packageName) + 14 + 8 // indicator + ecosystem + package + version + spacing
+	actualUsedWidth := 2 + 12 + utf8.RuneCountInString(packageName) + 14 + 8 // indicator + ecosystem + package + version + spacing
 	descWidth := width - actualUsedWidth
 	if descWidth < 10 {
 		descWidth = 10
@@ -198,10 +193,9 @@ func renderFooter(m model) string {
 	}
 
 	// Add pagination hints if there are many results
-	hints := "↑/↓: Navigate"
+	hints := "↑/↓ or Ctrl+P/N: Navigate"
 	if len(m.results) > 0 {
-		visibleCount := m.height - 5 // Header + query + separator + footer
-		if len(m.results) > visibleCount {
+		if len(m.results) > m.visibleRows() {
 			hints += "  PgUp/PgDn: Scroll"
 		}
 	}
@@ -219,18 +213,7 @@ func renderRegistrySelector(m model) string {
 	sections = append(sections, title)
 	sections = append(sections, "")
 
-	// Available registries
-	availableRegistries := []struct {
-		id   pm.ID
-		name string
-	}{
-		{pm.Npm, "npm (Node.js)"},
-		{pm.Pip, "pip (Python)"},
-		{pm.Composer, "composer (PHP)"},
-		{pm.Cargo, "cargo (Rust)"},
-		{pm.Maven, "maven (Java)"},
-		{pm.ID("all"), "All Registries"},
-	}
+	availableRegistries := registryChoices
 
 	var lines []string
 	for i, reg := range availableRegistries {
@@ -316,22 +299,9 @@ func renderInstallSelector(m model) string {
 	title := titleStyle.Render("Install using:")
 	sections = append(sections, title)
 
-	// Get available package managers for this ecosystem
-	ecosystem := pm.EcosystemForManager(m.selectedResult.Manager)
-	var availablePMs []pm.ID
-
-	if ecosystem == pm.EcosystemNode {
-		availablePMs = []pm.ID{pm.Npm, pm.Yarn, pm.Pnpm, pm.Bun}
-	} else if ecosystem == pm.EcosystemPython {
-		availablePMs = []pm.ID{pm.Pip, pm.Poetry, pm.Pipenv}
-	} else {
-		// Single PM ecosystem
-		availablePMs = []pm.ID{m.selectedResult.Manager}
-	}
-
 	// Render PM list
 	var pmLines []string
-	for i, pmID := range availablePMs {
+	for i, pmID := range m.installPMs {
 		isSelected := i == m.installCursor
 		meta, _ := pm.MetaFor(pmID)
 		pmName := meta.Name
@@ -359,13 +329,18 @@ func renderInstallSelector(m model) string {
 	return lipgloss.JoinVertical(lipgloss.Left, sections...)
 }
 
-// truncate truncates a string to max length with ellipsis.
+// truncate shortens s to at most max characters (runes, never splitting a
+// multi-byte character), ending in "..." when it cut something.
 func truncate(s string, max int) string {
-	if len(s) <= max {
+	r := []rune(s)
+	if len(r) <= max {
 		return s
 	}
-	if max <= 3 {
-		return s[:max]
+	if max <= 0 {
+		return ""
 	}
-	return s[:max-3] + "..."
+	if max <= 3 {
+		return string(r[:max])
+	}
+	return string(r[:max-3]) + "..."
 }

@@ -15,8 +15,8 @@
 package search
 
 import (
+	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -40,22 +40,26 @@ type Result struct {
 	Extra map[string]string
 }
 
-// Options controls search behavior.
+// Options controls search behavior. Build it with OptionsFromConfig.
 type Options struct {
 	// Enable specifies which package managers to include in the search.
 	// If nil or a key is missing, that ecosystem is searched by default.
 	Enable map[pm.ID]bool
+	// Timeout bounds each registry and therefore the whole fan-out;
+	// 0 means lookupDeadline (2.5 s).
+	Timeout time.Duration
+	// RegistryTimeout overrides Timeout for individual registries.
+	RegistryTimeout map[pm.ID]time.Duration
 }
 
 // DefaultTimeout is the HTTP request timeout for registry queries.
 const DefaultTimeout = 4 * time.Second
 
-// npmRegistryURL is the npm registry base; tests point it at httptest.
-var npmRegistryURL = "https://registry.npmjs.org"
-
-// httpClient is the shared HTTP client for all registry queries.
+// httpClient is the shared HTTP client for all registry queries. Every
+// request carries a context deadline (Options.timeoutFor); the client
+// timeout is only a backstop for callers that pass context.Background().
 var httpClient = &http.Client{
-	Timeout: DefaultTimeout,
+	Timeout: 30 * time.Second,
 }
 
 // Enabled checks if a package manager is enabled in the given options.
@@ -100,17 +104,26 @@ func validatePackageNameForURL(pkg string) error {
 	return nil
 }
 
+// decodeJSON decodes at most maxMetadataBytes of body into v. Errors name
+// the registry and package so "unexpected EOF" is never the whole message.
+func decodeJSON(registry, pkg string, body io.Reader, v any) error {
+	if err := json.NewDecoder(io.LimitReader(body, maxMetadataBytes)).Decode(v); err != nil {
+		return fmt.Errorf("%s: decode %s: %w", registry, pkg, err)
+	}
+	return nil
+}
+
 // existsInNpm checks if a package exists in the npm registry.
 // It fetches /<pkg>/latest (~2-4 KB) instead of the full packument, which is
 // 15 MB+ for packages like typescript and regularly blew the 4s timeout.
 // Returns (nil, nil) if the package is not found.
-func existsInNpm(pkg string) (*Result, error) {
+func existsInNpm(ctx context.Context, pkg string) (*Result, error) {
 	if err := validatePackageNameForURL(pkg); err != nil {
 		return nil, fmt.Errorf("invalid package name: %w", err)
 	}
 	u := fmt.Sprintf("%s/%s/latest", npmRegistryURL, url.PathEscape(pkg))
 	logx.Info("query npm: %s", u)
-	resp, err := httpGet(u)
+	resp, err := httpGet(ctx, u)
 	if err != nil {
 		return nil, err
 	}
@@ -125,8 +138,8 @@ func existsInNpm(pkg string) (*Result, error) {
 		Version     string `json:"version"`
 		Description string `json:"description"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxMetadataBytes)).Decode(&data); err != nil {
-		return nil, fmt.Errorf("npm: decode %s: %w", pkg, err)
+	if err := decodeJSON("npm", pkg, resp.Body, &data); err != nil {
+		return nil, err
 	}
 	return &Result{
 		Manager: pm.Npm,
@@ -137,55 +150,63 @@ func existsInNpm(pkg string) (*Result, error) {
 }
 
 // existsInPip checks if a package exists in the Python Package Index (PyPI).
-// Returns nil if the package is not found.
-func existsInPip(pkg string) (*Result, error) {
+// Returns (nil, nil) if the package is not found.
+func existsInPip(ctx context.Context, pkg string) (*Result, error) {
 	if err := validatePackageNameForURL(pkg); err != nil {
 		return nil, fmt.Errorf("invalid package name: %w", err)
 	}
-	url := fmt.Sprintf("https://pypi.org/pypi/%s/json", url.PathEscape(pkg))
-	logx.Info("query pypi: %s", url)
-	resp, err := httpGet(url)
+	u := fmt.Sprintf("%s/%s/json", pypiURL, url.PathEscape(pkg))
+	logx.Info("query pypi: %s", u)
+	resp, err := httpGet(ctx, u)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		if resp.StatusCode == 404 {
-			return nil, nil // Package not found
-		}
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil
+	}
+	if resp.StatusCode != http.StatusOK {
 		return nil, statusError("pypi", resp)
 	}
 	var data struct {
 		Info struct {
+			Name    string `json:"name"`
 			Summary string `json:"summary"`
 			Version string `json:"version"`
 		} `json:"info"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxMetadataBytes)).Decode(&data); err != nil {
+	if err := decodeJSON("pypi", pkg, resp.Body, &data); err != nil {
 		return nil, err
+	}
+	name := data.Info.Name
+	if name == "" {
+		name = pkg
 	}
 	return &Result{
 		Manager: pm.Pip,
-		Name:    pkg,
+		Name:    name,
 		Info:    data.Info.Summary,
 		Extra:   map[string]string{"version": data.Info.Version},
 	}, nil
 }
 
-// existsInComposer searches for a package in Packagist (PHP/Composer registry).
-// Returns the first matching result or nil if no matches found.
-func existsInComposer(pkg string) (*Result, error) {
+// existsInComposer searches Packagist and returns the hit named like the
+// query: "<q>" or "<q>/<q>" (monolog -> monolog/monolog), then "*/<q>",
+// ignoring case. Packagist ranks by popularity, so that hit is often not
+// first; without one the first hit is returned, which may be unrelated
+// (axios -> swlib/saber). Returns (nil, nil) if there are no hits.
+func existsInComposer(ctx context.Context, pkg string) (*Result, error) {
 	if err := validatePackageNameForURL(pkg); err != nil {
 		return nil, fmt.Errorf("invalid package name: %w", err)
 	}
-	url := fmt.Sprintf("https://packagist.org/search.json?q=%s", url.QueryEscape(pkg))
-	logx.Info("query packagist: %s", url)
-	resp, err := httpGet(url)
+	u := fmt.Sprintf("%s/search.json?q=%s", packagistURL, url.QueryEscape(pkg))
+	logx.Info("query packagist: %s", u)
+	resp, err := httpGet(ctx, u)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		return nil, statusError("packagist", resp)
 	}
 	var data struct {
@@ -194,103 +215,85 @@ func existsInComposer(pkg string) (*Result, error) {
 			Description string `json:"description"`
 		} `json:"results"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxMetadataBytes)).Decode(&data); err != nil {
+	if err := decodeJSON("packagist", pkg, resp.Body, &data); err != nil {
 		return nil, err
 	}
 	if len(data.Results) == 0 {
 		return nil, nil
 	}
-	first := data.Results[0]
+	names := make([]string, len(data.Results))
+	for i, r := range data.Results {
+		names[i] = r.Name
+	}
+	best := data.Results[composerBestHit(pkg, names)]
 	return &Result{
 		Manager: pm.Composer,
-		Name:    first.Name,
-		Info:    first.Description,
+		Name:    best.Name,
+		Info:    best.Description,
 		Extra:   map[string]string{},
 	}, nil
 }
 
-// existsInCrates checks if a crate exists in crates.io (Rust registry).
-// Returns nil if the crate is not found.
-func existsInCrates(pkg string) (*Result, error) {
-	if err := validatePackageNameForURL(pkg); err != nil {
-		return nil, fmt.Errorf("invalid package name: %w", err)
-	}
-	url := fmt.Sprintf("%s/crates/%s?include=default_version", CratesIOURL, url.PathEscape(pkg))
-	logx.Info("query crates.io: %s", url)
-	resp, err := httpGet(url)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		if resp.StatusCode == 404 {
-			return nil, nil // Crate not found
+// composerBestHit returns the index of the Packagist name that best
+// matches query: "<q>" or "<q>/<q>", then "<vendor>/<q>", else the first.
+func composerBestHit(query string, names []string) int {
+	q := strings.ToLower(query)
+	vendorMatch := -1
+	for i, n := range names {
+		n = strings.ToLower(n)
+		if n == q || n == q+"/"+q {
+			return i
 		}
-		return nil, statusError("crates.io", resp)
+		if vendorMatch == -1 && strings.HasSuffix(n, "/"+q) {
+			vendorMatch = i
+		}
 	}
-	var data struct {
-		Crate struct {
-			Description    string `json:"description"`
-			MaxVersion     string `json:"max_version"`
-			DefaultVersion string `json:"default_version"`
-			Name           string `json:"name"`
-		} `json:"crate"`
-	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxMetadataBytes)).Decode(&data); err != nil {
-		return nil, err
-	}
-	version := data.Crate.DefaultVersion // newest stable; max_version can be a prerelease
-	if version == "" {
-		version = data.Crate.MaxVersion
-	}
-	return &Result{
-		Manager: pm.Cargo,
-		Name:    data.Crate.Name,
-		Info:    data.Crate.Description,
-		Extra:   map[string]string{"version": version},
-	}, nil
+	return max(vendorMatch, 0)
 }
 
-// existsInMaven searches for an artifact in Maven Central.
-// Returns the first matching result or nil if no matches found.
-func existsInMaven(pkg string) (*Result, error) {
+// mavenRows is how many Maven Central hits an exact lookup scans for the
+// artifact named like the query.
+const mavenRows = 10
+
+// existsInMaven searches Maven Central and returns the first hit whose
+// group:artifact is the query, or whose artifactId is the query
+// (case-sensitive: "Express" is not "express") outside the npm repackage
+// groups (org.mvnpm*, org.webjars*); without one, the first hit, which may
+// be unrelated. Returns (nil, nil) if there are no hits.
+func existsInMaven(ctx context.Context, pkg string) (*Result, error) {
 	if err := validatePackageNameForURL(pkg); err != nil {
 		return nil, fmt.Errorf("invalid package name: %w", err)
 	}
-	url := fmt.Sprintf("%s?q=%s&rows=5&wt=json", MavenSearchURL, url.QueryEscape(pkg))
-	logx.Info("query maven: %s", url)
-	resp, err := httpGet(url)
+	u := fmt.Sprintf("%s?q=%s&rows=%d&wt=json", mavenSearchURL, url.QueryEscape(pkg), mavenRows)
+	logx.Info("query maven: %s", u)
+	resp, err := httpGet(ctx, u)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		return nil, statusError("maven", resp)
 	}
-	var data struct {
-		Response struct {
-			Docs []struct {
-				ID       string `json:"id"`
-				Latest   string `json:"latestVersion"`
-				Group    string `json:"g"`
-				Artifact string `json:"a"`
-			} `json:"docs"`
-		} `json:"response"`
-	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxMetadataBytes)).Decode(&data); err != nil {
+	var data mavenSearchResponse
+	if err := decodeJSON("maven", pkg, resp.Body, &data); err != nil {
 		return nil, err
 	}
 	if len(data.Response.Docs) == 0 {
 		return nil, nil
 	}
 	d := data.Response.Docs[0]
-	coord := fmt.Sprintf("%s:%s", d.Group, d.Artifact)
+	for _, doc := range data.Response.Docs {
+		if doc.Group+":"+doc.Artifact == pkg || (doc.Artifact == pkg && !isNpmRepackage(doc.Group)) {
+			d = doc
+			break
+		}
+	}
 	return &Result{
 		Manager: pm.Maven,
-		Name:    coord,
+		Name:    d.Group + ":" + d.Artifact,
 		Info:    "Maven artifact",
 		Extra: map[string]string{
-			"version":  d.Latest,
+			"version":  d.LatestVersion,
 			"id":       d.ID,
 			"group":    d.Group,
 			"artifact": d.Artifact,
@@ -298,10 +301,17 @@ func existsInMaven(pkg string) (*Result, error) {
 	}, nil
 }
 
-// lookup is one registry's exact-name check.
+// isNpmRepackage reports whether a Maven group republishes npm packages
+// under their npm names (org.mvnpm*, org.webjars*).
+func isNpmRepackage(group string) bool {
+	g := strings.ToLower(group)
+	return strings.HasPrefix(g, "org.mvnpm") || strings.HasPrefix(g, "org.webjars")
+}
+
+// lookup is one registry's exact-name check. fn must honour ctx.
 type lookup struct {
 	id pm.ID
-	fn func(pkg string) (*Result, error)
+	fn func(ctx context.Context, pkg string) (*Result, error)
 }
 
 // exactLookups is the registry table used by SearchEverywhere, in result order.
@@ -312,82 +322,4 @@ var exactLookups = []lookup{
 	{id: pm.Composer, fn: existsInComposer},
 	{id: pm.Cargo, fn: existsInCrates},
 	{id: pm.Maven, fn: existsInMaven},
-}
-
-// lookupDeadline bounds the whole fan-out. Registry APIs have long tails
-// (crates.io has been measured at 46s, Maven search stalls without ever
-// answering), so a registry that misses the deadline is reported as timed
-// out instead of holding up the answer.
-var lookupDeadline = 2500 * time.Millisecond
-
-var (
-	// ErrAllRegistriesFailed is returned when every enabled registry errored
-	// or timed out, so callers can tell "offline" from "no such package".
-	ErrAllRegistriesFailed = errors.New("all registries failed")
-	// ErrRegistryTimeout marks a registry that missed lookupDeadline.
-	ErrRegistryTimeout = errors.New("registry did not answer in time")
-)
-
-// SearchEverywhere checks every enabled registry concurrently for an exact
-// package name and returns within lookupDeadline. Results are returned in
-// table order. A failing or slow registry is logged and skipped; only if all
-// of them fail is an error (wrapping ErrAllRegistriesFailed) returned.
-func SearchEverywhere(pkg string, opts Options) ([]Result, error) {
-	var enabled []lookup
-	for _, l := range exactLookups {
-		if Enabled(opts, l.id) {
-			enabled = append(enabled, l)
-		}
-	}
-	if len(enabled) == 0 {
-		return nil, nil
-	}
-
-	type outcome struct {
-		i   int
-		res *Result
-		err error
-	}
-	// Buffered so goroutines that finish after the deadline never block.
-	ch := make(chan outcome, len(enabled))
-	cacheDir := lookupCacheDir
-	for i, l := range enabled {
-		go func(i int, l lookup) {
-			res, err := cachedLookup(cacheDir, l, pkg)
-			ch <- outcome{i: i, res: res, err: err}
-		}(i, l)
-	}
-
-	outcomes := make([]outcome, len(enabled))
-	for i := range outcomes {
-		outcomes[i] = outcome{i: i, err: ErrRegistryTimeout}
-	}
-	timer := time.NewTimer(lookupDeadline)
-	defer timer.Stop()
-collect:
-	for received := 0; received < len(enabled); received++ {
-		select {
-		case o := <-ch:
-			outcomes[o.i] = o
-		case <-timer.C:
-			break collect
-		}
-	}
-
-	var out []Result
-	var errs []error
-	for i, o := range outcomes {
-		if o.err != nil {
-			logx.Info("lookup %s in %s failed: %v", pkg, enabled[i].id, o.err)
-			errs = append(errs, fmt.Errorf("%s: %w", enabled[i].id, o.err))
-			continue
-		}
-		if o.res != nil {
-			out = append(out, *o.res)
-		}
-	}
-	if len(errs) == len(enabled) {
-		return nil, fmt.Errorf("%w: %w", ErrAllRegistriesFailed, errors.Join(errs...))
-	}
-	return out, nil
 }

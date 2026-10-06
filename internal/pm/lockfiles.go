@@ -13,21 +13,37 @@ type Ecosystem string
 const (
 	EcosystemNode   Ecosystem = "node"
 	EcosystemPython Ecosystem = "python"
+	EcosystemJava   Ecosystem = "java"
 )
 
-// LockFileMapping maps lock file names to their package managers.
-var LockFileMapping = map[Ecosystem]map[string]ID{
-	EcosystemNode: {
-		"package-lock.json": Npm,
-		"yarn.lock":         Yarn,
-		"pnpm-lock.yaml":    Pnpm,
-		"bun.lockb":         Bun,
-	},
-	EcosystemPython: {
-		"poetry.lock":      Poetry,
-		"Pipfile.lock":     Pipenv,
-		"requirements.txt": Pip, // Not a true lock file, but indicates pip usage
-	},
+// ProjectFile ties a file in a project directory to the package manager it
+// implies.
+type ProjectFile struct {
+	Name      string
+	Ecosystem Ecosystem
+	Manager   ID
+}
+
+// lockFiles are checked in this order, which is also the order results are
+// returned in: detection is deterministic.
+var lockFiles = []ProjectFile{
+	{"package-lock.json", EcosystemNode, Npm},
+	{"yarn.lock", EcosystemNode, Yarn},
+	{"pnpm-lock.yaml", EcosystemNode, Pnpm},
+	{"bun.lock", EcosystemNode, Bun},  // bun >= 1.2 (text)
+	{"bun.lockb", EcosystemNode, Bun}, // bun < 1.2 (binary)
+	{"poetry.lock", EcosystemPython, Poetry},
+	{"Pipfile.lock", EcosystemPython, Pipenv},
+	{"Pipfile", EcosystemPython, Pipenv},
+	{"requirements.txt", EcosystemPython, Pip}, // not a lock file, but implies pip
+}
+
+// buildFiles name a Java project's build tool. They lock nothing, but they
+// narrow Maven-vs-Gradle the way lock files narrow npm-vs-yarn.
+var buildFiles = []ProjectFile{
+	{"pom.xml", EcosystemJava, Maven},
+	{"build.gradle", EcosystemJava, Gradle},
+	{"build.gradle.kts", EcosystemJava, Gradle},
 }
 
 // EcosystemForManager returns the ecosystem that a package manager belongs to.
@@ -37,6 +53,8 @@ func EcosystemForManager(id ID) Ecosystem {
 		return EcosystemNode
 	case Pip, Poetry, Pipenv:
 		return EcosystemPython
+	case Maven, Gradle:
+		return EcosystemJava
 	default:
 		return ""
 	}
@@ -49,109 +67,77 @@ func ManagersInEcosystem(eco Ecosystem) []ID {
 		return []ID{Npm, Yarn, Pnpm, Bun}
 	case EcosystemPython:
 		return []ID{Pip, Poetry, Pipenv}
+	case EcosystemJava:
+		return []ID{Maven, Gradle}
 	default:
 		return nil
 	}
 }
 
-// DetectLockFiles scans a directory for lock files and returns detected package managers
-// grouped by ecosystem. Only returns ecosystems where at least one lock file was found.
-// Validates the directory path to prevent path traversal attacks.
-//
-// Edge cases:
-//   - Path with "..": returns empty map (path traversal detected)
-//   - Invalid path: uses cleaned path, returns empty map if still invalid
-//   - Non-existent directory: returns empty map (no lock files found)
-//   - Multiple lock files in same ecosystem: returns all detected managers
-//
-// Security: This function validates paths to prevent directory traversal attacks.
-// It resolves paths to absolute form and validates they don't contain ".." sequences.
-func DetectLockFiles(dir string) map[Ecosystem][]ID {
-	result := make(map[Ecosystem][]ID)
-
-	// Validate and clean the directory path
-	cleanDir := filepath.Clean(dir)
-	if strings.Contains(cleanDir, "..") {
-		// Path traversal detected, return empty result
-		return result
+// safeDir cleans dir and makes it absolute. It reports false for paths
+// containing "..", which are refused.
+func safeDir(dir string) (string, bool) {
+	clean := filepath.Clean(dir)
+	if strings.Contains(clean, "..") {
+		return "", false
 	}
-
-	// Resolve to absolute path to prevent relative path issues
-	absDir, err := filepath.Abs(cleanDir)
+	abs, err := filepath.Abs(clean)
 	if err != nil {
-		// If we can't resolve, use cleaned path
-		absDir = cleanDir
+		return clean, true
 	}
-
-	for eco, lockFiles := range LockFileMapping {
-		var detected []ID
-		for file, manager := range lockFiles {
-			// Use filepath.Join which is safe, and validate the result
-			lockPath := filepath.Join(absDir, file)
-			// Ensure the resolved path is still within the intended directory
-			if !strings.HasPrefix(lockPath, absDir) {
-				continue
-			}
-			if _, err := os.Stat(lockPath); err == nil {
-				detected = append(detected, manager)
-			}
-		}
-		if len(detected) > 0 {
-			result[eco] = detected
-		}
-	}
-
-	return result
+	return abs, true
 }
 
-// DetectLockFilesForEcosystem returns the package managers with lock files in the given
-// ecosystem. Returns nil if no lock files are found for that ecosystem.
-// Validates the directory path to prevent path traversal attacks.
-func DetectLockFilesForEcosystem(dir string, eco Ecosystem) []ID {
-	lockFiles, ok := LockFileMapping[eco]
+// present returns the entries of files that exist in dir, in table order,
+// keeping only the first file per manager.
+func present(dir string, files []ProjectFile) []ProjectFile {
+	abs, ok := safeDir(dir)
 	if !ok {
 		return nil
 	}
-
-	// Validate and clean the directory path
-	cleanDir := filepath.Clean(dir)
-	if strings.Contains(cleanDir, "..") {
-		return nil
-	}
-
-	// Resolve to absolute path
-	absDir, err := filepath.Abs(cleanDir)
-	if err != nil {
-		absDir = cleanDir
-	}
-
-	var detected []ID
-	for file, manager := range lockFiles {
-		lockPath := filepath.Join(absDir, file)
-		// Ensure the resolved path is still within the intended directory
-		if !strings.HasPrefix(lockPath, absDir) {
+	var out []ProjectFile
+	seen := map[ID]bool{}
+	for _, f := range files {
+		if seen[f.Manager] {
 			continue
 		}
-		if _, err := os.Stat(lockPath); err == nil {
-			detected = append(detected, manager)
+		if _, err := os.Stat(filepath.Join(abs, f.Name)); err == nil {
+			out = append(out, f)
+			seen[f.Manager] = true
 		}
 	}
-	return detected
+	return out
+}
+
+// ProjectManagers returns, per ecosystem, the managers that dir's lock files
+// and Java build files point at, in table order, with the file that implied
+// each. Ecosystems with no such files are absent.
+func ProjectManagers(dir string) map[Ecosystem][]ProjectFile {
+	out := map[Ecosystem][]ProjectFile{}
+	for _, f := range append(present(dir, lockFiles), present(dir, buildFiles)...) {
+		out[f.Ecosystem] = append(out[f.Ecosystem], f)
+	}
+	return out
+}
+
+// DetectLockFiles returns the managers implied by lock files in dir, grouped
+// by ecosystem (node and python only), in a fixed order. Paths containing
+// ".." return an empty map.
+func DetectLockFiles(dir string) map[Ecosystem][]ID {
+	result := make(map[Ecosystem][]ID)
+	for _, f := range present(dir, lockFiles) {
+		result[f.Ecosystem] = append(result[f.Ecosystem], f.Manager)
+	}
+	return result
+}
+
+// DetectLockFilesForEcosystem returns the managers with lock files in the
+// given ecosystem, or nil.
+func DetectLockFilesForEcosystem(dir string, eco Ecosystem) []ID {
+	return DetectLockFiles(dir)[eco]
 }
 
 // HasLockFile checks if any lock file exists for the given ecosystem in the directory.
 func HasLockFile(dir string, eco Ecosystem) bool {
 	return len(DetectLockFilesForEcosystem(dir, eco)) > 0
-}
-
-// GetLockFileName returns the lock file name for a given package manager.
-func GetLockFileName(id ID) string {
-	for _, lockFiles := range LockFileMapping {
-		for file, manager := range lockFiles {
-			if manager == id {
-				return file
-			}
-		}
-	}
-	return ""
 }

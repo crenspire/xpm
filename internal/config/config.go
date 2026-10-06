@@ -10,10 +10,14 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
 )
+
+// warnOut receives warnings about an unusable config file. Tests replace it.
+var warnOut io.Writer = os.Stderr
 
 // ScriptsConfig holds configuration for the `xpm run` command.
 type ScriptsConfig struct {
@@ -117,13 +121,15 @@ type EnvConfig struct {
 	Default map[string]string `json:"default"`
 }
 
-// TimeoutConfig holds configuration for HTTP timeouts per registry.
+// TimeoutConfig holds how long registry lookups may take.
 type TimeoutConfig struct {
-	// Default is the default timeout for all registries (in seconds).
+	// Default is the timeout for every registry, in seconds.
+	// 0 means the built-in 2.5 s deadline.
 	Default int `json:"default"`
 
-	// PerRegistry specifies timeout per registry (in seconds).
-	// Keys are registry names: "npm", "pypi", "packagist", "crates", "maven"
+	// PerRegistry overrides Default per registry, in seconds.
+	// Keys: "npm", "pypi" (or "pip"), "packagist" (or "composer"),
+	// "crates" (or "cargo"), "maven".
 	PerRegistry map[string]int `json:"perRegistry"`
 }
 
@@ -230,7 +236,7 @@ func defaultConfig() Config {
 			Default: make(map[string]string),
 		},
 		Timeout: TimeoutConfig{
-			Default:     4, // 4 seconds default
+			Default:     0, // 0 = built-in 2.5 s deadline
 			PerRegistry: make(map[string]int),
 		},
 	}
@@ -273,8 +279,12 @@ func loadFrom(path string) Config {
 	// Unmarshal on top of the defaults: absent keys keep their default,
 	// and map fields (Search) merge key-by-key.
 	if err := json.Unmarshal(data, &c); err != nil {
-		fmt.Fprintf(os.Stderr, "xpm: ignoring invalid config %s: %v\n", path, err)
+		_, _ = fmt.Fprintf(warnOut, "xpm: ignoring invalid config %s: %v\n", path, err)
 		return defaultConfig()
+	}
+	// An explicit null replaces a map with nil; treat it as "use the defaults".
+	if c.Search == nil {
+		c.Search = defaultConfig().Search
 	}
 	return c
 }

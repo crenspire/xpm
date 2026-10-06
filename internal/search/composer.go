@@ -1,9 +1,9 @@
 package search
 
 import (
-	"encoding/json"
+	"context"
 	"fmt"
-	"io"
+	"net/http"
 	"net/url"
 
 	"github.com/crenspire/xpm/internal/logx"
@@ -27,43 +27,31 @@ type packagistSearchResponse struct {
 	Total int `json:"total"`
 }
 
-// SearchPackagistPackages searches Packagist for multiple results.
+// SearchPackagistPackages searches Packagist for up to limit results.
 // Packagist API: https://packagist.org/apidoc#search-packages
-// The search endpoint is /search.json with query parameter 'q'
-// Note: Packagist doesn't support per_page parameter, it returns all results
-func SearchPackagistPackages(query string, limit int) ([]Result, error) {
+func SearchPackagistPackages(ctx context.Context, query string, limit int) ([]Result, error) {
 	if query == "" {
 		return nil, fmt.Errorf("query cannot be empty")
 	}
+	u := fmt.Sprintf("%s/search.json?q=%s", packagistURL, url.QueryEscape(query))
+	logx.Info("search packagist: %s", u)
 
-	urlStr := fmt.Sprintf("%s/search.json?q=%s", PackagistURL, url.QueryEscape(query))
-	logx.Info("search packagist: %s", urlStr)
-
-	resp, err := httpClient.Get(urlStr)
+	resp, err := httpGet(ctx, u)
 	if err != nil {
-		logx.Info("packagist request error: %v", err)
 		return nil, fmt.Errorf("packagist search failed: %w", err)
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		// Read error body for debugging
-		body, _ := io.ReadAll(resp.Body)
-		logx.Info("packagist returned status %d: %s", resp.StatusCode, string(body))
-		return nil, fmt.Errorf("packagist returned status %d: %s", resp.StatusCode, string(body))
+	if resp.StatusCode != http.StatusOK {
+		return nil, statusError("packagist", resp)
 	}
 
 	var data packagistSearchResponse
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		logx.Info("packagist decode error: %v", err)
-		return nil, fmt.Errorf("failed to decode packagist response: %w", err)
+	if err := decodeJSON("packagist", query, resp.Body, &data); err != nil {
+		return nil, err
 	}
-
-	logx.Info("packagist search returned %d total results for query %q", data.Total, query)
 
 	var results []Result
 	for i, r := range data.Results {
-		// Limit results
 		if i >= limit {
 			break
 		}
@@ -77,7 +65,5 @@ func SearchPackagistPackages(query string, limit int) ([]Result, error) {
 			},
 		})
 	}
-
-	logx.Info("packagist search returning %d results (limited from %d)", len(results), len(data.Results))
 	return results, nil
 }

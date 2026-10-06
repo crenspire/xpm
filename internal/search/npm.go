@@ -1,8 +1,9 @@
 package search
 
 import (
-	"encoding/json"
+	"context"
 	"fmt"
+	"net/http"
 	"net/url"
 
 	"github.com/crenspire/xpm/internal/logx"
@@ -14,18 +15,17 @@ const NpmRegistryURL = "https://registry.npmjs.org"
 
 // SearchNpmPackages searches npm for packages matching a query.
 // This uses the npm search API for broader results.
-func SearchNpmPackages(query string, limit int) ([]Result, error) {
-	url := fmt.Sprintf("https://registry.npmjs.org/-/v1/search?text=%s&size=%d", url.QueryEscape(query), limit)
-	logx.Info("search npm: %s", url)
+func SearchNpmPackages(ctx context.Context, query string, limit int) ([]Result, error) {
+	u := fmt.Sprintf("%s/-/v1/search?text=%s&size=%d", npmRegistryURL, url.QueryEscape(query), limit)
+	logx.Info("search npm: %s", u)
 
-	resp, err := httpClient.Get(url)
+	resp, err := httpGet(ctx, u)
 	if err != nil {
 		return nil, fmt.Errorf("npm search failed: %w", err)
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("npm search returned status %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		return nil, statusError("npm", resp)
 	}
 
 	var data struct {
@@ -37,9 +37,8 @@ func SearchNpmPackages(query string, limit int) ([]Result, error) {
 			} `json:"package"`
 		} `json:"objects"`
 	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		return nil, fmt.Errorf("failed to decode npm search response: %w", err)
+	if err := decodeJSON("npm", query, resp.Body, &data); err != nil {
+		return nil, err
 	}
 
 	var results []Result
@@ -51,6 +50,5 @@ func SearchNpmPackages(query string, limit int) ([]Result, error) {
 			Extra:   map[string]string{"version": obj.Package.Version},
 		})
 	}
-
 	return results, nil
 }

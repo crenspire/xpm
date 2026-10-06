@@ -1,9 +1,11 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -142,7 +144,7 @@ func TestLoadFromPartialConfigKeepsDefaults(t *testing.T) {
 	if !c.Interactive || !c.AutoInstallPM || !c.SearchUI.Enabled || !c.Env.Enabled || !c.Cache.Enabled {
 		t.Errorf("unset booleans must keep defaults, got %+v", c)
 	}
-	if c.Graph.Depth != 5 || c.Timeout.Default != 4 {
+	if c.Graph.Depth != 5 || c.Timeout.Default != 0 {
 		t.Errorf("unset numbers must keep defaults, got depth=%d timeout=%d", c.Graph.Depth, c.Timeout.Default)
 	}
 }
@@ -157,10 +159,36 @@ func TestLoadFromExplicitFalseOverridesDefault(t *testing.T) {
 	}
 }
 
-func TestLoadFromInvalidJSONReturnsDefaults(t *testing.T) {
-	c := loadFrom(writeConfig(t, `not valid json{{{`))
+// captureWarnings sends config warnings to a buffer for one test.
+func captureWarnings(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	old := warnOut
+	warnOut = &buf
+	t.Cleanup(func() { warnOut = old })
+	return &buf
+}
+
+func TestLoadFromInvalidJSONReturnsDefaultsAndWarns(t *testing.T) {
+	warnings := captureWarnings(t)
+	path := writeConfig(t, `not valid json{{{`)
+	c := loadFrom(path)
 	if !c.Interactive || !c.Search["npm"] {
 		t.Errorf("invalid JSON must yield defaults, got %+v", c)
+	}
+	if !strings.Contains(warnings.String(), "xpm: ignoring invalid config "+path) {
+		t.Errorf("warning = %q, want it to name %s", warnings.String(), path)
+	}
+}
+
+func TestLoadFromNullSearchKeepsDefaults(t *testing.T) {
+	warnings := captureWarnings(t)
+	c := loadFrom(writeConfig(t, `{"search": null}`))
+	if c.Search == nil || !c.Search["npm"] || !c.Search["maven"] {
+		t.Fatalf(`"search": null must keep the default registries, got %v`, c.Search)
+	}
+	if warnings.Len() != 0 {
+		t.Errorf("valid JSON produced a warning: %q", warnings.String())
 	}
 }
 

@@ -26,7 +26,7 @@ Baselines measured on 2026-10-06 (macOS arm64, warm cache, home broadband).
 | Maven search reliability | `search.maven.org` stalled in **5 of 8** requests | `central.sonatype.com`: 8 of 8 in ~0.9 s | P1 |
 | Worst case, a registry hangs | up to 5 × 4 s = 20 s | **hard ceiling 2.5 s** (`lookupDeadline`) | P1 |
 | HTTP response body size | unbounded | ≤ 1 MiB per registry response | P1 |
-| `xpm search` (non-TUI) | 1.08 s | < 1.0 s | P3 |
+| `xpm search` (non-TUI) | 1.08 s | ≤ 1.5 s (crates.io search API ~1.2 s cold) | P3 |
 | TUI keystroke → results | 1 full search per keystroke, stale results can win | debounced, 1 in-flight query set, stale results dropped | P3 |
 | Release binary size | 14.6 MB | < 12 MB (`-trimpath -s -w`; 9.8 MB darwin/arm64, 10.9 MB linux/amd64) | P0 |
 | Shim exec overhead | needs a Go compiler at install time; `exec.Command` child | < 5 ms, no compiler, `syscall.Exec` | P5 |
@@ -51,7 +51,7 @@ P0 Green ──► P1 Speed core ─────► P3 Install correctness ─�
 | P0 | Green build | ~0.5 day | [Plan A](2026-10-06-xpm-p0-p1-green-and-fast.md) Tasks 1–6 |
 | P1 | Speed core | ~1 day | [Plan A](2026-10-06-xpm-p0-p1-green-and-fast.md) Tasks 7–11 |
 | P2 | Security hardening | ~1.5 days | [Plan B](2026-10-06-xpm-p2-security.md) |
-| P3 | Install/search correctness | ~4 days | write JIT |
+| P3 | Install/search correctness | ~4 days | [Plan C](2026-10-07-xpm-p3-install-search.md) |
 | P4 | Scope cut & docs truth | ~1 day, spread | write JIT |
 | P5 | Runtime manager rework | ~1.5 weeks | write JIT |
 | P6 | Graph / lock / workspace correctness | ~1.5 weeks | write JIT |
@@ -142,7 +142,7 @@ P0 Green ──► P1 Speed core ─────► P3 Install correctness ─�
 12. Collapse the five copies of the search-options builder into `search.OptionsFromConfig(cfg)`.
 13. In `which`/`install`, report registries that timed out or errored as "unavailable", separate from "Not found in". Extend the deadline/cache treatment to the TUI's multi-result search (`parallel.go`), which still waits up to 10 s.
 
-**Exit criteria:** an e2e test table (fake registries via `httptest`) covers each README install example. Budget: `xpm search` < 1 s.
+**Exit criteria:** an e2e test table (fake registries via `httptest`) covers each README install example. Budget: `xpm search` ≤ 1.5 s.
 
 ### P4 — Scope cut & docs truth (lane D, continuous)
 **Scope:**

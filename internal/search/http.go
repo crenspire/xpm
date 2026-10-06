@@ -40,16 +40,6 @@ func SetHTTPConfig(cfg HTTPConfig) {
 	httpClient.Timeout = cfg.Timeout
 }
 
-// SetTimeoutForRegistry sets a custom timeout for a specific registry.
-// This allows per-registry timeout configuration.
-func SetTimeoutForRegistry(registry string, timeout time.Duration) {
-	// Update the default timeout if this is the first registry configured
-	// For now, we use a single timeout for all registries
-	// Future enhancement: maintain per-registry timeouts
-	httpConfig.Timeout = timeout
-	httpClient.Timeout = timeout
-}
-
 // GetHTTPConfig returns the current HTTP configuration.
 func GetHTTPConfig() HTTPConfig {
 	return httpConfig
@@ -119,20 +109,32 @@ const maxMetadataBytes = 1 << 20 // 1 MiB
 const userAgent = "xpm (+https://github.com/crenspire/xpm)"
 
 // httpGet is the single entry point for registry GETs: shared client
-// (with its timeout), identifying User-Agent, JSON Accept header.
-func httpGet(rawURL string) (*http.Response, error) {
-	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
+// (with its timeout), ctx for cancellation, identifying User-Agent and a
+// JSON Accept header.
+func httpGet(ctx context.Context, rawURL string) (*http.Response, error) {
+	return httpGetAccept(ctx, rawURL, "application/json")
+}
+
+// httpGetAccept is httpGet with a caller-chosen Accept header (the crates.io
+// sparse index serves text/plain).
+func httpGetAccept(ctx context.Context, rawURL, accept string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("User-Agent", userAgent)
-	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Accept", accept)
 	return httpClient.Do(req)
 }
 
 // statusError builds an error for a non-2xx response, including at most
 // 512 bytes of the body so HTML error pages don't flood the terminal.
+// An empty body yields no trailing ": ".
 func statusError(registry string, resp *http.Response) error {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-	return fmt.Errorf("%s registry returned status %d: %s", registry, resp.StatusCode, strings.TrimSpace(string(body)))
+	msg := strings.TrimSpace(string(body))
+	if msg == "" {
+		return fmt.Errorf("%s registry returned status %d", registry, resp.StatusCode)
+	}
+	return fmt.Errorf("%s registry returned status %d: %s", registry, resp.StatusCode, msg)
 }
