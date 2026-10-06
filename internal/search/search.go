@@ -1,7 +1,7 @@
 // Package search provides functionality to search for packages across multiple registries.
 //
 // This package queries package registries (npm, PyPI, Packagist, crates.io, Maven Central)
-// to find packages by name. Results include package metadata such as version and description.
+// concurrently to find packages by name. Results include package metadata such as version and description.
 //
 // Example usage:
 //
@@ -16,6 +16,7 @@ package search
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -301,38 +302,95 @@ func existsInMaven(pkg string) (*Result, error) {
 	}, nil
 }
 
-// SearchEverywhere searches for a package across all enabled registries.
-// It queries npm, PyPI, Packagist, crates.io, and Maven Central in sequence.
-// Errors from individual registries are logged but don't stop the search.
-// Returns a slice of all found results.
+// lookup is one registry's exact-name check.
+type lookup struct {
+	id pm.ID
+	fn func(pkg string) (*Result, error)
+}
+
+// exactLookups is the registry table used by SearchEverywhere, in result order.
+// Tests replace it with fakes.
+var exactLookups = []lookup{
+	{id: pm.Npm, fn: existsInNpm},
+	{id: pm.Pip, fn: existsInPip},
+	{id: pm.Composer, fn: existsInComposer},
+	{id: pm.Cargo, fn: existsInCrates},
+	{id: pm.Maven, fn: existsInMaven},
+}
+
+// lookupDeadline bounds the whole fan-out. Registry APIs have long tails
+// (crates.io has been measured at 46s, Maven search stalls without ever
+// answering), so a registry that misses the deadline is reported as timed
+// out instead of holding up the answer.
+var lookupDeadline = 2500 * time.Millisecond
+
+var (
+	// ErrAllRegistriesFailed is returned when every enabled registry errored
+	// or timed out, so callers can tell "offline" from "no such package".
+	ErrAllRegistriesFailed = errors.New("all registries failed")
+	// ErrRegistryTimeout marks a registry that missed lookupDeadline.
+	ErrRegistryTimeout = errors.New("registry did not answer in time")
+)
+
+// SearchEverywhere checks every enabled registry concurrently for an exact
+// package name and returns within lookupDeadline. Results are returned in
+// table order. A failing or slow registry is logged and skipped; only if all
+// of them fail is an error (wrapping ErrAllRegistriesFailed) returned.
 func SearchEverywhere(pkg string, opts Options) ([]Result, error) {
+	var enabled []lookup
+	for _, l := range exactLookups {
+		if Enabled(opts, l.id) {
+			enabled = append(enabled, l)
+		}
+	}
+	if len(enabled) == 0 {
+		return nil, nil
+	}
+
+	type outcome struct {
+		i   int
+		res *Result
+		err error
+	}
+	// Buffered so goroutines that finish after the deadline never block.
+	ch := make(chan outcome, len(enabled))
+	for i, l := range enabled {
+		go func(i int, l lookup) {
+			res, err := l.fn(pkg)
+			ch <- outcome{i: i, res: res, err: err}
+		}(i, l)
+	}
+
+	outcomes := make([]outcome, len(enabled))
+	for i := range outcomes {
+		outcomes[i] = outcome{i: i, err: ErrRegistryTimeout}
+	}
+	timer := time.NewTimer(lookupDeadline)
+	defer timer.Stop()
+collect:
+	for received := 0; received < len(enabled); received++ {
+		select {
+		case o := <-ch:
+			outcomes[o.i] = o
+		case <-timer.C:
+			break collect
+		}
+	}
+
 	var out []Result
-
-	if Enabled(opts, pm.Npm) {
-		if r, err := existsInNpm(pkg); err == nil && r != nil {
-			out = append(out, *r)
+	var errs []error
+	for i, o := range outcomes {
+		if o.err != nil {
+			logx.Info("lookup %s in %s failed: %v", pkg, enabled[i].id, o.err)
+			errs = append(errs, fmt.Errorf("%s: %w", enabled[i].id, o.err))
+			continue
+		}
+		if o.res != nil {
+			out = append(out, *o.res)
 		}
 	}
-	if Enabled(opts, pm.Pip) {
-		if r, err := existsInPip(pkg); err == nil && r != nil {
-			out = append(out, *r)
-		}
+	if len(errs) == len(enabled) {
+		return nil, fmt.Errorf("%w: %w", ErrAllRegistriesFailed, errors.Join(errs...))
 	}
-	if Enabled(opts, pm.Composer) {
-		if r, err := existsInComposer(pkg); err == nil && r != nil {
-			out = append(out, *r)
-		}
-	}
-	if Enabled(opts, pm.Cargo) {
-		if r, err := existsInCrates(pkg); err == nil && r != nil {
-			out = append(out, *r)
-		}
-	}
-	if Enabled(opts, pm.Maven) {
-		if r, err := existsInMaven(pkg); err == nil && r != nil {
-			out = append(out, *r)
-		}
-	}
-
 	return out, nil
 }
