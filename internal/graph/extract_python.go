@@ -2,7 +2,10 @@ package graph
 
 import (
 	"bufio"
+	"bytes"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -11,7 +14,7 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// PythonExtractor extracts dependencies from Python lockfiles.
+// PythonExtractor extracts dependencies from Python projects.
 type PythonExtractor struct{}
 
 func (e *PythonExtractor) Name() string {
@@ -19,160 +22,240 @@ func (e *PythonExtractor) Name() string {
 }
 
 func (e *PythonExtractor) Supports(file string) bool {
-	return file == "requirements.txt" || file == "requirements.lock" ||
-		file == "pyproject.toml" || file == "poetry.lock"
+	return file == "requirements.txt" || file == "pyproject.toml" || file == "poetry.lock"
 }
 
+// Extract uses poetry.lock (with pyproject.toml for the roots) when present;
+// otherwise pyproject.toml's declared dependencies, then requirements.txt, as
+// flat roots. A file that exists but does not parse is an error, never a
+// silent fallback.
 func (e *PythonExtractor) Extract(dir string, _ ExtractOptions) (*DepGraph, error) {
-	graph := NewGraph()
-
-	// Try poetry.lock first
-	if err := e.extractPoetryLock(dir, graph); err == nil {
-		return graph, nil
+	fallback := dirName(dir)
+	pyproject, err := readOptional(filepath.Join(dir, "pyproject.toml"))
+	if err != nil {
+		return nil, err
 	}
-
-	// Try pyproject.toml
-	if err := e.extractPyproject(dir, graph); err == nil {
-		return graph, nil
+	lock, err := os.ReadFile(filepath.Join(dir, "poetry.lock"))
+	switch {
+	case err == nil:
+		return parsePoetryLock(lock, pyproject, fallback)
+	case !errors.Is(err, fs.ErrNotExist):
+		return nil, err
 	}
-
-	// Try requirements.txt
-	if err := e.extractRequirements(dir, graph); err == nil {
-		return graph, nil
+	reqs, err := readOptional(filepath.Join(dir, "requirements.txt"))
+	if err != nil {
+		return nil, err
 	}
-
-	return graph, fmt.Errorf("no supported Python dependency file found")
+	if pyproject != nil {
+		info, err := parsePyproject(pyproject)
+		if err != nil {
+			return nil, err
+		}
+		if len(info.Deps) > 0 || reqs == nil {
+			return flatPythonGraph(info, fallback), nil
+		}
+	}
+	if reqs == nil {
+		return nil, fmt.Errorf("no poetry.lock, pyproject.toml or requirements.txt found")
+	}
+	return parseRequirements(reqs, fallback)
 }
 
-func (e *PythonExtractor) extractPoetryLock(dir string, graph *DepGraph) error {
-	path := filepath.Join(dir, "poetry.lock")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
+var pep503Sep = regexp.MustCompile(`[-_.]+`)
 
-	var lockfile struct {
+// pep503 normalizes a distribution name ("Typing_Extensions" -> "typing-extensions").
+func pep503(name string) string {
+	return pep503Sep.ReplaceAllString(strings.ToLower(strings.TrimSpace(name)), "-")
+}
+
+// pep508Name matches the distribution name at the start of a PEP 508 requirement.
+var pep508Name = regexp.MustCompile(`^\s*([A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)`)
+
+type pyprojectFile struct {
+	Project struct {
+		Name                 string              `toml:"name"`
+		Version              string              `toml:"version"`
+		Dependencies         []string            `toml:"dependencies"`
+		OptionalDependencies map[string][]string `toml:"optional-dependencies"`
+	} `toml:"project"`
+	DependencyGroups map[string][]interface{} `toml:"dependency-groups"`
+	Tool             struct {
+		Poetry struct {
+			Name            string                 `toml:"name"`
+			Version         string                 `toml:"version"`
+			Dependencies    map[string]interface{} `toml:"dependencies"`
+			DevDependencies map[string]interface{} `toml:"dev-dependencies"`
+			Group           map[string]struct {
+				Dependencies map[string]interface{} `toml:"dependencies"`
+			} `toml:"group"`
+		} `toml:"poetry"`
+	} `toml:"tool"`
+}
+
+// pyprojectInfo is what the graph needs from pyproject.toml.
+type pyprojectInfo struct {
+	Name, Version string
+	Deps          []string // declared direct dependency names, "python" excluded
+}
+
+// parsePyproject reads the project name/version ([project], else
+// [tool.poetry]) and the declared direct dependencies: [project]
+// dependencies and optional-dependencies, PEP 735 dependency-groups, and
+// [tool.poetry] dependencies, dev-dependencies and groups.
+func parsePyproject(data []byte) (pyprojectInfo, error) {
+	var p pyprojectFile
+	if _, err := toml.Decode(string(data), &p); err != nil {
+		return pyprojectInfo{}, fmt.Errorf("pyproject.toml: %w", err)
+	}
+	info := pyprojectInfo{Name: p.Project.Name, Version: p.Project.Version}
+	if info.Name == "" {
+		info.Name, info.Version = p.Tool.Poetry.Name, p.Tool.Poetry.Version
+	}
+	seen := map[string]bool{}
+	add := func(name string) {
+		key := pep503(name)
+		if key == "" || key == "python" || seen[key] {
+			return
+		}
+		seen[key] = true
+		info.Deps = append(info.Deps, strings.TrimSpace(name))
+	}
+	addReq := func(req string) {
+		if m := pep508Name.FindStringSubmatch(req); m != nil {
+			add(m[1])
+		}
+	}
+	for _, r := range p.Project.Dependencies {
+		addReq(r)
+	}
+	for _, extra := range sortedKeys(p.Project.OptionalDependencies) {
+		for _, r := range p.Project.OptionalDependencies[extra] {
+			addReq(r)
+		}
+	}
+	for _, grp := range sortedKeys(p.DependencyGroups) {
+		for _, r := range p.DependencyGroups[grp] {
+			if s, ok := r.(string); ok { // tables are {include-group = "..."}
+				addReq(s)
+			}
+		}
+	}
+	poetry := p.Tool.Poetry
+	for _, n := range sortedKeys(poetry.Dependencies) {
+		add(n)
+	}
+	for _, n := range sortedKeys(poetry.DevDependencies) {
+		add(n)
+	}
+	for _, grp := range sortedKeys(poetry.Group) {
+		for _, n := range sortedKeys(poetry.Group[grp].Dependencies) {
+			add(n)
+		}
+	}
+	return info, nil
+}
+
+// parsePoetryLock builds the graph of a poetry.lock. Dependency names are
+// matched after PEP 503 normalization. The root is the project from
+// pyproject.toml (else fallback), with edges to its declared dependencies.
+func parsePoetryLock(data, pyproject []byte, fallback string) (*DepGraph, error) {
+	var lock struct {
 		Package []struct {
 			Name         string                 `toml:"name"`
 			Version      string                 `toml:"version"`
 			Dependencies map[string]interface{} `toml:"dependencies"`
 		} `toml:"package"`
 	}
-
-	if _, err := toml.Decode(string(data), &lockfile); err != nil {
-		return err
+	if _, err := toml.Decode(string(data), &lock); err != nil {
+		return nil, fmt.Errorf("poetry.lock: %w", err)
 	}
-
-	for _, pkg := range lockfile.Package {
-		node := NewDepNode("python", pkg.Name, pkg.Version)
-		graph.AddNode(node)
-
-		// Mark first package as root
-		if len(graph.Root) == 0 {
-			graph.AddRoot(node.ID)
+	g := NewGraph()
+	byName := map[string]string{} // normalized name -> node ID
+	for _, p := range lock.Package {
+		if p.Name == "" || p.Version == "" {
+			return nil, fmt.Errorf("poetry.lock: [[package]] without name or version")
 		}
-
-		// Extract dependencies
-		for depName := range pkg.Dependencies {
-			depNode := graph.FindNodeByName(depName)
-			if len(depNode) > 0 {
-				graph.AddEdge(NewEdge(node.ID, depNode[0].ID))
+		n := NewDepNode("python", p.Name, p.Version)
+		g.AddNode(n)
+		byName[pep503(p.Name)] = n.ID
+	}
+	for _, p := range lock.Package {
+		from := NodeID("python", p.Name, p.Version)
+		for _, dep := range sortedKeys(p.Dependencies) {
+			if to, ok := byName[pep503(dep)]; ok {
+				g.AddEdge(NewEdge(from, to))
 			}
 		}
 	}
-
-	return nil
+	var info pyprojectInfo
+	if pyproject != nil {
+		var err error
+		if info, err = parsePyproject(pyproject); err != nil {
+			return nil, err
+		}
+	}
+	project := addProject(g, "python", info.Name, info.Version, fallback)
+	for _, n := range info.Deps {
+		if id, ok := byName[pep503(n)]; ok {
+			g.AddEdge(NewEdge(project, id))
+		}
+	}
+	return g, nil
 }
 
-func (e *PythonExtractor) extractPyproject(dir string, graph *DepGraph) error {
-	path := filepath.Join(dir, "pyproject.toml")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return err
+// flatPythonGraph is the project with an edge to one versionless node per
+// declared dependency (no lockfile, so nothing is resolved).
+func flatPythonGraph(info pyprojectInfo, fallback string) *DepGraph {
+	g := NewGraph()
+	project := addProject(g, "python", info.Name, info.Version, fallback)
+	for _, n := range info.Deps {
+		node := NewDepNode("python", n, "")
+		g.AddNode(node)
+		g.AddEdge(NewEdge(project, node.ID))
 	}
-
-	var project struct {
-		Project struct {
-			Name         string   `toml:"name"`
-			Version      string   `toml:"version"`
-			Dependencies []string `toml:"dependencies"`
-		} `toml:"project"`
-	}
-
-	if _, err := toml.Decode(string(data), &project); err != nil {
-		return err
-	}
-
-	// Add root package
-	if project.Project.Name != "" {
-		rootNode := NewDepNode("python", project.Project.Name, project.Project.Version)
-		graph.AddNode(rootNode)
-		graph.AddRoot(rootNode.ID)
-
-		// Parse dependencies
-		for _, depSpec := range project.Project.Dependencies {
-			depName, depVersion := e.parseDependencySpec(depSpec)
-			if depName != "" {
-				depNode := NewDepNode("python", depName, depVersion)
-				graph.AddNode(depNode)
-				graph.AddEdge(NewEdge(rootNode.ID, depNode.ID))
-			}
-		}
-	}
-
-	return nil
+	return g
 }
 
-func (e *PythonExtractor) extractRequirements(dir string, graph *DepGraph) error {
-	path := filepath.Join(dir, "requirements.txt")
-	f, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	// Try to find project name from setup.py or pyproject.toml
-	projectName := "project"
-	if data, err := os.ReadFile(filepath.Join(dir, "pyproject.toml")); err == nil {
-		var proj struct {
-			Project struct {
-				Name string `toml:"name"`
-			} `toml:"project"`
+// parseRequirements reads requirements.txt as the project (named fallback)
+// with an edge to each requirement. Exact pins ("name==1.2.3") keep their
+// version; other lines are versionless. Options (-r, -e, --index-url) and
+// URLs are skipped; a line that is not a requirement (for example a
+// merge-conflict marker) is an error.
+func parseRequirements(data []byte, fallback string) (*DepGraph, error) {
+	g := NewGraph()
+	project := addProject(g, "python", "", "", fallback)
+	sc := bufio.NewScanner(bytes.NewReader(data))
+	lineNo := 0
+	for sc.Scan() {
+		lineNo++
+		line := sc.Text()
+		if i := strings.Index(line, " #"); i >= 0 {
+			line = line[:i]
 		}
-		if _, err := toml.Decode(string(data), &proj); err == nil && proj.Project.Name != "" {
-			projectName = proj.Project.Name
-		}
-	}
-
-	rootNode := NewDepNode("python", projectName, "")
-	graph.AddNode(rootNode)
-	graph.AddRoot(rootNode.ID)
-
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
+		line = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(line), "\\"))
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "-") || strings.Contains(line, "://") {
 			continue
 		}
-
-		depName, depVersion := e.parseDependencySpec(line)
-		if depName != "" {
-			depNode := NewDepNode("python", depName, depVersion)
-			graph.AddNode(depNode)
-			graph.AddEdge(NewEdge(rootNode.ID, depNode.ID))
+		m := pep508Name.FindStringSubmatch(line)
+		if m == nil {
+			return nil, fmt.Errorf("requirements.txt line %d: not a requirement: %q", lineNo, line)
 		}
+		version := ""
+		rest := strings.TrimSpace(line[len(m[0]):])
+		if strings.HasPrefix(rest, "[") { // extras
+			if end := strings.IndexByte(rest, ']'); end >= 0 {
+				rest = strings.TrimSpace(rest[end+1:])
+			}
+		}
+		if spec, _, _ := strings.Cut(rest, ";"); strings.HasPrefix(strings.TrimSpace(spec), "==") && !strings.Contains(spec, ",") {
+			version = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(spec), "=="))
+		}
+		n := NewDepNode("python", m[1], version)
+		g.AddNode(n)
+		g.AddEdge(NewEdge(project, n.ID))
 	}
-
-	return nil
-}
-
-func (e *PythonExtractor) parseDependencySpec(spec string) (name, version string) {
-	// Parse formats like: package==1.0.0, package>=1.0.0, package~=1.0.0
-	parts := regexp.MustCompile(`([^=<>!~]+)([=<>!~]+)(.+)`).FindStringSubmatch(spec)
-	if len(parts) >= 4 {
-		return strings.TrimSpace(parts[1]), strings.TrimSpace(parts[3])
+	if err := sc.Err(); err != nil {
+		return nil, fmt.Errorf("requirements.txt: %w", err)
 	}
-
-	// Just package name
-	return strings.TrimSpace(spec), ""
+	return g, nil
 }

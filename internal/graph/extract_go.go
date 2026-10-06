@@ -3,9 +3,10 @@ package graph
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"golang.org/x/mod/modfile"
 )
 
 // GoExtractor extracts dependencies from Go modules.
@@ -16,120 +17,91 @@ func (e *GoExtractor) Name() string {
 }
 
 func (e *GoExtractor) Supports(file string) bool {
-	return file == "go.mod" || file == "go.sum"
+	return file == "go.mod"
 }
 
-func (e *GoExtractor) Extract(dir string, _ ExtractOptions) (*DepGraph, error) {
-	// Try using go list -m all for complete dependency tree
-	if graph := e.extractGoList(dir); graph != nil {
-		return graph, nil
+// Extract parses go.mod: the module is the root, with an edge to every
+// require ("transitive" for // indirect ones). With opts.Exec it runs
+// `go mod graph` for the full module graph and falls back to go.mod, with a
+// warning, when that fails.
+func (e *GoExtractor) Extract(dir string, opts ExtractOptions) (*DepGraph, error) {
+	if opts.Exec {
+		out, err := opts.run(dir, "go", "mod", "graph")
+		if err == nil {
+			g, perr := parseGoModGraph(out)
+			if perr == nil {
+				return g, nil
+			}
+			err = perr
+		}
+		opts.warn("go: `go mod graph` failed, using go.mod requires only: %v", err)
 	}
-
-	// Fallback to parsing go.mod
-	return e.extractGoMod(dir)
-}
-
-func (e *GoExtractor) extractGoList(dir string) *DepGraph {
-	cmd := exec.Command("go", "list", "-m", "all")
-	cmd.Dir = dir
-	output, err := cmd.Output()
+	data, err := os.ReadFile(filepath.Join(dir, "go.mod"))
 	if err != nil {
-		return nil
+		return nil, err
 	}
+	return parseGoMod(data)
+}
 
-	graph := NewGraph()
-	lines := strings.Split(string(output), "\n")
-	var rootNode *DepNode
+// parseGoMod builds a one-level graph from go.mod.
+func parseGoMod(data []byte) (*DepGraph, error) {
+	f, err := modfile.ParseLax("go.mod", data, nil)
+	if err != nil {
+		return nil, fmt.Errorf("go.mod: %w", err)
+	}
+	if f.Module == nil || f.Module.Mod.Path == "" {
+		return nil, fmt.Errorf("go.mod: no module directive")
+	}
+	g := NewGraph()
+	root := NewDepNode("go", f.Module.Mod.Path, "")
+	g.AddNode(root)
+	g.AddRoot(root.ID)
+	for _, r := range f.Require {
+		n := NewDepNode("go", r.Mod.Path, r.Mod.Version)
+		g.AddNode(n)
+		if r.Indirect {
+			n.WithMetadata("indirect", "true")
+			g.AddEdge(NewTransitiveEdge(root.ID, n.ID))
+		} else {
+			g.AddEdge(NewEdge(root.ID, n.ID))
+		}
+	}
+	return g, nil
+}
 
-	for i, line := range lines {
+// parseGoModGraph parses `go mod graph` output: one "from to" pair per line,
+// each "path@version" except main modules (no "@"), which become the roots.
+// The go and toolchain pseudo-modules are skipped.
+func parseGoModGraph(out []byte) (*DepGraph, error) {
+	g := NewGraph()
+	node := func(tok string) string {
+		path, version, _ := strings.Cut(tok, "@")
+		id := NodeID("go", path, version)
+		if g.GetNode(id) == nil {
+			g.AddNode(NewDepNode("go", path, version))
+		}
+		if version == "" {
+			g.AddRoot(id)
+		}
+		return id
+	}
+	for i, line := range strings.Split(string(out), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-
-		// Parse module@version
-		parts := strings.Split(line, " ")
-		if len(parts) == 0 {
+		f := strings.Fields(line)
+		if len(f) != 2 {
+			return nil, fmt.Errorf("go mod graph line %d: want 2 fields, got %q", i+1, line)
+		}
+		if strings.HasPrefix(f[1], "go@") || strings.HasPrefix(f[1], "toolchain@") {
 			continue
 		}
-
-		modulePath := parts[0]
-		version := ""
-		if len(parts) > 1 {
-			version = parts[1]
-		}
-
-		// Extract module name from path
-		moduleName := modulePath
-		if idx := strings.LastIndex(modulePath, "/"); idx > 0 {
-			moduleName = modulePath[idx+1:]
-		}
-
-		node := NewDepNode("go", moduleName, version)
-		node.WithMetadata("path", modulePath)
-		graph.AddNode(node)
-
-		// First module is typically the root
-		if i == 0 {
-			rootNode = node
-			graph.AddRoot(node.ID)
-		} else if rootNode != nil {
-			// Add edge from root to dependency
-			graph.AddEdge(NewEdge(rootNode.ID, node.ID))
-		}
+		from, to := node(f[0]), node(f[1])
+		g.AddEdge(NewEdge(from, to))
 	}
-
-	return graph
-}
-
-func (e *GoExtractor) extractGoMod(dir string) (*DepGraph, error) {
-	path := filepath.Join(dir, "go.mod")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
+	if len(g.Root) == 0 {
+		return nil, fmt.Errorf("go mod graph: no main module in output")
 	}
-
-	graph := NewGraph()
-	lines := strings.Split(string(data), "\n")
-	var rootModule string
-
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "module ") {
-			rootModule = strings.TrimSpace(strings.TrimPrefix(line, "module"))
-			rootNode := NewDepNode("go", e.moduleNameFromPath(rootModule), "")
-			rootNode.WithMetadata("path", rootModule)
-			graph.AddNode(rootNode)
-			graph.AddRoot(rootNode.ID)
-		} else if strings.HasPrefix(line, "require ") {
-			// Parse require line: require module/path v1.2.3
-			parts := strings.Fields(line)
-			if len(parts) >= 3 {
-				modulePath := parts[1]
-				version := parts[2]
-				moduleName := e.moduleNameFromPath(modulePath)
-
-				depNode := NewDepNode("go", moduleName, version)
-				depNode.WithMetadata("path", modulePath)
-				graph.AddNode(depNode)
-
-				if len(graph.Root) > 0 {
-					graph.AddEdge(NewEdge(graph.Root[0], depNode.ID))
-				}
-			}
-		}
-	}
-
-	if len(graph.Nodes) == 0 {
-		return nil, fmt.Errorf("no dependencies found in go.mod")
-	}
-
-	return graph, nil
-}
-
-func (e *GoExtractor) moduleNameFromPath(path string) string {
-	if idx := strings.LastIndex(path, "/"); idx > 0 {
-		return path[idx+1:]
-	}
-	return path
+	return g, nil
 }
