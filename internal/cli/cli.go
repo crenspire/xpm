@@ -116,39 +116,38 @@ func usage() {
 	fmt.Printf("\n%sRun%s '%sxpm man <command>%s' for detailed help on a specific command.\n", colorBold, colorReset, colorCyan, colorReset)
 }
 
+// splitGlobalFlags consumes xpm's own flags (-v, --verbose, --version, -V)
+// only while they appear BEFORE the subcommand. Everything from the
+// subcommand onward is returned untouched, so `xpm run test -- --version`
+// passes --version to the script instead of printing xpm's version.
+// A lone `-v` means version; `-v` followed by a command means verbose.
+func splitGlobalFlags(raw []string) (args []string, verbose, showVersion bool) {
+	for i, a := range raw {
+		switch a {
+		case "--version", "-V":
+			showVersion = true
+		case "-v":
+			if len(raw) == 1 {
+				showVersion = true
+			} else {
+				verbose = true
+			}
+		case "--verbose":
+			verbose = true
+		default:
+			return raw[i:], verbose, showVersion
+		}
+	}
+	return nil, verbose, showVersion
+}
+
 // Run is the main entry point for the CLI.
 // It parses arguments, loads configuration, and dispatches to the appropriate command.
 // Returns an exit code (0 for success, non-zero for errors).
 func Run() int {
 	rawArgs := os.Args[1:]
 
-	var verbose bool
-	var showVersion bool
-	args := make([]string, 0, len(rawArgs))
-
-	// Handle version flags first
-	for _, a := range rawArgs {
-		if a == "--version" || a == "-V" {
-			showVersion = true
-			break
-		}
-	}
-
-	// Process other flags
-	for _, a := range rawArgs {
-		if a == "-v" {
-			// -v is version if it's the only arg, otherwise verbose
-			if len(rawArgs) == 1 {
-				showVersion = true
-			} else {
-				verbose = true
-			}
-		} else if a == "--verbose" {
-			verbose = true
-		} else if a != "--version" && a != "-V" {
-			args = append(args, a)
-		}
-	}
+	args, verbose, showVersion := splitGlobalFlags(rawArgs)
 	logx.Verbose = verbose
 
 	cfg = config.Load()
