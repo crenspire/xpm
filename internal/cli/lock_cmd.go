@@ -5,14 +5,12 @@ import (
 	"fmt"
 	"os"
 	"sort"
-	"strings"
 
 	"github.com/crenspire/xpm/internal/lock"
 )
 
-// cmdLock handles the `xpm lock` command.
-// Without flags, it generates xpm-lock.yaml.
-// With --verify, it verifies the current lockfile state against the saved lock.
+// cmdLock handles `xpm lock` (write xpm-lock.yaml) and `xpm lock --verify`.
+// Results go to stdout; errors and warnings go to stderr.
 func cmdLock(args []string) int {
 	fs := flag.NewFlagSet("lock", flag.ContinueOnError)
 	verify := fs.Bool("verify", false, "verify lockfiles against xpm-lock.yaml")
@@ -21,6 +19,10 @@ func cmdLock(args []string) int {
 	if err := fs.Parse(args); err != nil {
 		fmt.Fprintln(os.Stderr)
 		showCommandUsage("lock")
+		return 1
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "lock: unexpected argument %q\n", fs.Arg(0))
 		return 1
 	}
 
@@ -33,15 +35,12 @@ func cmdLock(args []string) int {
 	if *verify {
 		return verifyLock(cwd)
 	}
-
 	return generateLock(cwd)
 }
 
-// generateLock generates a new xpm-lock.yaml file.
+// generateLock writes xpm-lock.yaml for dir, leaving the file untouched when
+// its content would not change.
 func generateLock(dir string) int {
-	fmt.Println("Scanning for lockfiles...")
-	fmt.Println()
-
 	unified, warnings, err := lock.Generate(dir)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error generating lock:", err)
@@ -52,7 +51,7 @@ func generateLock(dir string) int {
 	}
 
 	if unified.IsEmpty() {
-		fmt.Println("No lockfiles found.")
+		fmt.Println("No lockfiles found in the project root.")
 		fmt.Println()
 		fmt.Println("Supported lockfiles:")
 		for _, file := range lock.ListSupportedFiles() {
@@ -61,35 +60,34 @@ func generateLock(dir string) int {
 		return 0
 	}
 
-	if _, err := lock.WriteUnifiedLock(dir, unified); err != nil {
+	changed, err := lock.WriteUnifiedLock(dir, unified)
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "error writing lock file:", err)
 		return 1
 	}
-
-	fmt.Printf("Generated %s\n", lock.LockfileName)
+	if changed {
+		fmt.Printf("Generated %s\n", lock.LockfileName)
+	} else {
+		fmt.Printf("%s is up to date\n", lock.LockfileName)
+	}
 	fmt.Println()
-	fmt.Println("Included:")
 
-	// Sort keys for consistent output
-	keys := make([]string, 0, len(unified.Locks))
-	for k := range unified.Locks {
-		keys = append(keys, k)
+	paths := make([]string, 0, len(unified.Locks))
+	for p := range unified.Locks {
+		paths = append(paths, p)
 	}
-	sort.Strings(keys)
-
-	for _, key := range keys {
-		info := unified.Locks[key]
-		name := formatEcosystemName(key, info.Manager)
-		fmt.Printf("  - %s: %d packages\n", name, info.Packages)
+	sort.Strings(paths)
+	for _, p := range paths {
+		info := unified.Locks[p]
+		fmt.Printf("  %s (%s): %d packages\n", p, info.Manager, info.Packages)
 	}
-
 	fmt.Println()
 	fmt.Printf("Total: %d lockfiles, %d packages\n", unified.Count(), unified.TotalPackages())
-
 	return 0
 }
 
-// verifyLock verifies lockfiles against the saved xpm-lock.yaml.
+// verifyLock checks the lockfiles in dir against xpm-lock.yaml. It returns 1
+// when any lockfile changed, disappeared, appeared, or could not be checked.
 func verifyLock(dir string) int {
 	if !lock.UnifiedLockExists(dir) {
 		fmt.Fprintf(os.Stderr, "%s not found.\n", lock.LockfileName)
@@ -97,74 +95,42 @@ func verifyLock(dir string) int {
 		return 1
 	}
 
-	fmt.Println("Verifying lock state...")
-	fmt.Println()
-
-	results, err := lock.Verify(dir)
+	results, err := lock.Verify(dir) // sorted by path
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error verifying lock:", err)
 		return 1
 	}
-
 	if len(results) == 0 {
 		fmt.Println("No lockfiles to verify.")
 		return 0
 	}
 
-	// Sort results for consistent output
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].Key < results[j].Key
-	})
-
 	for _, r := range results {
-		switch r.Status {
-		case lock.StatusUnchanged:
-			fmt.Printf("✔ %s unchanged\n", r.File)
-		case lock.StatusChanged:
-			fmt.Printf("✘ %s changed\n", r.File)
-		case lock.StatusMissing:
-			fmt.Printf("✘ %s missing\n", r.File)
-		case lock.StatusError:
-			fmt.Printf("✘ %s error: %v\n", r.File, r.Error)
-		}
+		fmt.Println(formatVerifyLine(r))
 	}
-
 	fmt.Println()
 
 	if lock.VerificationPassed(results) {
 		fmt.Println("Verification PASSED.")
 		return 0
 	}
-
 	fmt.Println("Verification FAILED.")
-	fmt.Println()
-	fmt.Println("Run 'xpm lock' to update the unified lock file.")
+	fmt.Printf("Run 'xpm lock' to update %s.\n", lock.LockfileName)
 	return 1
 }
 
-// formatEcosystemName returns a human-readable name for an ecosystem.
-func formatEcosystemName(ecosystem, manager string) string {
-	names := map[string]string{
-		"node":     "Node.js",
-		"python":   "Python",
-		"rust":     "Rust",
-		"go":       "Go",
-		"composer": "PHP",
-		"gradle":   "Gradle",
+// formatVerifyLine renders one verification result.
+func formatVerifyLine(r lock.VerificationResult) string {
+	switch r.Status {
+	case lock.StatusUnchanged:
+		return fmt.Sprintf("✔ %s unchanged", r.Key)
+	case lock.StatusChanged:
+		return fmt.Sprintf("✘ %s changed", r.Key)
+	case lock.StatusMissing:
+		return fmt.Sprintf("✘ %s missing", r.Key)
+	case lock.StatusAdded:
+		return fmt.Sprintf("✘ %s added (not in %s)", r.Key, lock.LockfileName)
+	default:
+		return fmt.Sprintf("✘ %s error: %v", r.Key, r.Error)
 	}
-
-	name, ok := names[ecosystem]
-	if !ok {
-		// Capitalize first letter
-		if len(ecosystem) > 0 {
-			name = strings.ToUpper(ecosystem[:1]) + ecosystem[1:]
-		} else {
-			name = ecosystem
-		}
-	}
-
-	if manager != "" && manager != ecosystem {
-		return fmt.Sprintf("%s (%s)", name, manager)
-	}
-	return name
 }
