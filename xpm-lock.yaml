@@ -1,10 +1,8 @@
-version: 1
-generatedAt: 2025-12-08T12:34:03.234176Z
+version: 2
 locks:
-    go:
-        ecosystem: go
-        manager: go
-        file: go.sum
-        hash: e84864245f7c1b50f665b8c035bede25b343053a2728e071b59f02a4ae95402f
-        modified: 2025-12-08T12:04:13.152207176Z
-        packages: 29
+  go.sum:
+    ecosystem: go
+    manager: go
+    file: go.sum
+    hash: cf3cc6850119f86754cf7a183ed0c82d2cb60f7a33a029fb9d5312bdb3c6cd6b
+    packages: 30
