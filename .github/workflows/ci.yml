@@ -77,3 +77,33 @@ jobs:
           go-version: stable
       - run: sudo apt-get update && sudo apt-get install -y hyperfine jq
       - run: ./scripts/perf.sh
+
+  env-smoke:
+    name: Runtime env smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    continue-on-error: false
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest] # xpm env is not supported on Windows
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - run: go build -o "$RUNNER_TEMP/bin/xpm" ./cmd/xpm
+      - name: Install node@20 and run it through the shim
+        # Runs in a fresh HOME and an empty working directory: the repository's
+        # own .xpm-env pins a node version this job does not install.
+        run: |
+          export HOME="$RUNNER_TEMP/home"
+          mkdir -p "$HOME" "$RUNNER_TEMP/work"
+          cd "$RUNNER_TEMP/work"
+          xpm="$RUNNER_TEMP/bin/xpm"
+          "$xpm" env install node@20
+          export PATH="$HOME/.xpm/env/shims:$PATH"
+          v=$(node -v)
+          echo "node -v: $v"
+          case "$v" in v20.*) ;; *) echo "expected node v20.x through the shim, got $v" >&2; exit 1 ;; esac
+          "$xpm" env current
