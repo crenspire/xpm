@@ -240,3 +240,17 @@ func TestEmptyConfig(t *testing.T) {
 		t.Errorf("empty config Search should be nil/empty, got %v", c.Search)
 	}
 }
+
+func TestOldKeysStillLoad(t *testing.T) {
+	warnings := captureWarnings(t)
+	c := loadFrom(writeConfig(t, `{"lock":{"autoGenerate":false},"workspace":{"enabled":false,"parallel":false},"env":{"default":{"node":"20"}},"prefer":["npm"]}`))
+	if warnings.Len() != 0 {
+		t.Errorf("unexpected warning: %q", warnings.String())
+	}
+	if len(c.Prefer) != 1 || c.Prefer[0] != "npm" {
+		t.Errorf("Prefer = %v, want [npm]", c.Prefer)
+	}
+	if c.Workspace.Parallel {
+		t.Error("Workspace.Parallel should be false (set in file)")
+	}
+}

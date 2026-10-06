@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/manifoldco/promptui"
@@ -63,7 +64,13 @@ func showConfig() int {
 
 	// Display search settings
 	fmt.Println("Search settings:")
-	for k, v := range cfg.Search {
+	keys := make([]string, 0, len(cfg.Search))
+	for k := range cfg.Search {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		v := cfg.Search[k]
 		status := "enabled"
 		if !v {
 			status = "disabled"
@@ -347,7 +354,25 @@ func saveConfig(c config.Config) error {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
 
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	// Write to a temp file in the same directory, then rename, so a crash
+	// never leaves a truncated config behind.
+	tmp, err := os.CreateTemp(dir, ".xpmrc-*.json")
+	if err != nil {
+		return fmt.Errorf("failed to write config: %w", err)
+	}
+	tmpName := tmp.Name()
+	_, werr := tmp.Write(data)
+	cerr := tmp.Close()
+	if err := errors.Join(werr, cerr); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("failed to write config: %w", err)
+	}
+	if err := os.Chmod(tmpName, 0o644); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("failed to write config: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		_ = os.Remove(tmpName)
 		return fmt.Errorf("failed to write config: %w", err)
 	}
 

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -33,17 +34,23 @@ func TestWriteConfigIsWhatLoadReads(t *testing.T) {
 
 func TestConfigSetValidatesBeforeWriting(t *testing.T) {
 	isolatedHome(t)
-	for _, args := range [][]string{
-		{"prefer", "npm,notapm"},
-		{"interactive", "maybe"},
-		{"search.npmx", "false"},
-		{"search.maven", "nope"},
-		{"colour", "blue"},
+	for _, tc := range []struct {
+		args []string
+		want string // text the error must contain
+	}{
+		{[]string{"prefer", "npm,notapm"}, "notapm"},
+		{[]string{"interactive", "maybe"}, "maybe"},
+		{[]string{"search.npmx", "false"}, "npmx"},
+		{[]string{"search.maven", "nope"}, "nope"},
+		{[]string{"colour", "blue"}, "colour"},
 	} {
 		var code int
-		captureStdout(t, func() { code = setConfigValue(args) })
+		stderr := captureStderr(t, func() { code = setConfigValue(tc.args) })
 		if code != 1 {
-			t.Errorf("config set %v exited %d, want 1", args, code)
+			t.Errorf("config set %v exited %d, want 1", tc.args, code)
+		}
+		if !strings.Contains(stderr, tc.want) {
+			t.Errorf("config set %v stderr = %q, want it to name %q", tc.args, stderr, tc.want)
 		}
 	}
 	if _, err := os.Stat(config.Path()); err == nil {
@@ -79,5 +86,39 @@ func TestEditPreferListReadsTheWholeLine(t *testing.T) {
 	captureStdout(t, func() { got = editPreferList(strings.NewReader("pnpm, pip, cargo\n"), nil) })
 	if !reflect.DeepEqual(got, []string{"pnpm", "pip", "cargo"}) {
 		t.Fatalf("got %v, want [pnpm pip cargo]", got)
+	}
+}
+
+func TestShowConfigSearchSettingsAreSorted(t *testing.T) {
+	isolatedHome(t)
+	first := captureStdout(t, func() { showConfig() })
+	second := captureStdout(t, func() { showConfig() })
+	if first != second {
+		t.Fatalf("showConfig output differs between calls:\n%s\n---\n%s", first, second)
+	}
+	if c, n := strings.Index(first, "- cargo:"), strings.Index(first, "- npm:"); c < 0 || n < 0 || c > n {
+		t.Fatalf("cargo should precede npm in:\n%s", first)
+	}
+}
+
+func TestSaveConfigLeavesNoTempFiles(t *testing.T) {
+	isolatedHome(t)
+	c := config.Load()
+	if err := saveConfig(c); err != nil {
+		t.Fatal(err)
+	}
+	c.Prefer = []string{"pnpm"}
+	if err := saveConfig(c); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(filepath.Dir(config.Path()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "xpmrc.json" {
+		t.Fatalf("config dir holds %v, want only xpmrc.json", entries)
+	}
+	if got := config.Load().Prefer; !reflect.DeepEqual(got, []string{"pnpm"}) {
+		t.Fatalf("Prefer = %v, want [pnpm]", got)
 	}
 }
