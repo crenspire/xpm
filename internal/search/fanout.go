@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"time"
 
 	"github.com/crenspire/xpm/internal/logx"
@@ -33,7 +34,7 @@ type RegistryFailure struct {
 // TimedOut reports whether the registry missed its deadline (as opposed to
 // answering with an error).
 func (f RegistryFailure) TimedOut() bool {
-	return errors.Is(f.Err, ErrRegistryTimeout) || errors.Is(f.Err, context.DeadlineExceeded)
+	return errors.Is(f.Err, ErrRegistryTimeout)
 }
 
 // Report is the outcome of asking several registries: what they found, and
@@ -92,7 +93,7 @@ func fanOut(calls []registryCall) Report {
 		ctxs = append(ctxs, cancel)
 		go func(i int, c registryCall, ctx context.Context) {
 			res, err := c.fn(ctx)
-			ch <- indexed{i, outcome{res, err}}
+			ch <- indexed{i, outcome{res, asTimeout(err)}}
 		}(i, c, ctx)
 	}
 
@@ -171,4 +172,17 @@ func SearchEverywhere(pkg string, opts Options) ([]Result, error) {
 		return nil, err
 	}
 	return rep.Results, nil
+}
+
+// asTimeout wraps timeout-shaped errors with ErrRegistryTimeout so callers can
+// rely on errors.Is(err, ErrRegistryTimeout) no matter which side won the race.
+func asTimeout(err error) error {
+	if err == nil || errors.Is(err, ErrRegistryTimeout) {
+		return err
+	}
+	var ne net.Error
+	if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &ne) && ne.Timeout()) {
+		return fmt.Errorf("%w: %w", ErrRegistryTimeout, err)
+	}
+	return err
 }

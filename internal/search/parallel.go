@@ -54,6 +54,10 @@ func searchNpmMultiple(ctx context.Context, query string) ([]Result, error) {
 
 // searchPipMultiple uses the exact lookup: PyPI has no search API.
 func searchPipMultiple(ctx context.Context, query string) ([]Result, error) {
+	// A free-text query is not a PyPI name: that is "no pip result", not "pip is down".
+	if validatePackageNameForURL(query) != nil {
+		return nil, nil
+	}
 	result, err := existsInPip(ctx, query)
 	if err != nil || result == nil {
 		return nil, err
