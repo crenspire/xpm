@@ -55,7 +55,10 @@ func cmdGraph(args []string) int {
 
 	if packageArg != "" {
 		// Extract graph for specific package
-		depGraph, err = graph.ExtractForPackage(dir, packageArg)
+		depGraph, err = graph.ExtractAll(dir)
+		if err == nil {
+			depGraph, err = graph.Subgraph(depGraph, packageArg)
+		}
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			return 1
