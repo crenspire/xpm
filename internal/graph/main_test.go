@@ -2,7 +2,9 @@ package graph
 
 import (
 	"fmt"
+	"io"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -20,8 +22,22 @@ func TestMain(m *testing.M) {
 
 // helperMain implements the fake commands:
 //   - "pwd": print the working directory to stdout and noise to stderr.
+//   - "dot": a fake `dot -Tsvg`; wraps stdin in <svg>...</svg> on stdout.
+//   - "dot-fail": print a dot-style syntax error to stderr and exit 1.
 func helperMain(mode string) int {
 	switch mode {
+	case "dot":
+		in, err := io.ReadAll(os.Stdin)
+		if err != nil || !strings.HasPrefix(string(in), "digraph ") {
+			fmt.Fprintf(os.Stderr, "fake dot: bad input %q\n", in)
+			return 1
+		}
+		fmt.Printf("<svg args=%q>\n%s</svg>\n", strings.Join(os.Args[1:], " "), in)
+		return 0
+	case "dot-fail":
+		_, _ = io.ReadAll(os.Stdin)
+		fmt.Fprintln(os.Stderr, "Error: <stdin>: syntax error in line 1 near 'x'")
+		return 1
 	case "pwd":
 		wd, err := os.Getwd()
 		if err != nil {

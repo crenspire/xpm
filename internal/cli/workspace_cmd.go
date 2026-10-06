@@ -167,17 +167,14 @@ func cmdGraphWorkspace(jsonFlag, svgFlag bool, depthFlag string, rest []string) 
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			return 1
 		}
-		fmt.Println() // Add newline after JSON
 	} else if svgFlag {
-		outputPath := "graph.svg"
-		if err := graph.GenerateSVG(graph.ToDOT(merged), outputPath); err != nil {
+		if err := graph.WriteSVG(merged, os.Stdout); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			return 1
 		}
-		fmt.Printf("SVG graph written to %s\n", outputPath)
 	} else {
 		// Default: tree output
-		graph.PrintTree(merged, os.Stdout, cfg.Graph.ShowVersions, cfg.Graph.ShowEcosystem, maxDepth)
+		graph.PrintTree(merged, os.Stdout, graph.TreeOptions{ShowVersions: cfg.Graph.ShowVersions, ShowEcosystem: cfg.Graph.ShowEcosystem, MaxDepth: maxDepth})
 	}
 
 	// Print warnings

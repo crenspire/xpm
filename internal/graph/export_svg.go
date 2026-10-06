@@ -1,76 +1,43 @@
 package graph
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
-	"path/filepath"
+	"strings"
 )
 
-// CheckGraphViz checks if GraphViz (dot) is installed.
-func CheckGraphViz() bool {
-	_, err := exec.LookPath("dot")
-	return err == nil
-}
+// ErrGraphVizNotFound is returned by WriteSVG when GraphViz's dot is not on PATH.
+var ErrGraphVizNotFound = errors.New("GraphViz is not installed (no `dot` in PATH); install it from https://graphviz.org/download/ to use --svg")
 
-// GenerateSVG generates an SVG file from a DOT string using GraphViz.
-func GenerateSVG(dotContent string, outputPath string) error {
-	if !CheckGraphViz() {
-		return fmt.Errorf("GraphViz (dot) is not installed. Install it to generate SVG output")
-	}
-
-	// Create temporary DOT file
-	tmpDir := os.TempDir()
-	tmpDOT := filepath.Join(tmpDir, "graph.dot")
-	defer os.Remove(tmpDOT)
-
-	if err := os.WriteFile(tmpDOT, []byte(dotContent), 0644); err != nil {
-		return fmt.Errorf("failed to write temporary DOT file: %w", err)
-	}
-
-	// Run dot command
-	cmd := exec.Command("dot", "-Tsvg", tmpDOT, "-o", outputPath)
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to generate SVG: %w", err)
-	}
-
-	return nil
-}
-
-// WriteSVG writes the graph as SVG to the writer.
-func WriteSVG(graph *DepGraph, w io.Writer) error {
-	if !CheckGraphViz() {
-		return fmt.Errorf("GraphViz (dot) is not installed. Install it to generate SVG output")
-	}
-
-	// Generate DOT
-	dotContent := ToDOT(graph)
-
-	// Create temporary files
-	tmpDir := os.TempDir()
-	tmpDOT := filepath.Join(tmpDir, "graph.dot")
-	tmpSVG := filepath.Join(tmpDir, "graph.svg")
-	defer os.Remove(tmpDOT)
-	defer os.Remove(tmpSVG)
-
-	// Write DOT file
-	if err := os.WriteFile(tmpDOT, []byte(dotContent), 0644); err != nil {
-		return fmt.Errorf("failed to write temporary DOT file: %w", err)
-	}
-
-	// Generate SVG
-	cmd := exec.Command("dot", "-Tsvg", tmpDOT, "-o", tmpSVG)
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to generate SVG: %w", err)
-	}
-
-	// Read and write SVG
-	svgData, err := os.ReadFile(tmpSVG)
+// dotCommand returns the command that turns DOT on stdin into SVG on stdout.
+// Tests replace it with a fake.
+var dotCommand = func() (*exec.Cmd, error) {
+	path, err := exec.LookPath("dot")
 	if err != nil {
-		return fmt.Errorf("failed to read generated SVG: %w", err)
+		return nil, ErrGraphVizNotFound
 	}
+	return exec.Command(path, "-Tsvg"), nil
+}
 
-	_, err = w.Write(svgData)
-	return err
+// WriteSVG renders the graph as SVG by piping its DOT form into `dot -Tsvg`
+// and streaming dot's stdout to w. dot's stderr is included in the error.
+func WriteSVG(graph *DepGraph, w io.Writer) error {
+	cmd, err := dotCommand()
+	if err != nil {
+		return err
+	}
+	var stderr bytes.Buffer
+	cmd.Stdin = strings.NewReader(ToDOT(graph))
+	cmd.Stdout = w
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return fmt.Errorf("dot -Tsvg failed: %w: %s", err, msg)
+		}
+		return fmt.Errorf("dot -Tsvg failed: %w", err)
+	}
+	return nil
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 )
 
 // Warning represents a dependency warning.
@@ -14,7 +15,8 @@ type Warning struct {
 	Details []string
 }
 
-// DetectWarnings detects various issues in the dependency graph.
+// DetectWarnings detects various issues in the dependency graph. The result
+// is sorted by type, then package, then message.
 func DetectWarnings(graph *DepGraph) []Warning {
 	var warnings []Warning
 
@@ -22,6 +24,16 @@ func DetectWarnings(graph *DepGraph) []Warning {
 	warnings = append(warnings, DetectEcosystemConflicts(graph)...)
 	warnings = append(warnings, DetectMissingDependencies(graph)...)
 
+	sort.SliceStable(warnings, func(i, j int) bool {
+		a, b := warnings[i], warnings[j]
+		if a.Type != b.Type {
+			return a.Type < b.Type
+		}
+		if a.Package != b.Package {
+			return a.Package < b.Package
+		}
+		return a.Message < b.Message
+	})
 	return warnings
 }
 
@@ -129,22 +141,22 @@ func DetectMissingDependencies(graph *DepGraph) []Warning {
 	return warnings
 }
 
-// PrintWarnings prints warnings to the writer.
+// PrintWarnings prints warnings to w (the CLI passes os.Stderr).
 func PrintWarnings(warnings []Warning, w io.Writer) {
 	if len(warnings) == 0 {
 		return
 	}
-
-	fmt.Fprintf(w, "\n⚠ Warnings:\n\n")
-
+	var sb strings.Builder
+	sb.WriteString("\n⚠ Warnings:\n\n")
 	for _, warning := range warnings {
-		fmt.Fprintf(w, "  ⚠ %s\n", warning.Message)
+		fmt.Fprintf(&sb, "  ⚠ %s\n", warning.Message)
 		if warning.Package != "" {
-			fmt.Fprintf(w, "     Package: %s\n", warning.Package)
+			fmt.Fprintf(&sb, "     Package: %s\n", warning.Package)
 		}
 		if len(warning.Details) > 0 {
-			fmt.Fprintf(w, "     Details: %v\n", warning.Details)
+			fmt.Fprintf(&sb, "     Details: %v\n", warning.Details)
 		}
-		fmt.Fprintln(w)
+		sb.WriteString("\n")
 	}
+	_, _ = io.WriteString(w, sb.String())
 }

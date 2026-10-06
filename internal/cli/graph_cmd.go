@@ -89,17 +89,14 @@ func cmdGraph(args []string) int {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			return 1
 		}
-		fmt.Println() // Add newline after JSON
 	} else if *svgOutput {
-		outputPath := "graph.svg"
-		if err := graph.GenerateSVG(graph.ToDOT(depGraph), outputPath); err != nil {
+		if err := graph.WriteSVG(depGraph, os.Stdout); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			return 1
 		}
-		fmt.Printf("SVG graph written to %s\n", outputPath)
 	} else {
 		// Default: tree output
-		graph.PrintTree(depGraph, os.Stdout, cfg.Graph.ShowVersions, cfg.Graph.ShowEcosystem, maxDepth)
+		graph.PrintTree(depGraph, os.Stdout, graph.TreeOptions{ShowVersions: cfg.Graph.ShowVersions, ShowEcosystem: cfg.Graph.ShowEcosystem, MaxDepth: maxDepth})
 	}
 
 	// Print warnings
