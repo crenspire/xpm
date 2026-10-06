@@ -236,6 +236,9 @@ func ensureManager(id pm.ID) error {
 		return fmt.Errorf("cancelled")
 	}
 	if !yes {
+		if hint := strings.TrimSpace(pm.InstallHint(id)); hint != "" {
+			fmt.Println("To install it:", hint)
+		}
 		return fmt.Errorf("%s is not installed", meta.Name)
 	}
 	if err := pm.InstallPM(id); err != nil {

@@ -265,3 +265,30 @@ func TestEnsureManagerExplainsManualInstallAndPath(t *testing.T) {
 		t.Fatalf("ran %d commands; none may run", ran)
 	}
 }
+
+func TestEnsureManagerPrintsOfficialStepsWhenDeclinedOrNonInteractive(t *testing.T) {
+	for _, interactive := range []bool{true, false} {
+		withConfig(t, config.Config{AutoInstallPM: true, Interactive: interactive})
+		oldAsk := askYesNo
+		askYesNo = func(string) (bool, error) { return false, nil }
+		ran := 0
+		restoreRun := pm.SetCommandRunner(func(string, ...string) error { ran++; return nil })
+		restoreLook := pm.SetLookPath(func(string) (string, error) { return "", errors.New("not found") })
+
+		var err error
+		out := captureStdout(t, func() { err = ensureManager(pm.Bun) })
+		askYesNo = oldAsk
+		restoreRun()
+		restoreLook()
+
+		if err == nil {
+			t.Fatalf("interactive=%v: want an error", interactive)
+		}
+		if !strings.Contains(out, "https://bun.sh/docs/installation") {
+			t.Errorf("interactive=%v: output lacks the official steps:\n%s", interactive, out)
+		}
+		if ran != 0 {
+			t.Errorf("interactive=%v: ran %d commands; none may run", interactive, ran)
+		}
+	}
+}

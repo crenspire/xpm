@@ -105,12 +105,10 @@ xpm install axios lodash        # several packages, in order (stops at the first
 xpm install -g typescript       # global install where the tool supports it (-g may also come last)
 xpm install github.com/gin-gonic/gin   # Go module path: runs go get, no registry search
 xpm install                     # no args: install this project's dependencies with its own tool
-xpm ci                          # frozen install: npm ci, pnpm/yarn/bun --frozen-lockfile, yarn --immutable,
-                                # composer install, pip install -r, pipenv --deploy, cargo build --locked,
-                                # go mod download
+xpm ci                          # frozen/locked install where the tool supports it (see below)
 ```
 
-xpm installs the registry's own name (`xpm install monolog` → `composer require monolog/monolog`) and tells you when it differs from what you typed. A name that is only a close match (not the same package) is confirmed with you first, and refused when there is no terminal; PyPI names that differ only in case or `-`/`_`/`.` count as the same package. Lockfiles narrow the tool within an ecosystem; across ecosystems you choose. `xpm ci` never deletes lockfiles, and deletes `node_modules/` (yarn, pnpm, bun) or Composer's `vendor/` only if you confirm. In a Go project `xpm install` runs `go mod tidy`, while `xpm ci` runs `go mod download`.
+xpm installs the registry's own name (`xpm install monolog` → `composer require monolog/monolog`) and tells you when it differs from what you typed. A name that is only a close match (not the same package) is confirmed with you first, and refused when there is no terminal; PyPI names that differ only in case or `-`/`_`/`.` count as the same package. Lockfiles narrow the tool within an ecosystem; across ecosystems you choose. `xpm ci` runs the tool's strict form where one exists: `npm ci`, `pnpm`/`yarn`/`bun install --frozen-lockfile`, `yarn install --immutable` (yarn 2+), `pipenv install --deploy`, `cargo build --locked`, and `go mod download`. Other tools have no frozen flag, so `ci` runs their normal install: `composer install` (which installs from `composer.lock` when present), `pip install -r requirements.txt`, `poetry install`, `mvn install`, `gradle build`. `xpm ci` never deletes lockfiles, and deletes `node_modules/` (yarn, pnpm, bun) or Composer's `vendor/` only if you confirm. In a Go project `xpm install` runs `go mod tidy`, while `xpm ci` runs `go mod download`.
 
 For a Maven or Gradle project (`pom.xml`, `build.gradle`), `xpm install <name>` prints the dependency snippet to paste instead of editing your build file. In the search TUI, a Maven Central hit can be installed as a Maven or a Gradle snippet.
 
@@ -152,7 +150,7 @@ Without a terminal (stdin and stdout both must be terminals; pipes and CI are no
 |---|---|
 | `0` | Success |
 | `1` | Error, cancelled, invalid arguments, **no matches**, or a refused non-interactive guess |
-| other | `list` / `update` / `remove` / `run` pass through the underlying tool's exit code |
+| other | `install` (no package argument), `ci`, `list` / `update` / `remove` / `run` pass through the underlying tool's exit code |
 
 ### Changes in this release
 
@@ -211,9 +209,11 @@ Measured on macOS arm64 (2026-10-06):
 |---|---|---|
 | `xpm which axios`, first lookup | 3–6 s | ~1.0–1.4 s |
 | `xpm which axios`, repeat | 3–6 s | < 10 ms |
-| `xpm search axios` (plain), first lookup | 1.08 s | ~1.2 s (bounded by crates.io's search API) |
+| `xpm search axios` (plain), first lookup | 1.08 s* | ~1.2 s (budget ≤ 1.5 s); < 10 ms cached |
 | Worst case, one registry hangs | up to 20 s | ≤ 2.5 s |
 | npm data per lookup (`typescript`) | 15.7 MB | 3.5 KB |
+
+*The old 1.08 s was only fast because crates.io rejected every request (403, no User-Agent), so Cargo never answered. Now all five registries answer, in about 1.2 s cold.
 
 `make perf` checks these budgets (it needs `hyperfine` and `jq`).
 

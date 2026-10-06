@@ -31,6 +31,9 @@ func fakeRegistries(t *testing.T) {
 				fmt.Fprint(w, body)
 				return
 			}
+		case p == "/pypi/requests/json":
+			fmt.Fprint(w, `{"info":{"name":"requests","summary":"Python HTTP for Humans.","version":"2.32.3"}}`)
+			return
 		case p == "/packagist/search.json":
 			if q == "monolog" {
 				fmt.Fprint(w, `{"results":[{"name":"monolog/monolog","description":"Sends your logs to files, sockets, inboxes, databases and various web services"}]}`)
@@ -93,6 +96,7 @@ func TestREADMEInstallExamples(t *testing.T) {
 	}{
 		{"search then install with the lockfile's tool", []string{"package.json", "package-lock.json"}, false, "install axios", 0, []string{"npm install axios"}, "Detected package-lock.json - using npm"},
 		{"pin a version", nil, false, "install axios@1.7.0", 0, []string{"npm install axios@1.7.0"}, "Will install axios@1.7.0 via npm (Node.js)."},
+		{"pip pin uses ==", nil, false, "install requests@2.31", 0, []string{"pip install requests==2.31"}, "Will install requests@2.31 via pip"},
 		{"no implicit pin", nil, false, "install axios", 0, []string{"npm install axios"}, ""},
 		{"global install", nil, false, "install -g typescript", 0, []string{"npm install -g typescript"}, ""},
 		{"flag after the package", nil, false, "install typescript -g", 0, []string{"npm install -g typescript"}, ""},
