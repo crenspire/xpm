@@ -363,48 +363,49 @@ func TestMenuChoiceOfAClosestMatchIsNotConfirmedTwice(t *testing.T) {
 
 func TestMavenAndGradleSnippetsNeedNoTool(t *testing.T) {
 	for _, id := range []pm.ID{pm.Maven, pm.Gradle} {
-		withConfig(t, config.Config{AutoInstallPM: true})
-		ran := 0
-		restoreRun := pm.SetCommandRunner(func(string, ...string) error { ran++; return nil })
-		restoreLook := pm.SetLookPath(func(string) (string, error) { return "", errors.New("not found") })
-		oldEnsure := ensurePM
-		ensurePM = ensureManager
+		t.Run(string(id), func(t *testing.T) {
+			withConfig(t, config.Config{AutoInstallPM: true})
+			ran := 0
+			t.Cleanup(pm.SetCommandRunner(func(string, ...string) error { ran++; return nil }))
+			t.Cleanup(pm.SetLookPath(func(string) (string, error) { return "", errors.New("not found") }))
+			oldEnsure := ensurePM
+			ensurePM = ensureManager
+			t.Cleanup(func() { ensurePM = oldEnsure })
 
-		c := candidate{Result: guava}
-		c.Result.Manager = id
-		var code int
-		out := captureStdout(t, func() { code = installCandidate(c, "guava", "", false) })
-		ensurePM = oldEnsure
-		restoreRun()
-		restoreLook()
+			c := candidate{Result: guava}
+			c.Result.Manager = id
+			var code int
+			out := captureStdout(t, func() { code = installCandidate(c, "guava", "", false) })
 
-		want := "Add com.google.guava:guava:33.3.1-jre to pom.xml:"
-		if id == pm.Gradle {
-			want = "Add com.google.guava:guava:33.3.1-jre to build.gradle(.kts):"
-		}
-		if code != 0 || ran != 0 || !strings.Contains(out, want) || strings.Contains(out, "not installed") || strings.Contains(out, "Will install") {
-			t.Errorf("%s: code=%d ran=%d, want %q and no tool check:\n%s", id, code, ran, want, out)
-		}
+			want := "Add com.google.guava:guava:33.3.1-jre to pom.xml:"
+			if id == pm.Gradle {
+				want = "Add com.google.guava:guava:33.3.1-jre to build.gradle(.kts):"
+			}
+			if code != 0 || ran != 0 || !strings.Contains(out, want) || strings.Contains(out, "not installed") || strings.Contains(out, "Will install") {
+				t.Errorf("code=%d ran=%d, want %q and no tool check:\n%s", code, ran, want, out)
+			}
+		})
 	}
 }
 
 func TestEnsureManagerDoesNotOfferToInstallManualTools(t *testing.T) {
 	for _, id := range []pm.ID{pm.Bun, pm.Cargo, pm.Composer, pm.GoMod, pm.Maven, pm.Gradle, pm.Npm} {
-		withConfig(t, config.Config{AutoInstallPM: true, Interactive: true})
-		asked := false
-		oldAsk := askYesNo
-		askYesNo = func(string) (bool, error) { asked = true; return true, nil }
-		restoreLook := pm.SetLookPath(func(string) (string, error) { return "", errors.New("not found") })
-		steps, _ := pm.ManualInstallSteps(id)
+		t.Run(string(id), func(t *testing.T) {
+			withConfig(t, config.Config{AutoInstallPM: true, Interactive: true})
+			asked := false
+			oldAsk := askYesNo
+			askYesNo = func(string) (bool, error) { asked = true; return true, nil }
+			t.Cleanup(func() { askYesNo = oldAsk })
+			t.Cleanup(pm.SetLookPath(func(string) (string, error) { return "", errors.New("not found") }))
+			steps, _ := pm.ManualInstallSteps(id)
 
-		var err error
-		captureStdout(t, func() { err = ensureManager(id) })
-		askYesNo = oldAsk
-		restoreLook()
+			var err error
+			captureStdout(t, func() { err = ensureManager(id) })
 
-		if asked || err == nil || steps == "" || !strings.Contains(err.Error(), steps) {
-			t.Errorf("%s: asked=%v err=%v; want the official steps (%q) without a prompt", id, asked, err, steps)
-		}
+			if asked || err == nil || steps == "" || !strings.Contains(err.Error(), steps) {
+				t.Errorf("asked=%v err=%v; want the official steps (%q) without a prompt", asked, err, steps)
+			}
+		})
 	}
 }
 
