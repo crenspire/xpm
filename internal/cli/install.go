@@ -92,17 +92,19 @@ func installOne(spec string, global bool) int {
 	cwd, _ := os.Getwd()
 	cands := buildCandidates(rep.Results, pm.ProjectManagers(cwd))
 	sortCandidates(cands, cfg.Prefer)
-	chosen, ok := chooseCandidate(cands)
+	chosen, ok := chooseCandidate(cands, rep.UnavailableIDs())
 	if !ok {
 		return 1
 	}
 	return installCandidate(chosen, pkg, requestedVersion, global)
 }
 
-// chooseCandidate picks automatically when there is one candidate, and
-// otherwise prompts (or, non-interactively, takes the first).
-func chooseCandidate(cands []candidate) (candidate, bool) {
-	if len(cands) == 1 {
+// chooseCandidate picks automatically when there is exactly one candidate
+// and every registry answered; otherwise it prompts or, without a terminal,
+// uses nonInteractivePick. A registry that did not answer makes the list
+// possibly incomplete, so a non-interactive run refuses to pick at all.
+func chooseCandidate(cands []candidate, unavailable []pm.ID) (candidate, bool) {
+	if len(cands) == 1 && len(unavailable) == 0 {
 		if c := cands[0]; c.Via != "" {
 			fmt.Printf("Detected %s - using %s\n\n", c.Via, c.Result.Manager)
 		}
@@ -113,6 +115,10 @@ func chooseCandidate(cands []candidate) (candidate, bool) {
 		labels[i] = candidateLabel(c)
 	}
 	if !cfg.Interactive {
+		if err := refuseGuessWhenUnavailable(unavailable); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			return candidate{}, false
+		}
 		if c, ok := nonInteractivePick(cands, cfg.Prefer); ok {
 			fmt.Println("Non-interactive mode: picking", candidateLabel(c))
 			return c, true

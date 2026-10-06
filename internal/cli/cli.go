@@ -147,6 +147,7 @@ func Run() int {
 	logx.Verbose = verbose
 
 	cfg = config.Load()
+	cfg.Interactive = effectiveInteractive(cfg.Interactive, isInteractiveTerminal())
 	logx.Info("config loaded: %+v", cfg)
 
 	// Show banner and version if no args or version flag
