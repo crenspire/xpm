@@ -40,3 +40,9 @@ func skipWindows(t *testing.T) {
 		t.Skip("archives with symlinks and exec bits: Unix-only")
 	}
 }
+
+// installReq is an InstallRequest into a fresh empty dir.
+func installReq(t *testing.T, version string) env.InstallRequest {
+	t.Helper()
+	return env.InstallRequest{Version: version, Dest: t.TempDir(), Root: t.TempDir()}
+}

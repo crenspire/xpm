@@ -2,19 +2,14 @@ package runtimes
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
-	"strings"
 
 	"github.com/crenspire/xpm/internal/env"
 )
 
-// BunInstaller installs Bun versions.
+// BunInstaller installs Bun from GitHub releases, verified against SHASUMS256.txt.
 type BunInstaller struct{}
 
 func init() {
@@ -22,158 +17,60 @@ func init() {
 }
 
 // Name returns the runtime name.
-func (b *BunInstaller) Name() string {
-	return "bun"
-}
+func (b *BunInstaller) Name() string { return "bun" }
 
-// ListRemote fetches available Bun versions from GitHub releases.
-func (b *BunInstaller) ListRemote(_ context.Context) ([]string, error) {
-	resp, err := http.Get("https://api.github.com/repos/oven-sh/bun/releases")
+// ListRemote returns versions from release tags like "bun-v1.4.2".
+func (b *BunInstaller) ListRemote(ctx context.Context) ([]string, error) {
+	rels, err := fetchGitHubReleases(ctx, "oven-sh/bun")
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
-
-	var releases []struct {
-		TagName string `json:"tag_name"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&releases); err != nil {
-		return nil, err
-	}
-
-	var versions []string
-	for _, release := range releases {
-		// Remove 'v' prefix
-		version := strings.TrimPrefix(release.TagName, "v")
-		versions = append(versions, version)
-	}
-
-	return versions, nil
+	return versionsFromTags(rels, "bun-v"), nil
 }
 
-// ValidateVersion validates a Bun version string.
-func (b *BunInstaller) ValidateVersion(version string) error {
-	if version == "" {
-		return fmt.Errorf("version cannot be empty")
+// bunAsset names the release zip and its top directory for a platform.
+func bunAsset(goos, goarch string) (zip, dir string, err error) {
+	osName := map[string]string{"darwin": "darwin", "linux": "linux", "windows": "windows"}[goos]
+	arch := map[string]string{"amd64": "x64", "arm64": "aarch64"}[goarch]
+	if osName == "" || arch == "" {
+		return "", "", fmt.Errorf("bun publishes no binaries for %s/%s", goos, goarch)
 	}
-	return nil
+	dir = fmt.Sprintf("bun-%s-%s", osName, arch)
+	return dir + ".zip", dir, nil
 }
 
-// Install adapts the v1 installer to the v2 interface; the installer
-// rewrite replaces it.
-func (b *BunInstaller) Install(_ context.Context, req env.InstallRequest) error {
-	if err := b.install(req.Version, req.Dest); err != nil {
-		return err
-	}
-	return b.PostInstall(req.Version, req.Dest)
-}
-
-// Install downloads and installs a Bun version.
-func (b *BunInstaller) install(version string, dest string) error {
-	// Determine platform
-	goos := runtime.GOOS
-	goarch := runtime.GOARCH
-
-	// Map Go arch to Bun arch names
-	arch := goarch
-	if goarch == "amd64" {
-		arch = "x64"
-	} else if goarch == "arm64" {
-		arch = "aarch64"
-	}
-
-	// Map Go OS to Bun OS names
-	osName := goos
-	if goos == "darwin" {
-		osName = "darwin"
-	} else if goos == "linux" {
-		osName = "linux"
-	}
-
-	var ext string
-	if goos == "windows" {
-		ext = ".exe"
-	}
-
-	filename := fmt.Sprintf("bun-%s-%s.%s%s", osName, arch, "zip", ext)
-	if goos != "windows" {
-		filename = fmt.Sprintf("bun-%s-%s.zip", osName, arch)
-	}
-
-	url := fmt.Sprintf("https://github.com/oven-sh/bun/releases/download/bun-v%s/%s", version, filename)
-
-	fmt.Printf("Downloading from %s...\n", url)
-
-	// Download
-	resp, err := http.Get(url)
-	if err != nil {
-		return fmt.Errorf("failed to download: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("download failed with status %d", resp.StatusCode)
-	}
-
-	// Create temp file
-	tmpFile, err := os.CreateTemp("", "bun-*.tmp")
+// Install downloads, verifies and unpacks Bun into req.Dest/bin, and adds
+// bin/bunx -> bun (bun acts as bunx when invoked under that name).
+func (b *BunInstaller) Install(ctx context.Context, req env.InstallRequest) error {
+	zip, dir, err := bunAsset(hostOS, hostArch)
 	if err != nil {
 		return err
 	}
-	defer os.Remove(tmpFile.Name())
-
-	if _, err := io.Copy(tmpFile, resp.Body); err != nil {
-		tmpFile.Close()
+	base := fmt.Sprintf("%s/oven-sh/bun/releases/download/bun-v%s", githubDownloadURL, req.Version)
+	sums, err := fetchSmall(ctx, base+"/SHASUMS256.txt")
+	if err != nil {
+		return fmt.Errorf("fetch bun checksums: %w", err)
+	}
+	want, err := checksumFromSums(string(sums), zip)
+	if err != nil {
 		return err
 	}
-	tmpFile.Close()
-
-	// Extract zip
-	if err := extractZip(tmpFile.Name(), dest); err != nil {
+	archive, err := downloadVerified(ctx, base+"/"+zip, want)
+	if err != nil {
 		return err
 	}
-
-	// Bun extracts to bun-<os>-<arch>/, move binary up
-	entries, _ := os.ReadDir(dest)
-	for _, entry := range entries {
-		if entry.IsDir() && strings.HasPrefix(entry.Name(), "bun-") {
-			bunDir := filepath.Join(dest, entry.Name())
-			bunBinary := filepath.Join(bunDir, "bun")
-			if goos == "windows" {
-				bunBinary = filepath.Join(bunDir, "bun.exe")
-			}
-			if _, err := os.Stat(bunBinary); err == nil {
-				// Move binary to bin/
-				binDir := filepath.Join(dest, "bin")
-				os.MkdirAll(binDir, 0755)
-				target := filepath.Join(binDir, filepath.Base(bunBinary))
-				os.Rename(bunBinary, target)
-				os.RemoveAll(bunDir)
-			}
-			break
-		}
+	defer os.Remove(archive)
+	if err := extractArchive(archive, req.Dest); err != nil {
+		return err
 	}
-
-	return nil
+	if err := moveToBin(req.Dest, dir+"/bun", "bun"); err != nil {
+		return fmt.Errorf("bun archive layout changed: %w", err)
+	}
+	if err := os.RemoveAll(filepath.Join(req.Dest, dir)); err != nil {
+		return err
+	}
+	return os.Symlink("bun", filepath.Join(req.Dest, "bin", "bunx"))
 }
 
-// PostInstall performs post-installation setup.
-func (b *BunInstaller) PostInstall(version, dest string) error {
-	// Make bun executable
-	bunPath := filepath.Join(dest, "bin", "bun")
-	if runtime.GOOS == "windows" {
-		bunPath = filepath.Join(dest, "bin", "bun.exe")
-	}
-	if info, err := os.Stat(bunPath); err == nil {
-		os.Chmod(bunPath, info.Mode()|0111)
-	}
-	return nil
-}
-
-// BinaryPaths returns the paths to Bun binaries.
-func (b *BunInstaller) BinaryPaths() []string {
-	if runtime.GOOS == "windows" {
-		return []string{"bin\\bun.exe"}
-	}
-	return []string{"bin/bun"}
-}
+// BinaryPaths returns the Bun binaries.
+func (b *BunInstaller) BinaryPaths() []string { return []string{"bin/bun", "bin/bunx"} }
