@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -46,23 +45,28 @@ var ErrRegistryDisabled = errors.New("registry disabled in config")
 var ErrNotChecked = errors.New("not checked")
 
 // goProxyFor returns the proxy base URL for mod, honouring GOPRIVATE,
-// GONOPROXY and GOPROXY (first entry). Private modules and GOPROXY=off or
-// direct are not looked up, so private module paths never leak.
+// GONOPROXY and GOPROXY (first entry), from the environment or the go env
+// file. Private modules, GOPROXY=off or direct, and a first entry that is not
+// an http(s) URL are not looked up, so private module paths never leak.
 func goProxyFor(mod string) (string, error) {
-	if module.MatchPrefixPatterns(os.Getenv("GOPRIVATE"), mod) || module.MatchPrefixPatterns(os.Getenv("GONOPROXY"), mod) {
+	env := goEnv("GOPRIVATE", "GONOPROXY", "GOPROXY")
+	if goModuleIsPrivate(env, mod) {
 		return "", fmt.Errorf("%w: private module (GOPRIVATE/GONOPROXY)", ErrNotChecked)
 	}
-	env := os.Getenv("GOPROXY")
-	if env == "" {
+	proxy := env["GOPROXY"]
+	if proxy == "" {
 		return goProxyURL, nil
 	}
-	parts := strings.FieldsFunc(env, func(r rune) bool { return r == ',' || r == '|' })
+	parts := strings.FieldsFunc(proxy, func(r rune) bool { return r == ',' || r == '|' })
 	if len(parts) == 0 {
 		return goProxyURL, nil
 	}
 	first := strings.TrimSpace(parts[0])
 	if first == "off" || first == "direct" || first == "" {
 		return "", fmt.Errorf("%w: GOPROXY=%s", ErrNotChecked, first)
+	}
+	if u, err := url.Parse(first); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return "", fmt.Errorf("%w: GOPROXY's first entry is not an http(s) proxy", ErrNotChecked)
 	}
 	return strings.TrimRight(first, "/"), nil
 }
@@ -279,6 +283,14 @@ func LatestVersions(queries []LatestQuery, opts Options) []LatestResult {
 		if q.Manager != pm.GoMod && !Enabled(opts, q.Manager) {
 			out[i].Err = ErrRegistryDisabled
 			continue
+		}
+		if q.Manager == pm.GoMod {
+			// Before the cache: a module made private since it was cached
+			// must not show the cached answer.
+			if _, err := goProxyFor(q.Name); err != nil {
+				out[i].Err = sanitizedError{err}
+				continue
+			}
 		}
 		timeout := opts.timeoutFor(q.Manager)
 		dir := cacheDir

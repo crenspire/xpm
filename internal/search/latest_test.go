@@ -33,6 +33,8 @@ func latestFake(t *testing.T, h http.HandlerFunc) {
 	t.Setenv("GOPROXY", "")
 	t.Setenv("GOPRIVATE", "")
 	t.Setenv("GONOPROXY", "")
+	// Never read the user's go env file (go env -w settings).
+	t.Setenv("GOENV", filepath.Join(t.TempDir(), "no-go-env"))
 }
 
 func TestLatestVersionsPerRegistry(t *testing.T) {
