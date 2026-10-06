@@ -9,11 +9,12 @@ import (
 
 // completionFlags lists the flags offered per canonical command name.
 var completionFlags = map[string][]string{
-	"install": {"-g", "--global", "-w", "--workspace", "--"},
-	"run":     {"-w", "--workspace"},
-	"graph":   {"--json", "--svg", "--depth", "--exec", "--workspace", "-w"},
-	"lock":    {"--verify"},
-	"man":     {"--generate"},
+	"install":  {"-g", "--global", "-w", "--workspace", "--"},
+	"run":      {"-w", "--workspace"},
+	"outdated": {"--json", "--all", "--workspace", "-w"},
+	"graph":    {"--json", "--svg", "--depth", "--exec", "--workspace", "-w"},
+	"lock":     {"--verify"},
+	"man":      {"--generate"},
 }
 
 // completionSubcommands lists the arguments completed after a command's name.

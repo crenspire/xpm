@@ -30,6 +30,7 @@ xpm {{.Command}} \- {{.Description}}
 .SH EXIT STATUS
 0 on success; 1 on errors, invalid arguments, cancelled install prompts, no matches, or a refused non-interactive choice.
 2 on a \fBgraph\fR or \fBcompletion\fR usage error (bad flag or argument).
+\fBoutdated\fR: 0 all current, 1 some outdated, 2 usage error or incomplete check.
 \fBinstall\fR (without packages), \fBci\fR, \fBlist\fR, \fBupdate\fR, \fBremove\fR and \fBrun\fR pass through the underlying tool's exit code; \fBrun -w\fR exits 1 if any project fails.
 .SH ENVIRONMENT
 .TP
@@ -192,6 +193,32 @@ Find lodash across all registries`
 		data.Examples = `.B xpm list
 List all installed packages`
 		data.SeeAlso = `\fBxpm\fR(1), \fBxpm info\fR(1)`
+
+	case "outdated":
+		data.Description = "Show dependencies with newer versions"
+		data.Synopsis = `.B xpm outdated
+[\fB--json\fR] [\fB--all\fR] [\fB--workspace\fR|\fB-w\fR]`
+		data.FullDescription = `Show which of the project's dependencies have a newer version in their registry, across ecosystems.
+Versions come from the lockfiles; only dependencies with a locked version are checked, the rest are counted in a note on stderr (add a lockfile).
+Registries used: npm, PyPI, Packagist, the crates.io sparse index, Maven Central and proxy.golang.org. Go modules matched by GOPRIVATE or GONOPROXY are not looked up, nor are registries turned off in the config. Lookups use the registry lookup cache and the registry timeouts from the config.
+The table lists every dependency that is not current, with a summary line. With \fB--json\fR, stdout is one JSON document with \fBdependencies\fR and \fBunchecked\fR arrays.
+A package a registry does not know (for example a private package) is shown as \fBnot found\fR and does not change the exit status; a lookup that failed is shown as \fBunavailable\fR.
+Takes no arguments; an unknown flag or an argument is a usage error (exit status 2).`
+		data.Options = `.TP
+\fB--json\fR
+Print the result as JSON
+.TP
+\fB--all\fR
+Check every locked package, not only direct dependencies
+.TP
+\fB--workspace\fR, \fB-w\fR
+Combine all workspace projects`
+		data.Examples = `.B xpm outdated
+Show outdated direct dependencies
+.PP
+.B xpm outdated --all --json
+Check every locked package and print JSON`
+		data.SeeAlso = `\fBxpm\fR(1), \fBxpm update\fR(1), \fBxpm list\fR(1)`
 
 	case "update":
 		data.Description = "Update packages"

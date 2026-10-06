@@ -178,6 +178,8 @@ func Run() int {
 		return cmdInfo(rest)
 	case "lock":
 		return cmdLock(rest)
+	case "outdated":
+		return cmdOutdated(rest)
 	case "g", "graph":
 		return cmdGraph(rest)
 	case "s", "search":

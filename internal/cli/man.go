@@ -72,6 +72,7 @@ var commandTable = []commandInfo{
 	{"search", []string{"s"}, "Search all registries (TUI on a terminal, plain output otherwise)", false},
 	{"info", nil, "Show detailed package information", false},
 	{"list", []string{"l"}, "List installed packages for the current project", false},
+	{"outdated", nil, "Show dependencies with newer versions, across ecosystems", false},
 	{"update", []string{"u"}, "Update packages in the current project", false},
 	{"remove", []string{"rm"}, "Remove a package from the current project", false},
 	{"doctor", []string{"d"}, "Environment & project diagnostics", false},
@@ -131,6 +132,8 @@ func showCommandHelp(command string) bool {
 		showWhichHelp()
 	case "list":
 		showListHelp()
+	case "outdated":
+		showOutdatedHelp()
 	case "update":
 		showUpdateHelp()
 	case "remove":
@@ -416,6 +419,34 @@ func showLockHelp() {
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("RELATED COMMANDS:"))
 	fmt.Printf("  %s                    Install dependencies\n", colorCommand("xpm install"))
+}
+
+func showOutdatedHelp() {
+	fmt.Printf("%s\n", colorCommand("xpm outdated [options]"))
+	fmt.Println()
+	fmt.Printf("%s\n", colorSection("DESCRIPTION:"))
+	fmt.Println("  Show which dependencies have a newer version in their registry, across ecosystems.")
+	fmt.Println("  Versions come from the lockfiles; dependencies without a locked version are not")
+	fmt.Println("  checked (a note on stderr counts them). Registries: npm, PyPI, Packagist, crates.io")
+	fmt.Println("  (sparse index), Maven Central, proxy.golang.org. Go modules matched by GOPRIVATE or")
+	fmt.Println("  GONOPROXY are not looked up. Lookups use the lookup cache and the registry timeouts.")
+	fmt.Println("  A package a registry does not know is shown as \"not found\" (exit status unaffected);")
+	fmt.Println("  a failed lookup is \"unavailable\".")
+	fmt.Println()
+	fmt.Printf("%s\n", colorSection("EXIT STATUS:"))
+	fmt.Println("  0 all current, 1 some outdated, 2 usage error or incomplete check.")
+	fmt.Println()
+	fmt.Printf("%s\n", colorSection("OPTIONS:"))
+	fmt.Printf("  %s                         Print the result as JSON\n", colorOption("--json"))
+	fmt.Printf("  %s                          Check every locked package, not only direct dependencies\n", colorOption("--all"))
+	fmt.Printf("  %s                    Combine all workspace projects (-w)\n", colorOption("--workspace"))
+	fmt.Println()
+	fmt.Printf("%s\n", colorSection("EXAMPLES:"))
+	fmt.Printf("  %s                    Show outdated direct dependencies\n", colorExample("xpm outdated"))
+	fmt.Printf("  %s       Check every locked package, as JSON\n", colorExample("xpm outdated --all --json"))
+	fmt.Println()
+	fmt.Printf("%s\n", colorSection("RELATED COMMANDS:"))
+	fmt.Printf("  %s                       Update packages\n", colorCommand("xpm update"))
 }
 
 func showGraphHelp() {
