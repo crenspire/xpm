@@ -11,9 +11,15 @@ import (
 // pbsServer fakes latest-release.json, SHA256SUMS and one archive.
 func pbsServer(t *testing.T, archive []byte) {
 	t.Helper()
+	pbsServerSums(t, archive, archive)
+}
+
+// pbsServerSums serves archive but lists summed's checksum for it.
+func pbsServerSums(t *testing.T, archive, summed []byte) {
+	t.Helper()
 	tag := "20261003"
 	sums := strings.Join([]string{
-		shaBytes(archive) + "  cpython-3.12.15+20261003-x86_64-unknown-linux-gnu-install_only.tar.gz",
+		shaBytes(summed) + "  cpython-3.12.15+20261003-x86_64-unknown-linux-gnu-install_only.tar.gz",
 		sha("a") + "  cpython-3.12.15+20261003-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz",
 		sha("b") + "  cpython-3.13.9+20261003-x86_64-unknown-linux-gnu-freethreaded-install_only.tar.gz",
 		sha("c") + "  cpython-3.11.17+20261003-x86_64-unknown-linux-gnu-install_only.tar.gz",
@@ -83,5 +89,23 @@ func TestPythonInstallHoistsPythonDir(t *testing.T) {
 	dest := installInto(t, &PythonInstaller{}, "3.12.15")
 	if got, _ := readFile(dest, "lib/python3.12/os.py"); got != "os" {
 		t.Fatal("python/ was not hoisted")
+	}
+}
+
+func TestPythonInstallVersionNotInRelease(t *testing.T) {
+	setHost(t, "linux", "amd64")
+	pbsServer(t, []byte("x"))
+	err := (&PythonInstaller{}).Install(context.Background(), installReq(t, "3.12.4"))
+	if err == nil || !strings.Contains(err.Error(), "python 3.12.4 is not in python-build-standalone 20261003") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestPythonInstallChecksumMismatch(t *testing.T) {
+	setHost(t, "linux", "amd64")
+	pbsServerSums(t, []byte("tampered"), []byte("original"))
+	err := (&PythonInstaller{}).Install(context.Background(), installReq(t, "3.12.15"))
+	if err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
+		t.Fatalf("err = %v", err)
 	}
 }
