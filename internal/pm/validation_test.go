@@ -29,3 +29,21 @@ func TestValidatorsStillAcceptRealNames(t *testing.T) {
 		t.Error(err)
 	}
 }
+func TestComposerNamesMustBeVendorPackage(t *testing.T) {
+	for _, ok := range []string{"monolog/monolog", "symfony/http-kernel", "doctrine/dbal"} {
+		if err := ValidatePackageName(ok, Composer); err != nil {
+			t.Errorf("%q rejected: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"monolog", "Monolog/Monolog", "a/b/c", "vendor/"} {
+		if ValidatePackageName(bad, Composer) == nil {
+			t.Errorf("%q accepted for composer", bad)
+		}
+	}
+}
+
+func TestRejectLeadingDash(t *testing.T) {
+	if rejectLeadingDash("version", "1.0.0") != nil || rejectLeadingDash("version", "-1") == nil {
+		t.Fatal("rejectLeadingDash must reject exactly the values that start with '-'")
+	}
+}

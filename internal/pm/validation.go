@@ -19,7 +19,6 @@ var (
 
 	// composerPackagePattern matches valid Composer package names.
 	// Composer uses vendor/package format.
-	//lint:ignore U1000 used by P3
 	composerPackagePattern = regexp.MustCompile(`^[a-z0-9]([_.-]?[a-z0-9]+)*/[a-z0-9]([_.-]?[a-z0-9]+)*$`)
 
 	// cargoPackagePattern matches valid crate names.
@@ -44,9 +43,8 @@ func ValidatePackageName(pkg string, manager ID) error {
 		return NewValidationError("package name", "", "cannot be empty")
 	}
 
-	// A leading dash would be parsed as an option by npm/composer/pip/cargo.
-	if strings.HasPrefix(pkg, "-") {
-		return NewValidationError("package name", pkg, "cannot start with '-'")
+	if err := rejectLeadingDash("package name", pkg); err != nil {
+		return err
 	}
 
 	// Check length
@@ -73,9 +71,10 @@ func ValidatePackageName(pkg string, manager ID) error {
 			return NewValidationError("package name", pkg, "invalid PyPI package name format")
 		}
 	case Composer:
-		// Composer can be searched by partial names, so be more lenient
-		if strings.Contains(pkg, " ") {
-			return NewValidationError("package name", pkg, "cannot contain spaces")
+		// Install-time names are full vendor/package names; partial names
+		// only reach the search, which uses ValidateGenericPackageName.
+		if !composerPackagePattern.MatchString(pkg) {
+			return NewValidationError("package name", pkg, "invalid Composer package name (want vendor/package, lowercase)")
 		}
 	case Cargo:
 		if !cargoPackagePattern.MatchString(pkg) {
@@ -106,9 +105,8 @@ func ValidateGenericPackageName(pkg string) error {
 		return NewValidationError("package name", "", "cannot be empty")
 	}
 
-	// A leading dash would be parsed as an option by npm/composer/pip/cargo.
-	if strings.HasPrefix(pkg, "-") {
-		return NewValidationError("package name", pkg, "cannot start with '-'")
+	if err := rejectLeadingDash("package name", pkg); err != nil {
+		return err
 	}
 
 	if len(pkg) > MaxPackageNameLength {
@@ -124,6 +122,15 @@ func ValidateGenericPackageName(pkg string) error {
 		return NewValidationError("package name", pkg, "cannot have leading/trailing whitespace")
 	}
 
+	return nil
+}
+
+// rejectLeadingDash refuses values a package manager would parse as an
+// option (`-g`, `--registry=...`, `--working-dir=/etc`).
+func rejectLeadingDash(field, value string) error {
+	if strings.HasPrefix(value, "-") {
+		return NewValidationError(field, value, "cannot start with '-'")
+	}
 	return nil
 }
 
@@ -213,9 +220,8 @@ func ValidateVersion(version string) error {
 		return NewValidationError("version", "", "cannot be empty")
 	}
 
-	// A leading dash would be parsed as an option by package managers.
-	if strings.HasPrefix(version, "-") {
-		return NewValidationError("version", version, "cannot start with '-'")
+	if err := rejectLeadingDash("version", version); err != nil {
+		return err
 	}
 
 	// Check length (very long versions are suspicious)

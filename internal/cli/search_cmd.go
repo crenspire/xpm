@@ -92,54 +92,11 @@ func cmdSearchNonInteractive(args []string) int {
 	return 0
 }
 
-// installFromSearchResult installs a package from a search result.
+// installFromSearchResult installs the package picked in the TUI with the
+// tool picked there. The registry-supplied name is validated before anything
+// else, and no version is pinned (the tool resolves its own latest).
 func installFromSearchResult(result search.Result, pmID pm.ID) int {
-	meta, ok := pm.MetaFor(pmID)
-	if !ok {
-		fmt.Fprintf(os.Stderr, "Unsupported package manager: %s\n", pmID)
-		return 1
-	}
-
-	fmt.Printf("\nInstalling %s via %s...\n\n", result.Name, meta.Name)
-
-	adapter, err := pm.NewAdapter(pmID)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		return 1
-	}
-
-	// Check if PM is installed
-	if !pm.Exists(meta.Binary) {
-		fmt.Printf("%s (%s) is not installed on this system.\n", meta.Name, meta.Binary)
-		if !cfg.AutoInstallPM {
-			fmt.Println("Auto-install is disabled in config. Install it manually and re-run.")
-			return 1
-		}
-
-		yes, err := askYesNo(fmt.Sprintf("Attempt to install %s now?", meta.Name))
-		if err != nil || !yes {
-			fmt.Println("Aborted.")
-			return 1
-		}
-
-		if err := pm.InstallPM(pmID); err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to install package manager: %v\n", err)
-			return 1
-		}
-	}
-
-	// Names here come from registry responses, not the user: validate them too.
-	if err := pm.ValidatePackageName(result.Name, pmID); err != nil {
-		fmt.Fprintf(os.Stderr, "Refusing to install %q: %v\n", result.Name, err)
-		return 1
-	}
-
-	// Install the package
-	if err := adapter.InstallPackage(result.Name, false, nil, result.Extra); err != nil {
-		fmt.Fprintf(os.Stderr, "Package install failed: %v\n", err)
-		return 1
-	}
-
-	fmt.Println("\nDone ✅")
-	return 0
+	c := candidate{Result: result}
+	c.Result.Manager = pmID
+	return installCandidate(c, result.Name, "", false)
 }
