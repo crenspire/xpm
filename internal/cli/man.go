@@ -230,6 +230,7 @@ func showInstallHelp() {
 	fmt.Printf("  %s                    Install dependencies for detected projects\n", colorExample("xpm install"))
 	fmt.Printf("  %s              Install axios (searches all ecosystems)\n", colorExample("xpm install axios"))
 	fmt.Printf("  %s       Install several packages in order\n", colorExample("xpm install axios lodash"))
+	fmt.Printf("  %s   Install dependencies in every workspace project\n", colorExample("xpm install --workspace"))
 	fmt.Printf("  %s        Install specific version\n", colorExample("xpm install axios@1.0.0"))
 	fmt.Printf("  %s   Install globally\n", colorExample("xpm install typescript -g"))
 	fmt.Printf("  %s   go get a Go module\n", colorExample("xpm install github.com/gin-gonic/gin"))

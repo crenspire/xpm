@@ -29,7 +29,7 @@ Baselines measured on 2026-10-06 (macOS arm64, warm cache, home broadband).
 | `xpm search` (non-TUI) | 1.08 s | ≤ 1.5 s (crates.io search API ~1.2 s cold) | P3 |
 | TUI keystroke → results | 1 full search per keystroke, stale results can win | debounced, 1 in-flight query set, stale results dropped | P3 |
 | Release binary size | 14.6 MB | < 12 MB (`-trimpath -s -w`; 9.8 MB darwin/arm64, 10.9 MB linux/amd64) | P0 |
-| Shim exec overhead | needs a Go compiler at install time; `exec.Command` child | < 5 ms, no compiler, `syscall.Exec` | P5 |
+| Shim exec overhead | needs a Go compiler at install time; `exec.Command` child | < 5 ms, no compiler, `syscall.Exec` (**measured 5.1–5.6 ms**: no compiler needed, budget missed by about 0.1–0.6 ms; no dedicated shim binary was added) | P5 |
 | `xpm graph` on 1k-node lockfile | O(E²) edge insert, exponential tree print on diamonds | < 200 ms | P6 |
 
 `scripts/perf.sh` (added in P1) runs these and prints PASS/FAIL against the budget. CI runs it as an informational job.
@@ -46,16 +46,16 @@ P0 Green ──► P1 Speed core ─────► P3 Install correctness ─�
           └──────────────────────► P4 Scope cut & docs truth (continuous) ──────────────►
 ```
 
-| Phase | Name | Size | Plan |
-|---|---|---|---|
-| P0 | Green build | ~0.5 day | [Plan A](2026-10-06-xpm-p0-p1-green-and-fast.md) Tasks 1–6 |
-| P1 | Speed core | ~1 day | [Plan A](2026-10-06-xpm-p0-p1-green-and-fast.md) Tasks 7–11 |
-| P2 | Security hardening | ~1.5 days | [Plan B](2026-10-06-xpm-p2-security.md) |
-| P3 | Install/search correctness | ~4 days | [Plan C](2026-10-07-xpm-p3-install-search.md) |
-| P4 | Scope cut & docs truth | ~1 day, spread | write JIT |
-| P5 | Runtime manager rework | ~1.5 weeks | write JIT |
-| P6 | Graph / lock / workspace correctness | ~1.5 weeks | write JIT |
-| P7 | Release & product features | ongoing | write JIT |
+| Phase | Name | Size | Plan | Status |
+|---|---|---|---|---|
+| P0 | Green build | ~0.5 day | [Plan A](2026-10-06-xpm-p0-p1-green-and-fast.md) Tasks 1–6 | Done (merged to develop) |
+| P1 | Speed core | ~1 day | [Plan A](2026-10-06-xpm-p0-p1-green-and-fast.md) Tasks 7–11 | Done (merged to develop) |
+| P2 | Security hardening | ~1.5 days | [Plan B](2026-10-06-xpm-p2-security.md) | Done (merged to develop) |
+| P3 | Install/search correctness | ~4 days | [Plan C](2026-10-07-xpm-p3-install-search.md) | Done (merged to develop) |
+| P4 | Scope cut & docs truth | ~1 day, spread | write JIT | Done (merged to develop) |
+| P5 | Runtime manager rework | ~1.5 weeks | write JIT | Done (merged to develop) |
+| P6 | Graph / lock / workspace correctness | ~1.5 weeks | write JIT | Done (merged to develop) |
+| P7 | Release & product features | ongoing | write JIT | Release tooling, `outdated`, `audit`, `why`, `install --workspace` and completions done; `xpm add`/`rm` deferred; v0.1.0 tag pending (user) |
 
 ---
 
@@ -232,7 +232,7 @@ P0 Green ──► P1 Speed core ─────► P3 Install correctness ─�
 **Product, prioritised:**
 1. `xpm outdated`: one cross-ecosystem table, using the parallel registry layer.
 2. `xpm audit`: unified vulnerability report built on the fixed doctor audits; OSV API batch query (one request for all lockfiles).
-3. `xpm add`/`xpm rm` that edit manifests consistently.
+3. `xpm add`/`xpm rm` that edit manifests consistently. **Deferred** (ruling): `xpm install` and `xpm remove` cover this for now.
 4. `xpm why <pkg>`: built on the fixed graph.
 
 **Exit criteria:** `v0.1.0` tagged from `main`, installable via `brew install` and `go install`.

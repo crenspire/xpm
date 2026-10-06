@@ -123,6 +123,9 @@ Install axios (searches all ecosystems)
 .B xpm install axios lodash
 Install several packages in order
 .PP
+.B xpm install --workspace
+Install dependencies in every workspace project
+.PP
 .B xpm install axios@1.0.0
 Install specific version
 .PP
