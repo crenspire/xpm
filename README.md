@@ -95,7 +95,7 @@ Windows support for the core commands is covered by CI but is used less in pract
 
 ## Usage
 
-`xpm help` lists every command and marks the experimental ones; `xpm man <command>` has the details for one command. The everyday commands are `which`, `search`, `info`, `install`, `ci`, `list`, `update`, `remove`, `run` and `config`; `cc` and `cg` are short for `cache clean` and `cache gc` (experimental).
+`xpm help` lists every command and marks the experimental ones; `xpm man <command>` has the details for one command. The everyday commands are `which`, `search`, `info`, `install`, `ci`, `list`, `update`, `remove`, `run` and `config`.
 
 ### Find a package everywhere
 

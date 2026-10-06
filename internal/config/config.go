@@ -43,21 +43,6 @@ type DoctorConfig struct {
 	SkipDrift bool `json:"skipDrift"`
 }
 
-// CacheConfig holds configuration for the global dependency cache.
-type CacheConfig struct {
-	// Enabled controls whether caching is enabled.
-	Enabled bool `json:"enabled"`
-
-	// Path is the cache directory path. Defaults to ~/.xpm/cache.
-	Path string `json:"path"`
-
-	// MaxAgeDays is the maximum age in days for cached artifacts during GC.
-	MaxAgeDays int `json:"maxAgeDays"`
-
-	// MaxVersions is the maximum number of versions to keep per package during GC.
-	MaxVersions int `json:"maxVersions"`
-}
-
 // GraphConfig holds configuration for the `xpm graph` command.
 type GraphConfig struct {
 	// ShowVersions controls whether versions are shown in tree output.
@@ -145,9 +130,6 @@ type Config struct {
 	// Doctor holds configuration for the `xpm doctor` command.
 	Doctor DoctorConfig `json:"doctor"`
 
-	// Cache holds configuration for the global dependency cache.
-	Cache CacheConfig `json:"cache"`
-
 	// Graph holds configuration for the `xpm graph` command.
 	Graph GraphConfig `json:"graph"`
 
@@ -185,12 +167,6 @@ func defaultConfig() Config {
 			SkipEnv:       false,
 			SkipConflicts: false,
 			SkipDrift:     false,
-		},
-		Cache: CacheConfig{
-			Enabled:     true,
-			Path:        "~/.xpm/cache",
-			MaxAgeDays:  60,
-			MaxVersions: 5,
 		},
 		Graph: GraphConfig{
 			ShowVersions:  true,

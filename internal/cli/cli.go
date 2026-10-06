@@ -154,12 +154,6 @@ func Run() int {
 		return cmdInfo(rest)
 	case "lock":
 		return cmdLock(rest)
-	case "cc":
-		return cmdCache([]string{"clean"})
-	case "cg":
-		return cmdCache([]string{"gc"})
-	case "cache":
-		return cmdCache(rest)
 	case "g", "graph":
 		return cmdGraph(rest)
 	case "s", "search":

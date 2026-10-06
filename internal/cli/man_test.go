@@ -25,7 +25,7 @@ func lineWith(out, name string) string {
 
 func TestUsageListsEveryDispatchedCommand(t *testing.T) {
 	out := captureStdout(t, usage)
-	for _, c := range []string{"install", "ci", "run", "which", "list", "update", "remove", "info", "search", "lock", "cache", "cc", "cg", "graph", "workspaces", "env", "doctor", "config", "version", "help", "man"} {
+	for _, c := range []string{"install", "ci", "run", "which", "list", "update", "remove", "info", "search", "lock", "graph", "workspaces", "env", "doctor", "config", "version", "help", "man"} {
 		if !strings.Contains(out, c) {
 			t.Errorf("usage missing %q", c)
 		}
@@ -34,7 +34,7 @@ func TestUsageListsEveryDispatchedCommand(t *testing.T) {
 
 func TestUsageMarksExperimental(t *testing.T) {
 	out := captureStdout(t, usage)
-	for _, c := range []string{"env", "graph", "lock", "workspaces", "cache"} {
+	for _, c := range []string{"env", "graph", "lock", "workspaces"} {
 		l := lineWith(out, c)
 		if l == "" || !strings.Contains(l, "(experimental)") {
 			t.Errorf("%s line not marked experimental: %q", c, l)
@@ -60,7 +60,7 @@ func TestManListMatchesUsage(t *testing.T) {
 }
 
 func TestNormalizeCommandAliases(t *testing.T) {
-	for in, want := range map[string]string{"cc": "cache", "cg": "cache", "i": "install", "-V": "version", "--version": "version", "-v": "version", "-h": "help", "--help": "help", "rm": "remove", "ci": "ci"} {
+	for in, want := range map[string]string{"i": "install", "-V": "version", "--version": "version", "-v": "version", "-h": "help", "--help": "help", "rm": "remove", "ci": "ci"} {
 		if got := normalizeCommand(in); got != want {
 			t.Errorf("normalizeCommand(%q)=%q want %q", in, got, want)
 		}
@@ -136,7 +136,7 @@ func TestManPagesShareExitAndEnvSections(t *testing.T) {
 func TestExperimentalManPagesSayExperimental(t *testing.T) {
 	for name, fn := range map[string]func(){
 		"env": showEnvHelp, "graph": showGraphHelp, "lock": showLockHelp,
-		"workspaces": showWorkspacesHelp, "cache": showCacheHelp,
+		"workspaces": showWorkspacesHelp,
 	} {
 		if out := captureStdout(t, fn); !strings.Contains(out, "experimental") {
 			t.Errorf("xpm man %s does not say experimental", name)
@@ -225,5 +225,43 @@ func TestManPageTHLine(t *testing.T) {
 	}
 	if !strings.Contains(page, `.TH "XPM-CONFIG" "1" "`) || !strings.Contains(page, `"User Commands"`) {
 		t.Errorf("malformed .TH line:\n%s", page)
+	}
+}
+
+// runCLI runs Run with the given arguments and returns the exit code and stderr.
+func runCLI(t *testing.T, args ...string) (int, string) {
+	t.Helper()
+	isolatedHome(t)
+	origArgs := os.Args
+	defer func() { os.Args = origArgs }()
+	os.Args = append([]string{"xpm"}, args...)
+	var code int
+	var stderr string
+	captureStdout(t, func() {
+		stderr = captureStderr(t, func() { code = Run() })
+	})
+	return code, stderr
+}
+
+func TestRemovedCacheCommandIsUnknown(t *testing.T) {
+	wantCode, _ := runCLI(t, "definitely-not-a-command")
+	if wantCode == 0 {
+		t.Fatalf("unknown command exit code = 0")
+	}
+	for _, c := range []string{"cache", "cc", "cg"} {
+		code, stderr := runCLI(t, c)
+		if code != wantCode {
+			t.Errorf("%s: exit code %d, want %d", c, code, wantCode)
+		}
+		if want := "unknown command: " + c; !strings.Contains(stderr, want) {
+			t.Errorf("%s: stderr %q does not contain %q", c, stderr, want)
+		}
+	}
+}
+
+func TestUsageHasNoCache(t *testing.T) {
+	out := captureStdout(t, usage)
+	if strings.Contains(out, "cache") {
+		t.Errorf("usage still mentions cache:\n%s", out)
 	}
 }

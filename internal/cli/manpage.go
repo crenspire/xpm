@@ -237,40 +237,6 @@ Generate unified lockfile
 Check if lockfiles changed`
 		data.SeeAlso = `\fBxpm\fR(1), \fBxpm install\fR(1)`
 
-	case "cache":
-		data.Description = "Manage dependency cache (experimental)"
-		data.Synopsis = `.B xpm cache
-\fIsubcommand\fR`
-		data.FullDescription = `Manage the global dependency cache.
-This command is experimental and is being reworked; its behaviour and output may change.`
-		data.Options = `.TP
-\fBtree\fR
-Show cache structure and contents
-.TP
-\fBsize\fR
-Show total cache size and statistics
-.TP
-\fBclean\fR
-Clear the entire cache
-.TP
-\fBgc\fR
-Run garbage collection (removes old/unused items)
-.TP
-\fBverify\fR
-Verify integrity of cached items
-.TP
-\fBrepair\fR
-Attempt to repair corrupted cache entries
-.TP
-\fBpath\fR
-Show the cache directory path`
-		data.Examples = `.B xpm cache tree
-Show cache tree
-.PP
-.B xpm cache clean
-Clear all cached artifacts`
-		data.SeeAlso = `\fBxpm\fR(1), \fBxpm install\fR(1)`
-
 	case "graph":
 		data.Description = "Show unified dependency graph (experimental)"
 		data.Synopsis = `.B xpm graph

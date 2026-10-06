@@ -80,7 +80,6 @@ var commandTable = []commandInfo{
 	{"graph", []string{"g"}, "Dependency graph across ecosystems", true},
 	{"lock", nil, "Generate or verify the unified lockfile (xpm-lock.yaml)", true},
 	{"workspaces", nil, "List detected workspaces/monorepos", true},
-	{"cache", []string{"cc", "cg"}, "Manage the dependency cache (cc = cache clean, cg = cache gc)", true},
 	{"version", []string{"-v", "-V", "--version"}, "Show version information", false},
 	{"help", []string{"-h", "--help"}, "Show this help message", false},
 	{"man", nil, "Show the detailed manual for a command", false},
@@ -139,8 +138,6 @@ func showCommandHelp(command string) bool {
 		showInfoHelp()
 	case "lock":
 		showLockHelp()
-	case "cache":
-		showCacheHelp()
 	case "graph":
 		showGraphHelp()
 	case "search":
@@ -405,35 +402,6 @@ func showLockHelp() {
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("RELATED COMMANDS:"))
 	fmt.Printf("  %s                    Install dependencies\n", colorCommand("xpm install"))
-}
-
-func showCacheHelp() {
-	fmt.Printf("%s\n", colorCommand("xpm cache <subcommand>"))
-	fmt.Println()
-	fmt.Printf("%s\n", colorSection("DESCRIPTION:"))
-	fmt.Println("  Manage dependency cache (experimental)")
-	fmt.Println("  This command is experimental and is being reworked; its behaviour and output may change.")
-	fmt.Println()
-	fmt.Printf("%s\n", colorSection("SUBCOMMANDS:"))
-	fmt.Printf("  %s                           Show cache structure and contents\n", colorCommand("tree"))
-	fmt.Printf("  %s                           Show total cache size and statistics\n", colorCommand("size"))
-	fmt.Printf("  %s                          Clear the entire cache\n", colorCommand("clean"))
-	fmt.Printf("  %s                             Run garbage collection (removes old/unused items)\n", colorCommand("gc"))
-	fmt.Printf("  %s                         Verify integrity of cached items\n", colorCommand("verify"))
-	fmt.Printf("  %s                         Attempt to repair corrupted cache entries\n", colorCommand("repair"))
-	fmt.Printf("  %s                           Show the cache directory path\n", colorCommand("path"))
-	fmt.Println()
-	fmt.Printf("%s\n", colorSection("EXAMPLES:"))
-	fmt.Printf("  %s                 Show cache tree\n", colorExample("xpm cache tree"))
-	fmt.Printf("  %s                Clear all cached artifacts\n", colorExample("xpm cache clean"))
-	fmt.Printf("  %s                   Clean up old cached items\n", colorExample("xpm cache gc"))
-	fmt.Println()
-	fmt.Printf("%s\n", colorSection("ALIASES:"))
-	fmt.Printf("  %s                             Alias for 'cache clean'\n", colorCommand("cc"))
-	fmt.Printf("  %s                             Alias for 'cache gc'\n", colorCommand("cg"))
-	fmt.Println()
-	fmt.Printf("%s\n", colorSection("RELATED COMMANDS:"))
-	fmt.Printf("  %s                    Install dependencies (uses cache)\n", colorCommand("xpm install"))
 }
 
 func showGraphHelp() {
