@@ -168,6 +168,7 @@ xpm graph --json > g.json  # machine-readable; stdout carries only the graph, wa
 xpm graph --svg > g.svg    # needs GraphViz `dot`
 xpm graph --exec           # also run mvn / gradle / go mod graph for full Java and Go trees
 xpm graph --workspace      # combine the graphs of all workspace projects
+xpm why lodash             # every path from your root packages to lodash (--limit N per version, default 10; --json)
 xpm lock                   # write xpm-lock.yaml (hashes of the lockfiles in the project root)
 xpm lock --verify          # exit 1 if a lockfile changed, appeared or disappeared since `xpm lock`, or cannot be checked (unreadable, or a recorded path outside the project)
 xpm workspaces             # list monorepo projects (npm/yarn/pnpm, Cargo, go.work, Poetry and uv, Maven, Gradle, Composer)
@@ -227,9 +228,10 @@ Without a terminal (stdin and stdout both must be terminals; pipes and CI are no
 |---|---|
 | `0` | Success |
 | `1` | Error, cancelled install prompt, invalid arguments, **no matches**, or a refused non-interactive guess |
-| `2` | `graph` usage error (bad flag or argument) |
-| `outdated` / `audit` / `why` | `0` nothing to report (all current / no known vulnerabilities / package found); `1` something to report (outdated dependencies / vulnerabilities / package not in the dependency graph); `2` usage error or the check could not be completed |
+| `2` | Usage error (bad flag or argument) of `graph`, `outdated`, `audit` or `why`; for `outdated` / `audit` also an incomplete check |
 | other | `install` (no package argument), `ci`, `list` / `update` / `remove` / `run` pass through the underlying tool's exit code (`run --workspace` exits 1 if any project fails) |
+
+`outdated`, `audit` and `why` use `0` for nothing to report (all current / no known vulnerabilities / package found) and `1` for something to report (outdated dependencies / vulnerabilities / package not in the dependency graph).
 
 ### Changes in this release
 

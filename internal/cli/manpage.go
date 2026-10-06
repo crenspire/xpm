@@ -29,7 +29,7 @@ xpm {{.Command}} \- {{.Description}}
 {{.Examples}}
 .SH EXIT STATUS
 0 on success; 1 on errors, invalid arguments, cancelled install prompts, no matches, or a refused non-interactive choice.
-2 on a \fBgraph\fR or \fBcompletion\fR usage error (bad flag or argument).
+2 on a usage error (bad flag or argument) of \fBgraph\fR, \fBcompletion\fR, \fBoutdated\fR, \fBaudit\fR or \fBwhy\fR.
 \fBoutdated\fR: 0 all current, 1 some outdated, 2 usage error or incomplete check.
 \fBaudit\fR: 0 no known vulnerabilities, 1 vulnerabilities found, 2 usage error or the check could not be completed.
 \fBwhy\fR: 0 package found and paths printed, 1 package not in the dependency graph, 2 usage error or unreadable project.
@@ -254,15 +254,15 @@ Audit with a 10 second limit and print JSON`
 \fIpackage\fR [\fB--json\fR] [\fB--limit\fR \fIN\fR] [\fB--workspace\fR|\fB-w\fR]`
 		data.FullDescription = `Show the dependency paths from the project's root packages to a package, across ecosystems, read from the lockfiles.
 Each version of the package that is in the graph gets one block, followed by one line per path, for example \fBmy-app > express@4.18.2 > body-parser@1.20.1 > lodash@4.17.21\fR.
-At most \fB--limit\fR paths are shown (default 10; 0 shows all); when more exist, a last line says so. Cycles are cut, so a path never repeats a package.
-With \fB--json\fR, stdout is one JSON document with \fBpackage\fR, \fBpaths\fR (lists of node IDs from a root to the package) and \fBtruncated\fR.
+At most \fB--limit\fR paths are shown per version, shortest first (default 10; 0 shows all); a version with more paths ends with a line saying so. Cycles are cut, so a path never repeats a package.
+With \fB--json\fR, stdout is one JSON document with \fBpackage\fR and \fBtargets\fR, one entry per version with its \fBid\fR, \fBpaths\fR (lists of node IDs from a root to it) and \fBtruncated\fR.
 Exit status: 0 if the package is in the graph, 1 if it is not, 2 on a usage error (a missing or extra package name, a bad flag, a negative limit) or an unreadable project.`
 		data.Options = `.TP
 \fB--json\fR
 Print the paths as JSON
 .TP
 \fB--limit\fR \fIN\fR
-Maximum number of paths to show (default 10; 0 = all)
+Maximum number of paths to show per version (default 10; 0 = all)
 .TP
 \fB--workspace\fR, \fB-w\fR
 Combine all workspace projects`

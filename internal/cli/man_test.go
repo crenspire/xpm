@@ -305,7 +305,7 @@ func TestGraphAndLockDocsCoverFlagsAndExitStatus(t *testing.T) {
 	}
 	i := strings.Index(top, ".SH EXIT STATUS")
 	j := strings.Index(top, ".SH ENVIRONMENT")
-	if i < 0 || j < i || !strings.Contains(roffFontRe.ReplaceAllString(top[i:j], ""), "2 on a graph or completion usage error") {
+	if i < 0 || j < i || !strings.Contains(roffFontRe.ReplaceAllString(top[i:j], ""), "2 on a usage error (bad flag or argument) of graph, completion, outdated, audit or why") {
 		t.Errorf("EXIT STATUS section does not describe exit 2 for graph and completion:\n%s", top)
 	}
 }

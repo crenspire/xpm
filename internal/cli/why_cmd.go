@@ -6,7 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"sort"
 	"strings"
 
 	"github.com/crenspire/xpm/internal/graph"
@@ -61,11 +60,17 @@ func parseWhyArgs(args []string) (whyArgs, error) {
 	return a, nil
 }
 
-// whyReport is the JSON document of `xpm why`.
-type whyReport struct {
-	Package   string     `json:"package"`
+// whyTarget is one version of the package in the JSON output.
+type whyTarget struct {
+	ID        string     `json:"id"`
 	Paths     [][]string `json:"paths"`
 	Truncated bool       `json:"truncated"`
+}
+
+// whyReport is the JSON document of `xpm why`.
+type whyReport struct {
+	Package string      `json:"package"`
+	Targets []whyTarget `json:"targets"`
 }
 
 // cmdWhy shows the dependency paths from the project's roots to a package.
@@ -88,14 +93,17 @@ func cmdWhy(args []string) int {
 	}
 	graph.NormalizeGraph(g)
 
-	paths, truncated := graph.PathsTo(g, a.Package, a.Limit)
-	if len(paths) == 0 {
+	targets := graph.PathsTo(g, a.Package, a.Limit)
+	if len(targets) == 0 {
 		fmt.Fprintf(os.Stderr, "error: package %q not found in the dependency graph\n", search.SanitizeText(a.Package))
 		return 1
 	}
 
 	if a.JSON {
-		rep := whyReport{Package: a.Package, Paths: paths, Truncated: truncated}
+		rep := whyReport{Package: a.Package, Targets: make([]whyTarget, 0, len(targets))}
+		for _, t := range targets {
+			rep.Targets = append(rep.Targets, whyTarget{ID: t.Target, Paths: t.Paths, Truncated: t.Truncated})
+		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		if err := enc.Encode(rep); err != nil {
@@ -104,23 +112,12 @@ func cmdWhy(args []string) int {
 		}
 		return 0
 	}
-	printWhy(g, paths, truncated)
+	printWhy(g, targets)
 	return 0
 }
 
-// printWhy writes one block per target version (sorted by node ID).
-func printWhy(g *graph.DepGraph, paths [][]string, truncated bool) {
-	byTarget := map[string][][]string{}
-	for _, p := range paths {
-		t := p[len(p)-1]
-		byTarget[t] = append(byTarget[t], p)
-	}
-	targets := make([]string, 0, len(byTarget))
-	for id := range byTarget {
-		targets = append(targets, id)
-	}
-	sort.Strings(targets)
-
+// printWhy writes one block per target version (in node ID order).
+func printWhy(g *graph.DepGraph, targets []graph.TargetPaths) {
 	label := func(id string) string {
 		if n := g.GetNode(id); n != nil {
 			return search.SanitizeText(n.ShortString())
@@ -129,19 +126,22 @@ func printWhy(g *graph.DepGraph, paths [][]string, truncated bool) {
 	}
 	for _, t := range targets {
 		eco := ""
-		if n := g.GetNode(t); n != nil {
+		if n := g.GetNode(t.Target); n != nil {
 			eco = search.SanitizeText(n.Ecosystem)
 		}
-		fmt.Printf("%s (%s)\n", label(t), eco)
-		for _, p := range byTarget[t] {
+		fmt.Printf("%s (%s)\n", label(t.Target), eco)
+		if len(t.Paths) == 0 {
+			fmt.Println("  (no path from a root)")
+		}
+		for _, p := range t.Paths {
 			names := make([]string, len(p))
 			for i, id := range p {
 				names[i] = label(id)
 			}
 			fmt.Printf("  %s\n", strings.Join(names, " > "))
 		}
-	}
-	if truncated {
-		fmt.Println("  … more paths (use --limit 0 to show all)")
+		if t.Truncated {
+			fmt.Println("  … more paths (use --limit 0 to show all)")
+		}
 	}
 }

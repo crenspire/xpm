@@ -31,13 +31,32 @@ func TestWhyPrintsPaths(t *testing.T) {
 	}
 }
 
-func TestWhyTruncated(t *testing.T) {
+func TestWhyLimitIsPerVersion(t *testing.T) {
 	graphProject(t, map[string]string{"package-lock.json": demoLock})
-	code, stdout, _ := runWhy(t, "--limit", "1", "ms")
-	if code != 0 || !strings.HasSuffix(stdout, "  … more paths (use --limit 0 to show all)\n") {
+	code, stdout, _ := runWhy(t, "ms", "--limit", "1")
+	if code != 0 || !strings.Contains(stdout, "ms@2.0.0 (node)") || !strings.Contains(stdout, "ms@2.1.3 (node)") {
 		t.Fatalf("exit %d stdout %q", code, stdout)
 	}
-	if code, stdout, _ := runWhy(t, "--limit", "0", "ms"); code != 0 || strings.Contains(stdout, "more paths") {
+}
+
+const diamondLock = `{
+  "name": "demo", "version": "1.0.0", "lockfileVersion": 3,
+  "packages": {
+    "": {"name": "demo", "version": "1.0.0", "dependencies": {"a": "1.0.0", "b": "1.0.0"}},
+    "node_modules/a": {"version": "1.0.0", "dependencies": {"c": "1.0.0"}},
+    "node_modules/b": {"version": "1.0.0", "dependencies": {"c": "1.0.0"}},
+    "node_modules/c": {"version": "1.0.0"}
+  }
+}`
+
+func TestWhyTruncated(t *testing.T) {
+	graphProject(t, map[string]string{"package-lock.json": diamondLock})
+	code, stdout, _ := runWhy(t, "--limit", "1", "c")
+	want := "c@1.0.0 (node)\n  demo@1.0.0 > a@1.0.0 > c@1.0.0\n  … more paths (use --limit 0 to show all)\n"
+	if code != 0 || stdout != want {
+		t.Fatalf("exit %d stdout %q", code, stdout)
+	}
+	if code, stdout, _ := runWhy(t, "--limit", "0", "c"); code != 0 || strings.Contains(stdout, "more paths") || strings.Count(stdout, " > ") != 4 {
 		t.Fatalf("exit %d stdout %q", code, stdout)
 	}
 }
@@ -66,15 +85,18 @@ func TestWhyJSON(t *testing.T) {
 		t.Fatalf("exit %d stderr %q", code, stderr)
 	}
 	var out struct {
-		Package   string
-		Paths     [][]string
-		Truncated bool
+		Package string
+		Targets []struct {
+			ID        string
+			Paths     [][]string
+			Truncated bool
+		}
 	}
 	if err := json.Unmarshal([]byte(stdout), &out); err != nil {
 		t.Fatalf("%v\n%s", err, stdout)
 	}
-	if out.Package != "debug" || out.Truncated || len(out.Paths) != 1 ||
-		strings.Join(out.Paths[0], ",") != "node:demo@1.0.0,node:debug@2.6.9" {
+	if out.Package != "debug" || len(out.Targets) != 1 || out.Targets[0].ID != "node:debug@2.6.9" || out.Targets[0].Truncated ||
+		len(out.Targets[0].Paths) != 1 || strings.Join(out.Targets[0].Paths[0], ",") != "node:demo@1.0.0,node:debug@2.6.9" {
 		t.Errorf("out = %+v", out)
 	}
 }

@@ -28,6 +28,15 @@ func pathsGraph(roots []string, edges [][2]string) *DepGraph {
 	return g
 }
 
+// flatPaths runs PathsTo and flattens the result for single-target tests.
+func flatPaths(g *DepGraph, name string, limit int) (paths [][]string, truncated bool) {
+	for _, tp := range PathsTo(g, name, limit) {
+		paths = append(paths, tp.Paths...)
+		truncated = truncated || tp.Truncated
+	}
+	return paths, truncated
+}
+
 func ids(names ...string) []string {
 	out := make([]string, len(names))
 	for i, n := range names {
@@ -38,7 +47,7 @@ func ids(names ...string) []string {
 
 func TestPathsToDiamond(t *testing.T) {
 	g := pathsGraph([]string{"app"}, [][2]string{{"app", "a"}, {"app", "b"}, {"a", "c"}, {"b", "c"}, {"app", "c"}})
-	paths, trunc := PathsTo(g, "c", 0)
+	paths, trunc := flatPaths(g, "c", 0)
 	want := [][]string{ids("app", "c"), ids("app", "a", "c"), ids("app", "b", "c")}
 	if trunc || !reflect.DeepEqual(paths, want) {
 		t.Fatalf("paths = %v trunc %v, want %v", paths, trunc, want)
@@ -47,24 +56,80 @@ func TestPathsToDiamond(t *testing.T) {
 
 func TestPathsToCycle(t *testing.T) {
 	g := pathsGraph([]string{"app"}, [][2]string{{"app", "a"}, {"a", "b"}, {"b", "a"}})
-	paths, trunc := PathsTo(g, "b", 0)
+	paths, trunc := flatPaths(g, "b", 0)
 	if trunc || !reflect.DeepEqual(paths, [][]string{ids("app", "a", "b")}) {
 		t.Fatalf("paths = %v trunc %v", paths, trunc)
 	}
 	// A cycle with no root yields nothing, and terminates.
 	g = pathsGraph(nil, [][2]string{{"x", "y"}, {"y", "x"}})
-	if paths, _ := PathsTo(g, "x", 0); len(paths) != 0 {
+	if paths, _ := flatPaths(g, "x", 0); len(paths) != 0 {
 		t.Fatalf("paths = %v", paths)
+	}
+}
+
+func TestPathsToKeepsShortestUnderLimit(t *testing.T) {
+	// A long path sorts lexically first but must not displace the short one.
+	g := pathsGraph([]string{"app"}, [][2]string{{"app", "a"}, {"a", "b"}, {"b", "c"}, {"c", "t"}, {"app", "z"}, {"z", "t"}})
+	got := PathsTo(g, "t", 1)
+	if len(got) != 1 || !got[0].Truncated || !reflect.DeepEqual(got[0].Paths, [][]string{ids("app", "z", "t")}) {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestPathsToPerTargetLimit(t *testing.T) {
+	g := NewGraph()
+	for _, n := range []*DepNode{NewDepNode("node", "app", "1"), NewDepNode("node", "x", "1"), NewDepNode("node", "t", "1"), NewDepNode("node", "t", "2")} {
+		g.AddNode(n)
+	}
+	g.AddRoot("node:app@1")
+	for _, e := range [][2]string{{"node:app@1", "node:t@1"}, {"node:app@1", "node:x@1"}, {"node:x@1", "node:t@1"}, {"node:app@1", "node:t@2"}, {"node:x@1", "node:t@2"}} {
+		g.AddEdge(&DepEdge{From: e[0], To: e[1]})
+	}
+	got := PathsTo(g, "t", 1)
+	if len(got) != 2 || got[0].Target != "node:t@1" || got[1].Target != "node:t@2" {
+		t.Fatalf("got %+v", got)
+	}
+	for _, tp := range got {
+		if len(tp.Paths) != 1 || !tp.Truncated {
+			t.Errorf("%s: %+v", tp.Target, tp)
+		}
+	}
+}
+
+func TestPathsToDenseCycle(t *testing.T) {
+	// 25 mutually dependent nodes, one root edge in, the target below.
+	var edges [][2]string
+	name := func(i int) string { return fmt.Sprintf("n%d", i) }
+	edges = append(edges, [2]string{"app", name(0)})
+	for i := 0; i < 25; i++ {
+		for j := 0; j < 25; j++ {
+			if i != j {
+				edges = append(edges, [2]string{name(i), name(j)})
+			}
+		}
+	}
+	edges = append(edges, [2]string{name(24), "target"})
+	g := pathsGraph([]string{"app"}, edges)
+	start := time.Now()
+	got := PathsTo(g, "target", 10)
+	if d := time.Since(start); d > time.Second {
+		t.Fatalf("took %v", d)
+	}
+	if len(got) != 1 || len(got[0].Paths) != 10 || !got[0].Truncated {
+		t.Fatalf("got %d paths, truncated %v", len(got[0].Paths), got[0].Truncated)
+	}
+	if want := ids("app", "n0", "n24", "target"); !reflect.DeepEqual(got[0].Paths[0], want) {
+		t.Errorf("first path %v, want %v", got[0].Paths[0], want)
 	}
 }
 
 func TestPathsToLimit(t *testing.T) {
 	g := pathsGraph([]string{"app"}, [][2]string{{"app", "a"}, {"app", "b"}, {"app", "d"}, {"a", "c"}, {"b", "c"}, {"d", "c"}})
-	paths, trunc := PathsTo(g, "c", 2)
+	paths, trunc := flatPaths(g, "c", 2)
 	if !trunc || len(paths) != 2 {
 		t.Fatalf("paths = %v trunc %v", paths, trunc)
 	}
-	paths, trunc = PathsTo(g, "c", 3)
+	paths, trunc = flatPaths(g, "c", 3)
 	if trunc || len(paths) != 3 {
 		t.Fatalf("limit == count: paths = %v trunc %v", paths, trunc)
 	}
@@ -72,7 +137,7 @@ func TestPathsToLimit(t *testing.T) {
 
 func TestPathsToTargetIsRoot(t *testing.T) {
 	g := pathsGraph([]string{"app"}, [][2]string{{"app", "a"}})
-	paths, trunc := PathsTo(g, "app", 0)
+	paths, trunc := flatPaths(g, "app", 0)
 	if trunc || !reflect.DeepEqual(paths, [][]string{ids("app")}) {
 		t.Fatalf("paths = %v", paths)
 	}
@@ -80,11 +145,11 @@ func TestPathsToTargetIsRoot(t *testing.T) {
 
 func TestPathsToMissing(t *testing.T) {
 	g := pathsGraph([]string{"app"}, nil)
-	if paths, trunc := PathsTo(g, "nope", 0); paths != nil || trunc {
-		t.Fatalf("paths = %v trunc %v", paths, trunc)
+	if got := PathsTo(g, "nope", 0); got != nil {
+		t.Fatalf("got %v", got)
 	}
-	if paths, trunc := PathsTo(nil, "x", 0); paths != nil || trunc {
-		t.Fatalf("nil graph: %v %v", paths, trunc)
+	if got := PathsTo(nil, "x", 0); got != nil {
+		t.Fatalf("nil graph: %v", got)
 	}
 }
 
@@ -105,7 +170,7 @@ func TestPathsToLayeredPerf(t *testing.T) {
 	edges = append(edges, [2]string{layer(29, 0), "target"}, [2]string{layer(29, 1), "target"})
 	g := pathsGraph([]string{"app"}, edges)
 	start := time.Now()
-	paths, trunc := PathsTo(g, "target", 10)
+	paths, trunc := flatPaths(g, "target", 10)
 	if d := time.Since(start); d > time.Second {
 		t.Fatalf("took %v", d)
 	}
