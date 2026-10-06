@@ -81,3 +81,24 @@ func TestPHPInstallLinksHomebrewBinary(t *testing.T) {
 		t.Fatalf("bin/php -> %q", target)
 	}
 }
+
+func TestPHPInstallRejectsBadPrefixAndVersion(t *testing.T) {
+	skipWindows(t)
+	setHost(t, "darwin", "arm64")
+	setVar(t, &lookPath, func(string) (string, error) { return "/opt/homebrew/bin/brew", nil })
+	setVar(t, &runCmd, func(context.Context, string, []string, []string) error { return nil })
+	for _, out := range []string{"\n", "warning: x\n"} {
+		setVar(t, &cmdOutput, func(context.Context, string, ...string) ([]byte, error) { return []byte(out), nil })
+		req := installReq(t, "8.3")
+		err := (&PHPInstaller{}).Install(context.Background(), req)
+		if err == nil || !strings.Contains(err.Error(), "expected an absolute path") {
+			t.Fatalf("output %q: %v", out, err)
+		}
+		if _, lerr := os.Lstat(filepath.Join(req.Dest, "bin", "php")); lerr == nil {
+			t.Fatalf("output %q left a bin/php link", out)
+		}
+	}
+	if err := (&PHPInstaller{}).Install(context.Background(), installReq(t, "8.3.12")); err == nil {
+		t.Fatal("patch version accepted")
+	}
+}

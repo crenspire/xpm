@@ -89,6 +89,9 @@ func (p *PHPInstaller) ListRemote(ctx context.Context) ([]string, error) {
 // Install runs `brew install shivammathur/php/php@X.Y` and links
 // req.Dest/bin/php to that formula's php (no copy, no wrapper scripts).
 func (p *PHPInstaller) Install(ctx context.Context, req env.InstallRequest) error {
+	if !phpMinorRe.MatchString(req.Version) {
+		return fmt.Errorf("PHP is installed per minor version through Homebrew; %q is not MAJOR.MINOR", req.Version)
+	}
 	if hostOS != "darwin" {
 		return errPHPNeedsBrew
 	}
@@ -104,7 +107,11 @@ func (p *PHPInstaller) Install(ctx context.Context, req env.InstallRequest) erro
 	if err != nil {
 		return fmt.Errorf("brew --prefix %s: %w", formula, err)
 	}
-	php := filepath.Join(strings.TrimSpace(string(out)), "bin", "php")
+	prefix := strings.TrimSpace(string(out))
+	if prefix == "" || !filepath.IsAbs(prefix) {
+		return fmt.Errorf("brew --prefix %s printed %q, expected an absolute path", formula, prefix)
+	}
+	php := filepath.Join(prefix, "bin", "php")
 	if fi, err := os.Stat(php); err != nil || fi.IsDir() {
 		return fmt.Errorf("brew installed %s but %s is missing", formula, php)
 	}
