@@ -1,6 +1,5 @@
 # Binaries (anchored so cmd/xpm/ is NOT ignored)
 /xpm
-/upm
 *.exe
 *.exe~
 *.dll
