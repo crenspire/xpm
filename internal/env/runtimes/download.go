@@ -1,20 +1,35 @@
 package runtimes
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"path"
 	"strings"
 	"time"
 )
 
+// Base URLs are variables so tests can point them at httptest servers.
 var (
 	nodeDistURL = "https://nodejs.org/dist"
 	goDLURL     = "https://go.dev/dl"
+	githubAPI   = "https://api.github.com"
+)
+
+// progress receives "Downloading ..." lines; tests silence it.
+var progress io.Writer = os.Stdout
+
+// maxSmallResponse caps metadata documents (fetchSmall/fetchJSON);
+// maxReleasesResponse caps the GitHub releases list (Deno's is ~6 MB).
+var (
+	maxSmallResponse    int64 = 8 << 20
+	maxReleasesResponse int64 = 32 << 20
 )
 
 // downloadClient bounds every runtime download: no more hanging forever on a
@@ -29,36 +44,138 @@ var downloadClient = &http.Client{
 	},
 }
 
-// fetchSmall GETs a metadata document (checksum list, release JSON), capped at 8 MiB.
-func fetchSmall(url string) ([]byte, error) {
-	resp, err := downloadClient.Get(url)
+// statusError is a non-200 answer; isNotFound recognises 404s.
+type statusError struct {
+	URL  string
+	Code int
+}
+
+func (e *statusError) Error() string { return fmt.Sprintf("GET %s: status %d", e.URL, e.Code) }
+
+func isNotFound(err error) bool {
+	var se *statusError
+	return errors.As(err, &se) && se.Code == http.StatusNotFound
+}
+
+func logf(format string, args ...any) { _, _ = fmt.Fprintf(progress, format, args...) }
+
+// get performs a ctx-bound GET and returns the response for 200 OK only.
+func get(ctx context.Context, url string, header http.Header) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	for k, vs := range header {
+		for _, v := range vs {
+			req.Header.Add(k, v)
+		}
+	}
+	req.Header.Set("User-Agent", "xpm")
+	resp, err := downloadClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		_ = resp.Body.Close()
+		return nil, &statusError{URL: url, Code: resp.StatusCode}
+	}
+	return resp, nil
+}
+
+// fetchSmall GETs a metadata document (checksum list, release JSON). It
+// fails, rather than truncating, when the body exceeds 8 MiB.
+func fetchSmall(ctx context.Context, url string) ([]byte, error) {
+	return fetchCapped(ctx, url, nil, maxSmallResponse)
+}
+
+func fetchCapped(ctx context.Context, url string, header http.Header, limit int64) ([]byte, error) {
+	resp, err := get(ctx, url, header)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GET %s: status %d", url, resp.StatusCode)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	if err != nil {
+		return nil, fmt.Errorf("GET %s: %w", url, err)
 	}
-	return io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if int64(len(body)) > limit {
+		return nil, fmt.Errorf("response from %s exceeds %d MiB", url, limit>>20)
+	}
+	return body, nil
+}
+
+// fetchJSON decodes a small JSON document into v.
+func fetchJSON(ctx context.Context, url string, v any) error {
+	body, err := fetchSmall(ctx, url)
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(body, v); err != nil {
+		return fmt.Errorf("parse %s: %w", url, err)
+	}
+	return nil
+}
+
+// githubRelease is the part of a GitHub release xpm reads.
+type githubRelease struct {
+	TagName    string `json:"tag_name"`
+	Draft      bool   `json:"draft"`
+	Prerelease bool   `json:"prerelease"`
+}
+
+// fetchGitHubReleases lists the newest 100 releases of repo ("owner/name"),
+// authenticating with $GITHUB_TOKEN when set (60 requests/hour otherwise).
+func fetchGitHubReleases(ctx context.Context, repo string) ([]githubRelease, error) {
+	h := http.Header{}
+	h.Set("Accept", "application/vnd.github+json")
+	if tok := os.Getenv("GITHUB_TOKEN"); tok != "" {
+		h.Set("Authorization", "Bearer "+tok)
+	}
+	url := githubAPI + "/repos/" + repo + "/releases?per_page=100"
+	body, err := fetchCapped(ctx, url, h, maxReleasesResponse)
+	if err != nil {
+		return nil, err
+	}
+	var rels []githubRelease
+	if err := json.Unmarshal(body, &rels); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", url, err)
+	}
+	return rels, nil
+}
+
+// archiveExt keeps the archive suffix of a URL so extractArchive can
+// dispatch on the downloaded file's name.
+func archiveExt(url string) string {
+	base := path.Base(url)
+	for _, ext := range []string{".tar.gz", ".tgz", ".zip"} {
+		if strings.HasSuffix(base, ext) {
+			return ext
+		}
+	}
+	return ""
 }
 
 // downloadVerified streams url to a temp file while hashing it, and returns
 // the temp path only if its SHA-256 equals wantHex. On any failure the temp
 // file is removed. The caller must os.Remove the returned path when done.
-func downloadVerified(url, wantHex string) (string, error) {
+func downloadVerified(ctx context.Context, url, wantHex string) (string, error) {
+	return downloadVerifiedTo(ctx, url, wantHex, "")
+}
+
+// downloadVerifiedTo is downloadVerified with the temp file in dir
+// ("" = os.TempDir()), for files that must be executed (rustup-init).
+func downloadVerifiedTo(ctx context.Context, url, wantHex, dir string) (string, error) {
 	if len(wantHex) != sha256.Size*2 {
 		return "", fmt.Errorf("refusing to download %s: no valid SHA-256 to verify against", url)
 	}
-	resp, err := downloadClient.Get(url)
+	logf("Downloading %s\n", url)
+	resp, err := get(ctx, url, nil)
 	if err != nil {
 		return "", fmt.Errorf("download %s: %w", url, err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("download %s: status %d", url, resp.StatusCode)
-	}
 
-	tmp, err := os.CreateTemp("", "xpm-dl-*")
+	tmp, err := os.CreateTemp(dir, "xpm-dl-*"+archiveExt(url))
 	if err != nil {
 		return "", err
 	}

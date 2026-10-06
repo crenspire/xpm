@@ -124,12 +124,35 @@ func writeEntry(root, target string, mode os.FileMode, r io.Reader) error {
 	return f.Close()
 }
 
+// checkRelativeLink accepts only relative link targets whose ".." parts
+// form a leading run. A ".." after a real component would be followed by the
+// kernel through whatever that component is (possibly another symlink), so
+// lexical containment checks would lie.
+func checkRelativeLink(link string) error {
+	if link == "" || filepath.IsAbs(link) || filepath.VolumeName(link) != "" ||
+		strings.HasPrefix(link, "/") || strings.HasPrefix(link, `\`) {
+		return fmt.Errorf("link target %q: only relative targets are allowed", link)
+	}
+	seenName := false
+	for _, part := range strings.Split(filepath.FromSlash(link), string(filepath.Separator)) {
+		switch part {
+		case "", ".":
+		case "..":
+			if seenName {
+				return fmt.Errorf("link target %q: \"..\" after a path component is not allowed", link)
+			}
+		default:
+			seenName = true
+		}
+	}
+	return nil
+}
+
 // makeSymlink creates target -> linkname only if linkname is relative and
 // resolves (lexically) inside root.
 func makeSymlink(root, target, linkname string) error {
-	if linkname == "" || filepath.IsAbs(linkname) || filepath.VolumeName(linkname) != "" ||
-		strings.HasPrefix(linkname, "/") || strings.HasPrefix(linkname, `\`) {
-		return fmt.Errorf("symlink %s -> %q: only relative targets are allowed", target, linkname)
+	if err := checkRelativeLink(linkname); err != nil {
+		return fmt.Errorf("symlink %s: %w", target, err)
 	}
 	if err := mkdirWithin(root, filepath.Dir(target)); err != nil {
 		return err
@@ -146,21 +169,6 @@ func makeSymlink(root, target, linkname string) error {
 		return err
 	}
 	native := filepath.Clean(filepath.FromSlash(linkname))
-	// ".." may only climb from the link's own directory (a leading run). A ".."
-	// after a real component would be followed by the kernel through whatever
-	// that component is (possibly another symlink), so lexical checks lie.
-	seenName := false
-	for _, part := range strings.Split(filepath.FromSlash(linkname), string(filepath.Separator)) {
-		switch part {
-		case "", ".":
-		case "..":
-			if seenName {
-				return fmt.Errorf("symlink %s -> %q: %q after a path component is not allowed", target, linkname, "..")
-			}
-		default:
-			seenName = true
-		}
-	}
 	if !within(realRoot, filepath.Join(realParent, native)) {
 		return fmt.Errorf("symlink %s -> %q escapes the destination", target, linkname)
 	}
@@ -189,8 +197,8 @@ func verifySymlinksWithin(root string) error {
 			if lerr != nil {
 				return lerr
 			}
-			if filepath.IsAbs(link) {
-				return fmt.Errorf("symlink %s -> %q is absolute", path, link)
+			if err := checkRelativeLink(link); err != nil {
+				return fmt.Errorf("symlink %s: %w", path, err)
 			}
 			realDir, derr := filepath.EvalSymlinks(filepath.Dir(path))
 			if derr != nil {
@@ -326,6 +334,61 @@ func extractZip(src, dest string) error {
 		}
 	}
 	return verifySymlinksWithin(dest)
+}
+
+// extractArchive extracts a .zip, .tar.gz or .tgz (chosen by archivePath's
+// suffix) into dest with the confinement rules above.
+func extractArchive(archivePath, dest string) error {
+	switch {
+	case strings.HasSuffix(archivePath, ".zip"):
+		return extractZip(archivePath, dest)
+	case strings.HasSuffix(archivePath, ".tar.gz"), strings.HasSuffix(archivePath, ".tgz"):
+		return extractTarGz(archivePath, dest)
+	}
+	return fmt.Errorf("unsupported archive type: %s", filepath.Base(archivePath))
+}
+
+// hoistDir moves everything in dest/sub up into dest and removes dest/sub
+// (with whatever else sub's top directory held, e.g. a JDK's Contents/).
+// sub is slash-separated. It refuses when a moved name already exists.
+func hoistDir(dest, sub string) error {
+	parts := strings.SplitN(sub, "/", 2)
+	top := filepath.Join(dest, parts[0])
+	src := filepath.Join(dest, filepath.FromSlash(sub))
+	if fi, err := os.Lstat(src); err != nil || !fi.IsDir() {
+		return fmt.Errorf("archive has no %s directory", sub)
+	}
+	// Park the top dir under a unique name so sub may contain its own name.
+	parked, err := os.MkdirTemp(dest, ".xpm-hoist-")
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(parked); err != nil {
+		return err
+	}
+	if err := os.Rename(top, parked); err != nil {
+		return err
+	}
+	if len(parts) == 2 {
+		src = filepath.Join(parked, filepath.FromSlash(parts[1]))
+	} else {
+		src = parked
+	}
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if _, err := os.Lstat(filepath.Join(dest, e.Name())); err == nil {
+			return fmt.Errorf("cannot hoist %s: %s already exists", sub, e.Name())
+		}
+	}
+	for _, e := range entries {
+		if err := os.Rename(filepath.Join(src, e.Name()), filepath.Join(dest, e.Name())); err != nil {
+			return err
+		}
+	}
+	return os.RemoveAll(parked)
 }
 
 // copyDirectory copies a directory recursively, handling symlinks.

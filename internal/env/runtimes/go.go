@@ -1,6 +1,7 @@
 package runtimes
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -25,7 +26,7 @@ func (g *GoInstaller) Name() string {
 
 // ListRemote fetches available stable Go versions (newest first).
 func (g *GoInstaller) ListRemote() ([]string, error) {
-	data, err := fetchSmall(goDLURL + "/?mode=json&include=all")
+	data, err := fetchSmall(context.TODO(), goDLURL+"/?mode=json&include=all")
 	if err != nil {
 		return nil, err
 	}
@@ -117,7 +118,7 @@ func (g *GoInstaller) Install(version string, dest string) error {
 		return err
 	}
 	fmt.Printf("Downloading %s/%s...\n", goDLURL, filename)
-	archive, err := downloadVerified(goDLURL+"/"+filename, want)
+	archive, err := downloadVerified(context.TODO(), goDLURL+"/"+filename, want)
 	if err != nil {
 		return err
 	}
@@ -159,7 +160,7 @@ func (g *GoInstaller) BinaryPaths(version, dest string) []string {
 func goReleaseChecksum(filename string) (string, error) {
 	var lastErr error
 	for _, u := range []string{goDLURL + "/?mode=json", goDLURL + "/?mode=json&include=all"} {
-		meta, err := fetchSmall(u)
+		meta, err := fetchSmall(context.TODO(), u)
 		if err != nil {
 			lastErr = fmt.Errorf("fetch Go release list: %w", err)
 			continue

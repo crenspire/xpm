@@ -1,6 +1,7 @@
 package runtimes
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -211,7 +212,7 @@ func (n *NodeInstaller) InstallWithAlias(version string, dest string, alias stri
 
 	filename := fmt.Sprintf("node-v%s-%s-%s.%s", version, nodeos, arch, ext)
 	base := fmt.Sprintf("%s/v%s", nodeDistURL, version)
-	sums, err := fetchSmall(base + "/SHASUMS256.txt")
+	sums, err := fetchSmall(context.TODO(), base+"/SHASUMS256.txt")
 	if err != nil {
 		return fmt.Errorf("fetch Node.js checksums: %w", err)
 	}
@@ -220,7 +221,7 @@ func (n *NodeInstaller) InstallWithAlias(version string, dest string, alias stri
 		return err
 	}
 	fmt.Printf("Downloading %s/%s...\n", base, filename)
-	archive, err := downloadVerified(base+"/"+filename, want)
+	archive, err := downloadVerified(context.TODO(), base+"/"+filename, want)
 	if err != nil {
 		return err
 	}
