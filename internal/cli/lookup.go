@@ -48,12 +48,13 @@ func managerName(id pm.ID) string {
 	return string(id)
 }
 
-// describeFailure is the one-word-ish reason a registry is unavailable.
+// describeFailure is the one-word-ish reason a registry is unavailable. Error
+// text can carry registry response bodies, so it is sanitized for the terminal.
 func describeFailure(f search.RegistryFailure) string {
 	if f.TimedOut() {
 		return "timed out"
 	}
-	return f.Err.Error()
+	return search.SanitizeText(f.Err.Error())
 }
 
 // formatAvailability renders the "Not found in" and "Unavailable" sections

@@ -1,4 +1,4 @@
-// Package logx provides logging utilities for upm.
+// Package logx provides logging utilities for xpm.
 //
 // The package supports multiple log levels, optional structured logging,
 // and configurable output destinations including file output.
@@ -197,7 +197,7 @@ func writePlain(cfg Config, level Level, msg string) {
 	parts = append(parts, msg)
 
 	line := strings.Join(parts, " ") + "\n"
-	fmt.Fprint(cfg.Output, line)
+	_, _ = fmt.Fprint(cfg.Output, line)
 }
 
 // writeStructured writes a JSON-structured log message.
@@ -209,7 +209,7 @@ func writeStructured(cfg Config, level Level, msg string) {
 
 	line := fmt.Sprintf(`{"time":"%s","level":"%s","msg":"%s"}%s`,
 		timestamp, level.String(), escaped, "\n")
-	fmt.Fprint(cfg.Output, line)
+	_, _ = fmt.Fprint(cfg.Output, line)
 }
 
 // Debug logs a debug message.
@@ -311,5 +311,5 @@ func (l *FieldLogger) writeStructuredWithFields(cfg Config, level Level, msg str
 
 	line := fmt.Sprintf(`{"time":"%s","level":"%s","msg":"%s",%s}%s`,
 		timestamp, level.String(), escaped, fieldsJSON, "\n")
-	fmt.Fprint(cfg.Output, line)
+	_, _ = fmt.Fprint(cfg.Output, line)
 }

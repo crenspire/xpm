@@ -106,6 +106,7 @@ func detectMavenWorkspace(root string) *Workspace {
 		Root:      root,
 		Projects:  projects,
 		Ecosystem: "java",
+		RootPM:    pm.Maven, // a reactor resolves from its root pom
 	}
 }
 

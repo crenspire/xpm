@@ -1,12 +1,13 @@
 module github.com/crenspire/xpm
 
-go 1.22
+go 1.22.0
 
 require (
 	github.com/BurntSushi/toml v1.3.2
 	github.com/charmbracelet/bubbletea v0.25.0
 	github.com/charmbracelet/lipgloss v0.9.1
 	github.com/manifoldco/promptui v0.9.0
+	golang.org/x/mod v0.23.0
 	golang.org/x/term v0.6.0
 	gopkg.in/yaml.v3 v3.0.1
 )

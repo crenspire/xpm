@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -85,7 +86,8 @@ func runBinaryWithCode(bin string, args []string) int {
 	cmd.Stdin = os.Stdin
 
 	if err := cmd.Run(); err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
 			return exitErr.ExitCode()
 		}
 		return 1

@@ -86,19 +86,18 @@ func captureStderr(t *testing.T, fn func()) string {
 	return <-out
 }
 
-// writeConfig writes the user's config file under the current HOME (see
+// writeConfig writes the user's config file where config.Load reads it (see
 // isolatedHome).
 func writeConfig(t *testing.T, data string) {
 	t.Helper()
-	home, err := os.UserHomeDir()
-	if err != nil {
+	path := config.Path()
+	if path == "" {
+		t.Fatal("config.Path() is empty: call isolatedHome first")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	dir := filepath.Join(home, ".config", "xpm")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "xpmrc.json"), []byte(data), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

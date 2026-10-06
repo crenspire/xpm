@@ -24,6 +24,8 @@ func parseInstallArgs(args []string) (installArgs, error) {
 			return out, nil
 		case a == "-g" || a == "--global" || a == "-global":
 			out.Global = true
+		case strings.HasPrefix(a, "--global=") || strings.HasPrefix(a, "-global=") || strings.HasPrefix(a, "-g="):
+			return installArgs{}, fmt.Errorf("unknown flag %q (install accepts -g/--global; omit it for a local install)", a)
 		case strings.HasPrefix(a, "-"):
 			return installArgs{}, fmt.Errorf("unknown flag %q (install accepts -g/--global)", a)
 		default:

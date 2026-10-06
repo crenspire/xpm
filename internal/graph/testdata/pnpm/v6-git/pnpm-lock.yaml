@@ -1,0 +1,43 @@
+lockfileVersion: '6.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+dependencies:
+  localtar:
+    specifier: file:vendor/localtar.tgz
+    version: file:vendor/localtar.tgz
+  ms:
+    specifier: ^2.1.3
+    version: 2.1.3
+  mylib:
+    specifier: github:acme/mylib
+    version: github.com/acme/mylib/0a1b2c3d
+  nameless:
+    specifier: github:acme/nameless
+    version: github.com/acme/nameless/ffff0000
+
+packages:
+
+  /ms@2.1.3:
+    resolution: {integrity: sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTlA==}
+    dev: false
+
+  file:vendor/localtar.tgz:
+    resolution: {integrity: sha512-AAAA, tarball: file:vendor/localtar.tgz}
+    name: localtar
+    version: 0.1.0
+    dev: false
+
+  github.com/acme/mylib/0a1b2c3d:
+    resolution: {tarball: https://codeload.github.com/acme/mylib/tar.gz/0a1b2c3d}
+    name: mylib
+    version: 1.0.0
+    dependencies:
+      ms: 2.1.3
+    dev: false
+
+  github.com/acme/nameless/ffff0000:
+    resolution: {tarball: https://codeload.github.com/acme/nameless/tar.gz/ffff0000}
+    dev: false

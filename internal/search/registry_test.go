@@ -215,10 +215,12 @@ func TestExistsInMavenPrefersTheExactArtifactID(t *testing.T) {
 		"Express": "org.apache.royale.framework:Express",
 		"axios":   "org.webjars.npm:axios-retry", // no case-sensitive artifactId match: first doc
 	} {
-		r, err := existsInMaven(bg, query)
-		if err != nil || r == nil || r.Name != want {
-			t.Errorf("%s: got (%+v, %v), want %s", query, r, err, want)
-		}
+		t.Run(query, func(t *testing.T) {
+			r, err := existsInMaven(bg, query)
+			if err != nil || r == nil || r.Name != want {
+				t.Errorf("%s: got (%+v, %v), want %s", query, r, err, want)
+			}
+		})
 	}
 	if rows != "10" {
 		t.Errorf("rows = %q, want 10", rows)
@@ -237,10 +239,12 @@ func TestExistsInMavenSkipsNpmRepackagesWhenMatchingTheArtifactID(t *testing.T) 
 		"jquery":                 "org.example.real:jquery",
 		"org.webjars.npm:jquery": "org.webjars.npm:jquery", // typed in full: exact
 	} {
-		r, err := existsInMaven(bg, query)
-		if err != nil || r == nil || r.Name != want {
-			t.Errorf("%s: got (%+v, %v), want %s", query, r, err, want)
-		}
+		t.Run(query, func(t *testing.T) {
+			r, err := existsInMaven(bg, query)
+			if err != nil || r == nil || r.Name != want {
+				t.Errorf("%s: got (%+v, %v), want %s", query, r, err, want)
+			}
+		})
 	}
 }
 

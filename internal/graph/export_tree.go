@@ -1,123 +1,147 @@
 package graph
 
 import (
-	"fmt"
 	"io"
+	"sort"
 	"strings"
 )
 
-// PrintTree prints the dependency tree starting from root nodes.
-func PrintTree(graph *DepGraph, w io.Writer, showVersions, showEcosystem bool, maxDepth int) {
-	if len(graph.Root) == 0 {
-		fmt.Fprintln(w, "No root packages found.")
-		return
-	}
-
-	visited := make(map[string]bool)
-	for _, rootID := range graph.Root {
-		if rootNode := graph.GetNode(rootID); rootNode != nil {
-			printTreeNode(graph, rootNode, w, "", true, visited, showVersions, showEcosystem, maxDepth, 0)
-		}
-	}
+// TreeOptions controls PrintTree.
+type TreeOptions struct {
+	ShowVersions  bool // name@version instead of name
+	ShowEcosystem bool // append " (ecosystem)"
+	MaxDepth      int  // dependency levels below the roots; 0 = unlimited
 }
 
-// printTreeNode prints a single node and its children recursively.
-func printTreeNode(graph *DepGraph, node *DepNode, w io.Writer, prefix string, isLast bool, visited map[string]bool, showVersions, showEcosystem bool, maxDepth, currentDepth int) {
-	if currentDepth >= maxDepth && maxDepth > 0 {
+// Markers appended to tree lines.
+const (
+	treeSeenMarker  = " (*)"     // subtree already printed above
+	treeCycleMarker = " (cycle)" // node is its own ancestor
+)
+
+// PrintTree prints the dependency tree of every root, in root order, with
+// children sorted by ID. A node whose subtree was already printed at least
+// as deep as it could be printed here is shown once more with " (*)" and not
+// expanded again, so shared dependencies (diamonds) print in O(nodes + edges)
+// lines without a depth limit and O(nodes * MaxDepth) with one. A node first
+// met deep (and cut off by MaxDepth) is expanded again where it appears with
+// more depth left. A dependency that leads back to one of its ancestors is
+// shown with " (cycle)". If the graph has no roots, nodes without parents
+// are used as roots.
+func PrintTree(g *DepGraph, w io.Writer, opts TreeOptions) {
+	p := treePrinter{g: g, opts: opts, expanded: map[string]int{}, onPath: map[string]bool{}}
+	for _, id := range treeRoots(g) {
+		p.visit(id, "", "", 0)
+	}
+	_, _ = io.WriteString(w, p.sb.String())
+}
+
+// treeRoots returns g.Root (existing nodes only) or, without roots, the
+// nodes that have no parents, sorted.
+func treeRoots(g *DepGraph) []string {
+	var roots []string
+	for _, id := range g.Root {
+		if g.Nodes[id] != nil {
+			roots = append(roots, id)
+		}
+	}
+	if len(g.Root) > 0 {
+		return roots
+	}
+	for id := range g.Nodes {
+		if len(g.GetParents(id)) == 0 {
+			roots = append(roots, id)
+		}
+	}
+	sort.Strings(roots)
+	return roots
+}
+
+type treePrinter struct {
+	g        *DepGraph
+	opts     TreeOptions
+	sb       strings.Builder
+	expanded map[string]int  // levels below the node already printed above
+	onPath   map[string]bool // ancestors of the node being printed
+}
+
+// visit prints id as "<prefix><connector><label>" and then its children
+// with prefix childPrefix-extended; depth is 0 for roots.
+func (p *treePrinter) visit(id, prefix, connector string, depth int) {
+	children := p.children(id)
+	remaining := p.remaining(depth)
+	printed, wasExpanded := p.expanded[id]
+	marker := ""
+	switch {
+	case p.onPath[id]:
+		marker = treeCycleMarker
+	case remaining > 0 && wasExpanded && printed >= remaining && len(children) > 0:
+		marker = treeSeenMarker
+	}
+	p.sb.WriteString(prefix)
+	p.sb.WriteString(connector)
+	p.sb.WriteString(formatNodeLabel(p.g.Nodes[id], p.opts.ShowVersions, p.opts.ShowEcosystem))
+	p.sb.WriteString(marker)
+	p.sb.WriteByte('\n')
+	if marker != "" || remaining == 0 {
 		return
 	}
 
-	// Format node label
-	label := formatNodeLabel(node, showVersions, showEcosystem)
-
-	// Print node
-	if prefix == "" {
-		// Root node
-		fmt.Fprintf(w, "%s\n", label)
-	} else {
-		connector := "├─ "
-		if isLast {
-			connector = "└─ "
+	if remaining > printed {
+		p.expanded[id] = remaining
+	}
+	p.onPath[id] = true
+	childPrefix := prefix
+	switch connector {
+	case "├─ ":
+		childPrefix += "│  "
+	case "└─ ":
+		childPrefix += "   "
+	}
+	for i, child := range children {
+		conn := "├─ "
+		if i == len(children)-1 {
+			conn = "└─ "
 		}
-		fmt.Fprintf(w, "%s%s%s\n", prefix, connector, label)
+		p.visit(child, childPrefix, conn, depth+1)
 	}
+	p.onPath[id] = false
+}
 
-	// Mark as visited to avoid cycles
-	visited[node.ID] = true
+// treeUnlimited is the remaining depth when MaxDepth is 0 (no limit).
+const treeUnlimited = int(^uint(0) >> 1)
 
-	// Get children
-	children := graph.GetChildren(node.ID)
-	if len(children) == 0 {
-		return
+// remaining returns how many levels below a node at depth may be printed.
+func (p *treePrinter) remaining(depth int) int {
+	if p.opts.MaxDepth <= 0 {
+		return treeUnlimited
 	}
+	if depth >= p.opts.MaxDepth {
+		return 0
+	}
+	return p.opts.MaxDepth - depth
+}
 
-	// Filter out already visited nodes to avoid cycles
-	var unvisitedChildren []string
-	for _, childID := range children {
-		if !visited[childID] {
-			unvisitedChildren = append(unvisitedChildren, childID)
+// children returns the sorted children of id that exist as nodes.
+func (p *treePrinter) children(id string) []string {
+	all := p.g.Children(id)
+	kept := all[:0]
+	for _, c := range all {
+		if p.g.Nodes[c] != nil {
+			kept = append(kept, c)
 		}
 	}
-
-	if len(unvisitedChildren) == 0 {
-		return
-	}
-
-	// Print children
-	for i, childID := range unvisitedChildren {
-		childNode := graph.GetNode(childID)
-		if childNode == nil {
-			continue
-		}
-
-		isChildLast := i == len(unvisitedChildren)-1
-		childPrefix := prefix
-		if prefix != "" {
-			if isLast {
-				childPrefix += "   "
-			} else {
-				childPrefix += "│  "
-			}
-		}
-
-		printTreeNode(graph, childNode, w, childPrefix, isChildLast, visited, showVersions, showEcosystem, maxDepth, currentDepth+1)
-	}
-
-	// Unmark for other paths
-	delete(visited, node.ID)
+	return kept
 }
 
 // formatNodeLabel formats a node for display.
 func formatNodeLabel(node *DepNode, showVersions, showEcosystem bool) string {
-	var parts []string
-
+	label := node.Name
 	if showVersions && node.Version != "" {
-		parts = append(parts, fmt.Sprintf("%s@%s", node.Name, node.Version))
-	} else {
-		parts = append(parts, node.Name)
+		label += "@" + node.Version
 	}
-
 	if showEcosystem {
-		parts = append(parts, fmt.Sprintf("(%s)", node.Ecosystem))
+		label += " (" + node.Ecosystem + ")"
 	}
-
-	return strings.Join(parts, " ")
-}
-
-// PrintTreeForPackage prints the dependency tree for a specific package.
-func PrintTreeForPackage(graph *DepGraph, packageName string, w io.Writer, showVersions, showEcosystem bool, maxDepth int) {
-	nodes := graph.FindNodeByName(packageName)
-	if len(nodes) == 0 {
-		fmt.Fprintf(w, "Package %s not found.\n", packageName)
-		return
-	}
-
-	// Print tree for each matching node
-	for _, node := range nodes {
-		visited := make(map[string]bool)
-		printTreeNode(graph, node, w, "", true, visited, showVersions, showEcosystem, maxDepth, 0)
-		if len(nodes) > 1 {
-			fmt.Fprintln(w)
-		}
-	}
+	return label
 }

@@ -38,7 +38,7 @@ $ xpm run test               # runs package.json / composer.json / pyproject scr
 
 ## Why xpm
 
-- **Fast.** All registries are queried in parallel with a hard 2.5 s deadline, and answers are cached on disk. A first lookup takes about a second; a repeat lookup takes under 10 ms.
+- **Fast.** All registries are queried in parallel with a 2.5 s deadline by default, and answers are cached on disk. A first lookup takes about a second; a repeat lookup takes under 10 ms.
 - **One syntax.** `name@version` works everywhere: xpm translates it to `npm i name@v`, `pip install name==v`, `composer require name:v`, `cargo add name@v` or `go get name@v`.
 - **Respects your project.** Inside a project, `xpm install <name>` uses the project's own ecosystem (`xpm install phpunit` next to `composer.json` runs `composer require phpunit/phpunit`, not npm's squatter), and lockfiles pick the tool inside it (`yarn.lock` → yarn, `poetry.lock` → poetry, `build.gradle` → Gradle) for `install`, `list`, `update`, `remove` and `ci`. Outside a project, a name that exists in several ecosystems is your choice (or your `prefer` list's).
 - **Safe by default.** Package names that look like flags are rejected, runtime downloads are checked against published SHA-256 checksums, and archive extraction cannot write outside its folder.
@@ -54,10 +54,9 @@ xpm is young. The core commands are solid; the bigger subsystems are being rebui
 | Project scripts | `run` | ✅ Stable |
 | Diagnostics | `doctor` | ✅ Stable |
 | Runtime versions (node, go, …) | `env` | 🧪 Experimental: Node and Go are checksum-verified; Rust needs rustup; others in progress |
-| Dependency graph | `graph` | 🧪 Experimental |
-| Unified lockfile | `lock` | 🧪 Experimental |
-| Monorepos | `workspaces` | 🧪 Experimental |
-| Global dependency cache | `cache` | 🧪 Experimental (not yet used by installs) |
+| Dependency graph | `graph` | 🧪 Experimental: parses npm, pnpm, yarn, Cargo, Go, Poetry, pyproject.toml, requirements.txt, Composer, Maven and Gradle files; runs build tools only with `--exec` |
+| Unified lockfile | `lock` | 🧪 Experimental: records lockfile hashes in `xpm-lock.yaml`; `--verify` detects changed, added and removed lockfiles and fails on entries it cannot check |
+| Monorepos | `workspaces`, `run --workspace`, `graph --workspace` | 🧪 Experimental: `xpm install --workspace` is not wired yet |
 
 ## Install
 
@@ -84,7 +83,19 @@ sudo mv xpm /usr/local/bin/
 | Java | Maven, Gradle | `pom.xml` / `build.gradle(.kts)` pick the tool (xpm prints the dependency snippet) | Maven Central |
 | Go | Go modules | `go.mod` | — (`xpm install github.com/x/y` runs `go get` directly) |
 
+## Supported platforms
+
+| OS | Core commands (`which`, `search`, `info`, `install`, `ci`, `list`, `update`, `remove`, `config`) | `run` | `search` TUI | `env` (experimental) |
+|---|---|---|---|---|
+| Linux | Yes, tested in CI | Yes (`sh -c` for pyproject/Cargo scripts) | Yes | Experimental: Node and Go verified; shims need `go` on PATH |
+| macOS | Yes, tested in CI | Yes (`sh -c` for pyproject/Cargo scripts) | Yes | Experimental: Node and Go verified; shims need `go` on PATH |
+| Windows | Yes, tested in CI | Needs `sh` on PATH (Git for Windows or WSL) for pyproject/Cargo scripts; package.json and composer.json scripts do not | Yes, in Windows Terminal or another modern console | Untested (see roadmap P5) |
+
+Windows support for the core commands is covered by CI but is used less in practice than Linux and macOS. The TUI needs a terminal; without one `xpm search` prints plain output.
+
 ## Usage
+
+`xpm help` lists every command and marks the experimental ones; `xpm man <command>` has the details for one command. The everyday commands are `which`, `search`, `info`, `install`, `ci`, `list`, `update`, `remove`, `run` and `config`.
 
 ### Find a package everywhere
 
@@ -94,7 +105,7 @@ xpm search http client  # several words are one query; opens the interactive TUI
 xpm info serde          # details for one package
 ```
 
-If a registry doesn't answer within 2.5 s, xpm shows what the others found and lists that registry under **Unavailable**, separately from **Not found in**. If every registry fails (for example, you're offline), the command exits with an error rather than claiming "no matches". When nothing matches, `xpm which`, `xpm search` and `xpm install` exit 1.
+If a registry doesn't answer within 2.5 s, xpm shows what the others found. `xpm which`, `xpm info` and plain `xpm search` list that registry under **Unavailable**, separately from **Not found in**. If every registry fails (for example, you're offline), the command exits with an error rather than claiming "no matches". When nothing matches, `xpm which`, `xpm info`, `xpm search` and `xpm install` exit 1.
 
 ### Install
 
@@ -137,11 +148,35 @@ xpm run build
 xpm run test -- --watch # everything after -- goes to the script untouched
 ```
 
+Scripts come from `package.json` `scripts`, `composer.json` `scripts`, `pyproject.toml` `[tool.xpm.scripts]` (falls back to `[tool.upm.scripts]`, then `[tool.poetry.scripts]`, then `[project.scripts]`) and `Cargo.toml` `[package.metadata.xpm.scripts]`. `package.json` and `composer.json` scripts run through the project's package manager (`npm`/`yarn`/`pnpm`/`bun run`, `composer run-script`); `pyproject.toml` and `Cargo.toml` scripts run through `sh -c` (on Windows `sh` must be on PATH, e.g. Git for Windows).
+
 ### Diagnose
 
 ```bash
 xpm doctor              # installed tools, runtimes, lockfiles and project health
 ```
+
+A security audit whose tool fails, prints unreadable output or audits nothing is reported as unavailable, never as passing. Lockfile drift is checked by content for `package-lock.json` (v2/v3), `pnpm-lock.yaml`, `Cargo.lock` and `go.sum`; `composer.lock`, `poetry.lock`, `uv.lock`, `pdm.lock` and `Pipfile.lock` are only checked to parse, and `yarn.lock` and bun lockfiles are not compared. File modification times are never used.
+
+### Dependency graph, lockfile and monorepos (experimental)
+
+```bash
+xpm graph                  # dependency tree from the lockfiles and manifests (pom.xml, go.mod, pyproject.toml, requirements.txt) in this directory; repeats are marked (*)
+xpm graph react            # only the subtree under react
+xpm graph --depth 2        # limit tree depth (default: graph.depth, 5; 0 = unlimited)
+xpm graph --json > g.json  # machine-readable; stdout carries only the graph, warnings go to stderr
+xpm graph --svg > g.svg    # needs GraphViz `dot`
+xpm graph --exec           # also run mvn / gradle / go mod graph for full Java and Go trees
+xpm graph --workspace      # combine the graphs of all workspace projects
+xpm lock                   # write xpm-lock.yaml (hashes of the lockfiles in the project root)
+xpm lock --verify          # exit 1 if a lockfile changed, appeared or disappeared since `xpm lock`, or cannot be checked (unreadable, or a recorded path outside the project)
+xpm workspaces             # list monorepo projects (npm/yarn/pnpm, Cargo, go.work, Poetry and uv, Maven, Gradle, Composer)
+xpm run --workspace test   # run `test` in every project that defines it (`-- args` are passed to the task in every project)
+```
+
+`xpm graph` reads files only; it never runs a build tool unless you pass `--exec`. `xpm-lock.yaml` has no timestamps, so running `xpm lock` again on an unchanged project leaves the file untouched. Workspace commands honour `workspace.include` / `workspace.exclude` (glob lists matched against each project's path relative to the workspace root, `**` allowed). `workspace.parallel` applies to `run --workspace` (and to `install --workspace` once it is wired), not to `workspaces` or `graph --workspace`; a parallel run prints each project's output when that project finishes, not live. `graph --workspace` reads npm/pnpm/yarn and Cargo workspaces from the root lockfile, which covers their members.
+
+The dependency cache (`xpm cache`) was removed: npm, pip, Cargo, Go and the others already keep their own caches.
 
 ### Runtime versions (experimental)
 
@@ -191,8 +226,9 @@ Without a terminal (stdin and stdout both must be terminals; pipes and CI are no
 | Exit code | Meaning |
 |---|---|
 | `0` | Success |
-| `1` | Error, cancelled, invalid arguments, **no matches**, or a refused non-interactive guess |
-| other | `install` (no package argument), `ci`, `list` / `update` / `remove` / `run` pass through the underlying tool's exit code |
+| `1` | Error, cancelled install prompt, invalid arguments, **no matches**, or a refused non-interactive guess |
+| `2` | `graph` usage error (bad flag or argument) |
+| other | `install` (no package argument), `ci`, `list` / `update` / `remove` / `run` pass through the underlying tool's exit code (`run --workspace` exits 1 if any project fails) |
 
 ### Changes in this release
 
@@ -202,7 +238,7 @@ Behaviour changes to check if you script xpm:
 - **Project first.** Inside a project, `xpm install <name>` installs the project ecosystem's exact hit without a menu, even on a terminal, and ignores namesakes in other ecosystems (see [How xpm picks a tool](#how-xpm-picks-a-tool)). Global installs (`-g`) ignore the project and follow `prefer`. A Maven artifactId must now match the name's case, and Packagist's `<name>/<name>` counts as the name itself.
 - **No terminal means no prompts.** When stdin or stdout is not a terminal, xpm behaves as if `interactive` were `false`: it never prompts, never opens the TUI, and refuses ambiguous or fuzzy installs instead of guessing.
 - **Extra arguments are errors.** `xpm install a b c` installs all three; commands that take no package (`ci`, `list`) or exactly one (`which`, `info`) now reject extra arguments instead of ignoring them.
-- **Unknown flags are errors.** `xpm install` accepts only `-g` / `--global` (before or after the packages) and `--` to end flags. `--global=false` and any other flag are rejected.
+- **Unknown flags are errors.** `xpm install` accepts only `-g` / `--global` (before or after the packages) and `--` to end flags. `--global=false` is rejected (omit the flag for a local install), as is any other flag.
 - **`-v` goes before the command.** `xpm -v install axios` is verbose logging; after the command, `-v` belongs to the command (`xpm install axios -v` is an unknown-flag error).
 - **`xpm ci` is a native frozen install** (see above) and deletes nothing unasked; it no longer removes lockfiles.
 - **Missing package managers** get printed official install steps; xpm no longer runs remote install scripts.
@@ -241,7 +277,7 @@ Behaviour changes to check if you script xpm:
 
 | Variable | Effect |
 |---|---|
-| `XPM_NO_CACHE=1` | Skip the on-disk lookup cache (results are cached for 1 h, "not found" for 15 min) |
+| `XPM_NO_CACHE` (any non-empty value, e.g. `1`) | Skip the on-disk lookup cache (results are cached for 1 h, "not found" for 15 min) |
 | `XPM_CACHE_DIR=<dir>` | Keep xpm's lookup cache in `<dir>/lookups` instead of the OS cache folder (used by `make perf`) |
 
 ## Performance
@@ -271,7 +307,7 @@ make build
 
 CI runs the tests on Linux, macOS and Windows with Go 1.22 and the latest stable Go, plus lint and a build check.
 
-Project layout: `cmd/xpm` (entrypoint) and `internal/` (`cli`, `search`, `pm`, `config`, `env`, `scripts`, `graph`, `lock`, `workspace`, `cache`, `doctor`, `tui`).
+Project layout: `cmd/xpm` (entrypoint) and `internal/` (`cli`, `search`, `pm`, `config`, `env`, `scripts`, `graph`, `lock`, `workspace`, `doctor`, `tui`).
 
 Contributions are welcome. Pick an item from the [roadmap](docs/superpowers/plans/2026-10-06-xpm-roadmap.md) and open a PR against `develop`.
 

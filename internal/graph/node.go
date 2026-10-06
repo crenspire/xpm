@@ -4,10 +4,7 @@
 // normalizes them into a unified structure, and provides multiple export formats.
 package graph
 
-import (
-	"fmt"
-	"strings"
-)
+import "fmt"
 
 // DepNode represents a dependency node in the graph.
 type DepNode struct {
@@ -39,11 +36,10 @@ func NewDepNode(ecosystem, name, version string) *DepNode {
 }
 
 // NodeID generates a unique node ID from ecosystem, name, and version.
-// Format: ecosystem:name@version
+// Format: ecosystem:name@version, with the name kept verbatim so that
+// "@scope/pkg" and "scope-pkg" (or two Go module paths) never collide.
 func NodeID(ecosystem, name, version string) string {
-	// Normalize name (handle scoped packages like @scope/package)
-	normalizedName := strings.ReplaceAll(name, "/", "-")
-	return fmt.Sprintf("%s:%s@%s", ecosystem, normalizedName, version)
+	return ecosystem + ":" + name + "@" + version
 }
 
 // String returns a human-readable representation of the node.

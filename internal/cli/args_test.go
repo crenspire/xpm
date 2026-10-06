@@ -59,10 +59,12 @@ func TestExtraArgumentsAreAnError(t *testing.T) {
 		"update": func() int { return cmdUpdate([]string{"axios", "lodash"}) },
 		"list":   func() int { return cmdList([]string{"axios"}) },
 	} {
-		var code int
-		captureStdout(t, func() { code = run() })
-		if code != 1 {
-			t.Errorf("%s with an extra argument exited %d, want 1", name, code)
-		}
+		t.Run(name, func(t *testing.T) {
+			var code int
+			captureStdout(t, func() { code = run() })
+			if code != 1 {
+				t.Errorf("an extra argument exited %d, want 1", code)
+			}
+		})
 	}
 }

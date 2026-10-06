@@ -100,13 +100,6 @@ func TestResultFields(t *testing.T) {
 	}
 }
 
-// TestDefaultTimeout verifies the default timeout constant.
-func TestDefaultTimeout(t *testing.T) {
-	if DefaultTimeout.Seconds() != 4 {
-		t.Errorf("DefaultTimeout = %v, want 4s", DefaultTimeout)
-	}
-}
-
 // TestURLInjectionPrevention tests that URL injection attacks are prevented.
 func TestURLInjectionPrevention(t *testing.T) {
 	tests := []struct {

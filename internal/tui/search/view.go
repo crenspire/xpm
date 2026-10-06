@@ -6,6 +6,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
+
 	"github.com/crenspire/xpm/internal/pm"
 	"github.com/crenspire/xpm/internal/search"
 )
@@ -144,7 +145,7 @@ func renderResult(result search.Result, selected bool, width int) string {
 	if packageWidth < minPackageWidth {
 		packageWidth = minPackageWidth
 	}
-	packageName := truncate(result.Name, packageWidth)
+	packageName := truncate(search.SanitizeText(result.Name), packageWidth)
 	packageStyle := resultStyle
 	if selected {
 		packageStyle = selectedStyle
@@ -165,7 +166,7 @@ func renderResult(result search.Result, selected bool, width int) string {
 	if descWidth < 10 {
 		descWidth = 10
 	}
-	description := descriptionStyle.Render(truncate(result.Info, descWidth))
+	description := descriptionStyle.Render(truncate(search.SanitizeText(result.Info), descWidth))
 
 	// Selection indicator
 	indicator := " "

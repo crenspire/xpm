@@ -55,14 +55,16 @@ func TestDetectPythonTool(t *testing.T) {
 		"poetry.lock,requirements.txt": "poetry",
 		"requirements.txt":             "pip-req",
 	} {
-		inProject(t, strings.Split(files, ",")...)
-		var kinds []string
-		for _, tg := range detectProjectTargets() {
-			kinds = append(kinds, tg.Kind)
-		}
-		if strings.Join(kinds, ",") != want {
-			t.Errorf("%s: kinds = %v, want %s", files, kinds, want)
-		}
+		t.Run(files, func(t *testing.T) {
+			inProject(t, strings.Split(files, ",")...)
+			var kinds []string
+			for _, tg := range detectProjectTargets() {
+				kinds = append(kinds, tg.Kind)
+			}
+			if strings.Join(kinds, ",") != want {
+				t.Errorf("kinds = %v, want %s", kinds, want)
+			}
+		})
 	}
 }
 
@@ -133,9 +135,11 @@ func TestCleanDirsNeverTouchGoVendor(t *testing.T) {
 		{Kind: "composer", PM: pm.Composer}: {"vendor"},
 		{Kind: "gomod", PM: pm.GoMod}:       nil,
 	} {
-		if got := cleanDirs(c); !reflect.DeepEqual(got, want) {
-			t.Errorf("cleanDirs(%+v) = %v, want %v", c, got, want)
-		}
+		t.Run(c.Kind+"/"+string(c.PM), func(t *testing.T) {
+			if got := cleanDirs(c); !reflect.DeepEqual(got, want) {
+				t.Errorf("cleanDirs(%+v) = %v, want %v", c, got, want)
+			}
+		})
 	}
 }
 
@@ -312,15 +316,17 @@ func TestYarnBerryFromPackageManagerField(t *testing.T) {
 	for pkgMgr, want := range map[string]bool{
 		"yarn@4.1.0": true, "yarn@2.4.3": true, "yarn@1.22.19": false, "pnpm@9.0.0": false, "": false,
 	} {
-		dir := t.TempDir()
-		body := `{"packageManager": "` + pkgMgr + `"}`
-		if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		chdir(t, dir)
-		if got := yarnIsBerry(); got != want {
-			t.Errorf("%q: got %v, want %v", pkgMgr, got, want)
-		}
+		t.Run(pkgMgr, func(t *testing.T) {
+			dir := t.TempDir()
+			body := `{"packageManager": "` + pkgMgr + `"}`
+			if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			chdir(t, dir)
+			if got := yarnIsBerry(); got != want {
+				t.Errorf("got %v, want %v", got, want)
+			}
+		})
 	}
 }
 

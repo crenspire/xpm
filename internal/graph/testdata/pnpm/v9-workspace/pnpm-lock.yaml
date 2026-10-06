@@ -1,0 +1,45 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    devDependencies:
+      typescript:
+        specifier: ^5.4.5
+        version: 5.4.5
+
+  packages/app:
+    dependencies:
+      '@ws/lib':
+        specifier: workspace:*
+        version: link:../lib
+      kleur:
+        specifier: ^4.1.5
+        version: 4.1.5
+
+  packages/lib:
+    dependencies:
+      kleur:
+        specifier: ^4.1.5
+        version: 4.1.5
+
+packages:
+
+  kleur@4.1.5:
+    resolution: {integrity: sha512-o+NO+8WrRiQEE4/7nwRJhN1HWpVmJm511pBHUxPLtp0BUISzlBplORYSmTclCnJvQq2tKu/sgl3xVpkc7ZWuQQ==}
+    engines: {node: '>=6'}
+
+  typescript@5.4.5:
+    resolution: {integrity: sha512-vcI4UpRgg81oIRUFwR0WSIHKt11nJ7SAVlYNIu+QpqeyXP+gpQJy/Z4+F0aGxSE4MqwjyXvW/TzgkLAx2AGHwQ==}
+    engines: {node: '>=14.17'}
+    hasBin: true
+
+snapshots:
+
+  kleur@4.1.5: {}
+
+  typescript@5.4.5: {}

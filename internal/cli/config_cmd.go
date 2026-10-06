@@ -8,7 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
+	"sort"
 	"strings"
 
 	"github.com/manifoldco/promptui"
@@ -64,7 +64,13 @@ func showConfig() int {
 
 	// Display search settings
 	fmt.Println("Search settings:")
-	for k, v := range cfg.Search {
+	keys := make([]string, 0, len(cfg.Search))
+	for k := range cfg.Search {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		v := cfg.Search[k]
 		status := "enabled"
 		if !v {
 			status = "disabled"
@@ -82,7 +88,7 @@ func showConfig() int {
 
 // showConfigPath displays the configuration file path.
 func showConfigPath() int {
-	path := getConfigPath()
+	path := config.Path()
 	if path == "" {
 		fmt.Println("Could not determine config path")
 		return 1
@@ -95,22 +101,6 @@ func showConfigPath() int {
 	}
 
 	return 0
-}
-
-// getConfigPath returns the platform-specific config file path.
-func getConfigPath() string {
-	if runtime.GOOS == "windows" {
-		base := os.Getenv("APPDATA")
-		if base == "" {
-			return ""
-		}
-		return filepath.Join(base, "xpm", "xpmrc.json")
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, ".config", "xpm", "xpmrc.json")
 }
 
 // editConfig opens an interactive editor for the configuration.
@@ -313,7 +303,7 @@ func setConfigValue(args []string) int {
 
 // resetConfig resets the configuration to defaults.
 func resetConfig() int {
-	path := getConfigPath()
+	path := config.Path()
 	if path == "" {
 		fmt.Fprintln(os.Stderr, "Could not determine config path")
 		return 1
@@ -348,7 +338,7 @@ func resetConfig() int {
 
 // saveConfig saves the configuration to the config file.
 func saveConfig(c config.Config) error {
-	path := getConfigPath()
+	path := config.Path()
 	if path == "" {
 		return fmt.Errorf("could not determine config path")
 	}
@@ -364,7 +354,36 @@ func saveConfig(c config.Config) error {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
 
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	// Write through a symlinked config (dotfile managers) and keep the
+	// existing file's mode; 0644 only applies to a new file.
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		path = real
+		dir = filepath.Dir(path)
+	}
+	mode := os.FileMode(0o644)
+	if fi, err := os.Stat(path); err == nil {
+		mode = fi.Mode().Perm()
+	}
+
+	// Write to a temp file in the same directory, then rename, so a crash
+	// never leaves a truncated config behind.
+	tmp, err := os.CreateTemp(dir, ".xpmrc-*.json")
+	if err != nil {
+		return fmt.Errorf("failed to write config: %w", err)
+	}
+	tmpName := tmp.Name()
+	_, werr := tmp.Write(data)
+	cerr := tmp.Close()
+	if err := errors.Join(werr, cerr); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("failed to write config: %w", err)
+	}
+	if err := os.Chmod(tmpName, mode); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("failed to write config: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		_ = os.Remove(tmpName)
 		return fmt.Errorf("failed to write config: %w", err)
 	}
 

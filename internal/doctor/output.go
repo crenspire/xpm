@@ -57,7 +57,7 @@ func Section(title string) {
 // Header prints the main report header.
 func Header() {
 	fmt.Println()
-	fmt.Printf("%sUPM Doctor+ Report%s\n", colorBold, colorReset)
+	fmt.Printf("%sxpm Doctor+ Report%s\n", colorBold, colorReset)
 	fmt.Println()
 	fmt.Println("──────────────────────────────────────────────")
 }

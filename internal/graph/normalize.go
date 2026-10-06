@@ -5,103 +5,39 @@ import (
 	"strings"
 )
 
-// NormalizeGraph normalizes the graph by removing duplicates, self-loops, and normalizing versions.
+// NormalizeGraph normalizes versions, re-keys every node by its canonical
+// ID (merging nodes that collide), and drops self-loops and duplicate edges.
 func NormalizeGraph(graph *DepGraph) {
-	DeduplicateNodes(graph)
-	RemoveSelfLoops(graph)
-	RemoveDuplicateEdges(graph)
 	NormalizeVersions(graph)
 }
 
-// DeduplicateNodes merges nodes with the same ecosystem:name@version.
+// DeduplicateNodes re-keys every node by NodeID(ecosystem, name, version)
+// and merges nodes that end up with the same ID. Edges and roots are
+// remapped once, in O(N + E).
 func DeduplicateNodes(graph *DepGraph) {
-	// Group nodes by ecosystem:name@version
-	nodeGroups := make(map[string][]*DepNode)
-	for _, node := range graph.Nodes {
-		key := node.Ecosystem + ":" + node.Name + "@" + node.Version
-		nodeGroups[key] = append(nodeGroups[key], node)
-	}
-
-	// Merge duplicate nodes
-	for _, nodes := range nodeGroups {
-		if len(nodes) <= 1 {
-			continue
-		}
-
-		// Keep the first node, merge metadata from others
-		primary := nodes[0]
-		for i := 1; i < len(nodes); i++ {
-			duplicate := nodes[i]
-			// Merge metadata
-			for k, v := range duplicate.Metadata {
-				if _, exists := primary.Metadata[k]; !exists {
-					primary.Metadata[k] = v
-				}
-			}
-			// Update edges to point to primary
-			for _, edge := range graph.Edges {
-				if edge.From == duplicate.ID {
-					edge.From = primary.ID
-				}
-				if edge.To == duplicate.ID {
-					edge.To = primary.ID
-				}
-			}
-			// Remove duplicate node
-			delete(graph.Nodes, duplicate.ID)
-			// Update root if needed
-			for j, rootID := range graph.Root {
-				if rootID == duplicate.ID {
-					graph.Root[j] = primary.ID
-				}
-			}
-		}
-	}
+	graph.rekey()
 }
 
 // RemoveSelfLoops removes edges from a node to itself.
 func RemoveSelfLoops(graph *DepGraph) {
-	var validEdges []*DepEdge
-	for _, edge := range graph.Edges {
-		if edge.IsValid() {
-			validEdges = append(validEdges, edge)
-		}
-	}
-	graph.Edges = validEdges
+	graph.reindex()
 }
 
-// RemoveDuplicateEdges keeps only unique edges.
+// RemoveDuplicateEdges keeps only the first edge for each From -> To pair.
 func RemoveDuplicateEdges(graph *DepGraph) {
-	seen := make(map[string]bool)
-	var uniqueEdges []*DepEdge
-
-	for _, edge := range graph.Edges {
-		key := edge.From + "->" + edge.To
-		if !seen[key] {
-			seen[key] = true
-			uniqueEdges = append(uniqueEdges, edge)
-		}
-	}
-
-	graph.Edges = uniqueEdges
+	graph.reindex()
 }
 
-// RemoveOrphanedNodes removes nodes with no connections (optional).
+// RemoveOrphanedNodes removes nodes that are neither a root nor an edge endpoint.
 func RemoveOrphanedNodes(graph *DepGraph) {
-	connected := make(map[string]bool)
-
-	// Mark all nodes connected by edges
+	connected := make(map[string]bool, len(graph.Nodes))
 	for _, edge := range graph.Edges {
 		connected[edge.From] = true
 		connected[edge.To] = true
 	}
-
-	// Keep root nodes even if they have no edges
 	for _, rootID := range graph.Root {
 		connected[rootID] = true
 	}
-
-	// Remove orphaned nodes
 	for id := range graph.Nodes {
 		if !connected[id] {
 			delete(graph.Nodes, id)
@@ -109,24 +45,68 @@ func RemoveOrphanedNodes(graph *DepGraph) {
 	}
 }
 
-// NormalizeVersions standardizes version formats.
+// NormalizeVersions strips a leading "=" or a "v" before a digit from every
+// version ("v1.2.0" -> "1.2.0") and re-keys nodes, edges and roots to the new
+// IDs. Nodes that collide after normalization are merged.
 func NormalizeVersions(graph *DepGraph) {
 	for _, node := range graph.Nodes {
 		node.Version = normalizeVersion(node.Version)
-		// Update ID with normalized version
-		node.ID = NodeID(node.Ecosystem, node.Name, node.Version)
 	}
+	graph.rekey()
+}
+
+// rekey rebuilds Nodes keyed by each node's canonical ID, merges colliding
+// nodes (the node with the smallest old key wins; missing metadata keys are
+// copied from the others), and rewrites edge endpoints and roots through the
+// old->new ID map. Edges are copied, never mutated, because Merge shares edge
+// pointers between graphs.
+func (g *DepGraph) rekey() {
+	remap := make(map[string]string, len(g.Nodes))
+	nodes := make(map[string]*DepNode, len(g.Nodes))
+	for _, oldID := range sortedKeys(g.Nodes) {
+		node := g.Nodes[oldID]
+		newID := NodeID(node.Ecosystem, node.Name, node.Version)
+		remap[oldID] = newID
+		if primary, ok := nodes[newID]; ok {
+			for k, v := range node.Metadata {
+				if _, exists := primary.Metadata[k]; !exists {
+					if primary.Metadata == nil {
+						primary.Metadata = make(map[string]string)
+					}
+					primary.Metadata[k] = v
+				}
+			}
+			continue
+		}
+		node.ID = newID
+		nodes[newID] = node
+	}
+	g.Nodes = nodes
+
+	mapID := func(id string) string {
+		if newID, ok := remap[id]; ok {
+			return newID
+		}
+		return id
+	}
+	edges := make([]*DepEdge, 0, len(g.Edges))
+	for _, e := range g.Edges {
+		edges = append(edges, &DepEdge{From: mapID(e.From), To: mapID(e.To), Type: e.Type})
+	}
+	g.Edges = edges
+	roots := make([]string, 0, len(g.Root))
+	for _, id := range g.Root {
+		roots = append(roots, mapID(id))
+	}
+	g.Root = roots
+	g.reindex()
 }
 
 // normalizeVersion normalizes a version string.
 func normalizeVersion(version string) string {
 	version = strings.TrimSpace(version)
-	// Remove leading 'v' if present
-	if strings.HasPrefix(version, "v") {
-		version = version[1:]
-	}
-	// Remove leading '=' if present
-	if strings.HasPrefix(version, "=") {
+	version = strings.TrimPrefix(version, "=")
+	if len(version) > 1 && (version[0] == 'v' || version[0] == 'V') && version[1] >= '0' && version[1] <= '9' {
 		version = version[1:]
 	}
 	return version

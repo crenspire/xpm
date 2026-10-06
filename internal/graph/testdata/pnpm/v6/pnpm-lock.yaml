@@ -1,0 +1,68 @@
+lockfileVersion: '6.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+dependencies:
+  react:
+    specifier: ^18.2.0
+    version: 18.2.0
+  react-dom:
+    specifier: ^18.2.0
+    version: 18.2.0(react@18.2.0)
+
+devDependencies:
+  '@types/react':
+    specifier: ^18.2.79
+    version: 18.2.79
+
+packages:
+
+  /@types/prop-types@15.7.12:
+    resolution: {integrity: sha512-QZ+PIsMOh+YDyPpY9ZMmJ0sRj1OxRAVwDH/ZAjgt+qvC3h1rpThRHHehiCfW8rz7SIOoB2V4hVkBfs8dAnvr5A==}
+    dev: true
+
+  /@types/react@18.2.79:
+    resolution: {integrity: sha512-lgSozsIhKElkmkYlrkQ4d2rq/bY6MUQZkO1fShFKaezdTpDbVZvmpUjKfgPHOdRdyCGE1VEXAZaeUDBse28Amg==}
+    dependencies:
+      '@types/prop-types': 15.7.12
+      csstype: 3.1.3
+    dev: true
+
+  /csstype@3.1.3:
+    resolution: {integrity: sha512-nn4YAF2akFr0tn22Q3fpTnhyh6NgJpZypPjuKSCBC5ww2dA+W2a/DtMGjS5Mv8algdoQpgyeZb48sG+3htbjjA==}
+    dev: true
+
+  /js-tokens@4.0.0:
+    resolution: {integrity: sha512-hgvFIIZXEh0qKUvHJA9tb+6uMdEHBUTTBVdE5bnB0HXjEjOjXG0NsMmG74DF0EoiAWA+OCL55ZseKfL6rFqqEw==}
+    dev: false
+
+  /loose-envify@1.4.0:
+    resolution: {integrity: sha512-p6tV/43Z8c4seu03wSajLEoUgCE8tth0qwIk9TQuGL/l4A1cGuu5pJMkpTfGeg4X8Ex5aYGsz2uKe7iYEkGBGw==}
+    hasBin: true
+    dependencies:
+      js-tokens: 4.0.0
+    dev: false
+
+  /react-dom@18.2.0(react@18.2.0):
+    resolution: {integrity: sha512-2JdTLMBPPGbvWv5T5ugimhp0b1RXeRTeSZOj195w7dlfVVrIinTtFC2s10Pt2zZRpEQvCcuuDwMYDEA0Bnys9Q==}
+    peerDependencies:
+      react: ^18.2.0
+    dependencies:
+      loose-envify: 1.4.0
+      react: 18.2.0
+      scheduler: 0.23.0
+    dev: false
+
+  /react@18.2.0:
+    resolution: {integrity: sha512-eemt7WyP4lp5p56A5e8Te6hpPeeAcZLyKxqn7Q9XbG1N8f90duI8MAVdbJZrtLZ89Q8Ro8yv0+rHeWHYZIWngQ==}
+    dependencies:
+      loose-envify: 1.4.0
+    dev: false
+
+  /scheduler@0.23.0:
+    resolution: {integrity: sha512-FnP1OG4BU/qIuF/hpfsK2d1904D7j+CGuXaEbiMkzcrfASWZNTX6pbIycGUttjvJM34qVZVnft2obJGlGYDaVQ==}
+    dependencies:
+      loose-envify: 1.4.0
+    dev: false

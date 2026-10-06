@@ -14,9 +14,11 @@ func TestCratesIndexPath(t *testing.T) {
 	for name, want := range map[string]string{
 		"a": "1/a", "ab": "2/ab", "abc": "3/a/abc", "Serde": "se/rd/serde", "tokio": "to/ki/tokio",
 	} {
-		if got := cratesIndexPath(name); got != want {
-			t.Errorf("cratesIndexPath(%q) = %q, want %q", name, got, want)
-		}
+		t.Run(name, func(t *testing.T) {
+			if got := cratesIndexPath(name); got != want {
+				t.Errorf("cratesIndexPath(%q) = %q, want %q", name, got, want)
+			}
+		})
 	}
 }
 

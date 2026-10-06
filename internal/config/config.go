@@ -28,17 +28,6 @@ type ScriptsConfig struct {
 	Prefer []string `json:"prefer"`
 }
 
-// LockConfig holds configuration for the `xpm lock` command.
-type LockConfig struct {
-	// AutoGenerate controls whether xpm automatically regenerates xpm-lock.yaml
-	// after install operations that modify lockfiles.
-	AutoGenerate bool `json:"autoGenerate"`
-
-	// AutoVerify controls whether xpm automatically verifies lockfile integrity
-	// before install operations.
-	AutoVerify bool `json:"autoVerify"`
-}
-
 // DoctorConfig holds configuration for the `xpm doctor` command.
 type DoctorConfig struct {
 	// SkipSecurity skips the security audit section.
@@ -52,21 +41,6 @@ type DoctorConfig struct {
 
 	// SkipDrift skips the dependency drift detection section.
 	SkipDrift bool `json:"skipDrift"`
-}
-
-// CacheConfig holds configuration for the global dependency cache.
-type CacheConfig struct {
-	// Enabled controls whether caching is enabled.
-	Enabled bool `json:"enabled"`
-
-	// Path is the cache directory path. Defaults to ~/.xpm/cache.
-	Path string `json:"path"`
-
-	// MaxAgeDays is the maximum age in days for cached artifacts during GC.
-	MaxAgeDays int `json:"maxAgeDays"`
-
-	// MaxVersions is the maximum number of versions to keep per package during GC.
-	MaxVersions int `json:"maxVersions"`
 }
 
 // GraphConfig holds configuration for the `xpm graph` command.
@@ -95,14 +69,16 @@ type SearchUIConfig struct {
 
 // WorkspaceConfig holds configuration for workspace/monorepo operations.
 type WorkspaceConfig struct {
-	// Enabled controls whether workspace detection is enabled.
-	Enabled bool `json:"enabled"`
-
-	// Include specifies glob patterns for workspace directories to include.
-	// If empty, all detected workspaces are included.
+	// Include specifies glob patterns that a project's path, relative to its
+	// workspace root (slash-separated, "." for the root itself), must match
+	// to be kept by the workspace commands (workspaces, install, run and graph
+	// with --workspace). Patterns use path.Match syntax per segment, plus "**"
+	// for any number of segments. If empty, every detected project is kept.
 	Include []string `json:"include"`
 
-	// Exclude specifies glob patterns for workspace directories to exclude.
+	// Exclude specifies glob patterns, matched like Include, for projects the
+	// workspace commands drop. Exclude wins over Include. A workspace left
+	// with no projects is dropped.
 	Exclude []string `json:"exclude"`
 
 	// Parallel controls whether operations run in parallel across workspaces.
@@ -116,9 +92,6 @@ type EnvConfig struct {
 
 	// Path specifies the root directory for runtime installations.
 	Path string `json:"path"`
-
-	// Default specifies default versions for each runtime.
-	Default map[string]string `json:"default"`
 }
 
 // TimeoutConfig holds how long registry lookups may take.
@@ -157,14 +130,8 @@ type Config struct {
 	// Scripts holds configuration for the `xpm run` command.
 	Scripts ScriptsConfig `json:"scripts"`
 
-	// Lock holds configuration for the `xpm lock` command.
-	Lock LockConfig `json:"lock"`
-
 	// Doctor holds configuration for the `xpm doctor` command.
 	Doctor DoctorConfig `json:"doctor"`
-
-	// Cache holds configuration for the global dependency cache.
-	Cache CacheConfig `json:"cache"`
 
 	// Graph holds configuration for the `xpm graph` command.
 	Graph GraphConfig `json:"graph"`
@@ -198,21 +165,11 @@ func defaultConfig() Config {
 		Scripts: ScriptsConfig{
 			Prefer: []string{},
 		},
-		Lock: LockConfig{
-			AutoGenerate: true,
-			AutoVerify:   false,
-		},
 		Doctor: DoctorConfig{
 			SkipSecurity:  false,
 			SkipEnv:       false,
 			SkipConflicts: false,
 			SkipDrift:     false,
-		},
-		Cache: CacheConfig{
-			Enabled:     true,
-			Path:        "~/.xpm/cache",
-			MaxAgeDays:  60,
-			MaxVersions: 5,
 		},
 		Graph: GraphConfig{
 			ShowVersions:  true,
@@ -225,7 +182,6 @@ func defaultConfig() Config {
 			PageSize:   20,
 		},
 		Workspace: WorkspaceConfig{
-			Enabled:  true,
 			Include:  []string{},
 			Exclude:  []string{"**/test/**", "**/node_modules/**"},
 			Parallel: true,
@@ -233,7 +189,6 @@ func defaultConfig() Config {
 		Env: EnvConfig{
 			Enabled: true,
 			Path:    "~/.xpm/env",
-			Default: make(map[string]string),
 		},
 		Timeout: TimeoutConfig{
 			Default:     0, // 0 = built-in 2.5 s deadline
@@ -242,9 +197,10 @@ func defaultConfig() Config {
 	}
 }
 
-// configPath returns the platform-specific path to the configuration file.
-// Returns an empty string if the path cannot be determined.
-func configPath() string {
+// Path returns the platform-specific config file path, or "" if it cannot be
+// determined. Windows: %APPDATA%\xpm\xpmrc.json; elsewhere:
+// $HOME/.config/xpm/xpmrc.json.
+func Path() string {
 	if runtime.GOOS == "windows" {
 		base := os.Getenv("APPDATA")
 		if base == "" {
@@ -264,7 +220,7 @@ func configPath() string {
 // If the file doesn't exist, defaults are returned; if it is invalid,
 // a warning is printed to stderr and defaults are returned.
 func Load() Config {
-	return loadFrom(configPath())
+	return loadFrom(Path())
 }
 
 func loadFrom(path string) Config {

@@ -20,9 +20,7 @@ func chdir(t *testing.T, dir string) {
 }
 
 func TestRunHelpWritesNoFiles(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("APPDATA", home)
+	home := isolatedHome(t)
 
 	// A project with .xpm-env in the root and an installed matching version:
 	// exactly the situation in which the old auto-activation rewrote files.

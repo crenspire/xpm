@@ -1,0 +1,33 @@
+
+> Task :dependencies
+
+------------------------------------------------------------
+Root project 'demo'
+------------------------------------------------------------
+
+runtimeClasspath - Runtime classpath of source set 'main'.
++--- org.springframework.boot:spring-boot-dependencies:3.3.0
+|    +--- com.fasterxml.jackson.core:jackson-databind:2.17.1 (c)
+|    \--- com.fasterxml.jackson.core:jackson-core:2.17.1 (c)
++--- com.fasterxml.jackson.core:jackson-databind -> 2.17.1
+|    +--- com.fasterxml.jackson.core:jackson-annotations:2.17.1
+|    |    \--- com.fasterxml.jackson:jackson-bom:2.17.1
+|    |         +--- com.fasterxml.jackson.core:jackson-annotations:2.17.1 (c)
+|    |         +--- com.fasterxml.jackson.core:jackson-core:2.17.1 (c)
+|    |         \--- com.fasterxml.jackson.core:jackson-databind:2.17.1 (c)
+|    +--- com.fasterxml.jackson.core:jackson-core:2.17.1
+|    |    \--- com.fasterxml.jackson:jackson-bom:2.17.1 (*)
+|    \--- com.fasterxml.jackson:jackson-bom:2.17.1 (*)
++--- com.google.guava:guava:33.0.0-jre -> 33.2.1-jre
+|    +--- com.google.guava:failureaccess:1.0.2
+|    \--- com.google.guava:listenablefuture:9999.0-empty-to-avoid-conflict-with-guava
+\--- project :core
+     \--- org.slf4j:slf4j-api:2.0.13
+
+(c) - A dependency constraint, not a dependency. The dependency affected by the constraint occurs elsewhere in the tree.
+(*) - Indicates repeated occurrences of a transitive dependency subtree. Gradle expands transitive dependency subtrees only once per project; repeat occurrences only display the root of the subtree, followed by this annotation.
+
+A web-based, searchable dependency report is available by adding the --scan option.
+
+BUILD SUCCESSFUL in 2s
+1 actionable task: 1 executed

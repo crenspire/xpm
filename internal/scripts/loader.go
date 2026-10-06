@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
+
 	"github.com/crenspire/xpm/internal/pm"
 )
 
@@ -158,6 +159,9 @@ func loadComposerJSON(path string) ([]ScriptDefinition, error) {
 // pyprojectTOML represents the structure of pyproject.toml for script loading.
 type pyprojectTOML struct {
 	Tool struct {
+		XPM struct {
+			Scripts map[string]string `toml:"scripts"`
+		} `toml:"xpm"`
 		UPM struct {
 			Scripts map[string]string `toml:"scripts"`
 		} `toml:"upm"`
@@ -171,7 +175,9 @@ type pyprojectTOML struct {
 }
 
 // loadPyprojectTOML loads scripts from a pyproject.toml file.
-// It looks for scripts in [tool.upm.scripts], [tool.poetry.scripts], and [project.scripts].
+// It looks for scripts in [tool.xpm.scripts] (legacy [tool.upm.scripts] is read
+// when the xpm table is absent or empty), then [tool.poetry.scripts], then
+// [project.scripts]. The first non-empty table wins as a whole; tables are not merged.
 func loadPyprojectTOML(path string) ([]ScriptDefinition, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -185,8 +191,8 @@ func loadPyprojectTOML(path string) ([]ScriptDefinition, error) {
 
 	scripts := make([]ScriptDefinition, 0)
 
-	// Prefer [tool.upm.scripts] section
-	for name, cmd := range config.Tool.UPM.Scripts {
+	// Prefer [tool.xpm.scripts]
+	for name, cmd := range config.Tool.XPM.Scripts {
 		scripts = append(scripts, ScriptDefinition{
 			Name:    name,
 			Command: cmd,
@@ -196,7 +202,20 @@ func loadPyprojectTOML(path string) ([]ScriptDefinition, error) {
 		})
 	}
 
-	// If no upm scripts, try [tool.poetry.scripts]
+	// Legacy [tool.upm.scripts], only when the xpm table is absent or empty
+	if len(scripts) == 0 {
+		for name, cmd := range config.Tool.UPM.Scripts {
+			scripts = append(scripts, ScriptDefinition{
+				Name:    name,
+				Command: cmd,
+				Source:  SourcePython,
+				PM:      pm.Pip,
+				Path:    "pyproject.toml",
+			})
+		}
+	}
+
+	// If no xpm/upm scripts, try [tool.poetry.scripts]
 	if len(scripts) == 0 {
 		for name, cmd := range config.Tool.Poetry.Scripts {
 			scripts = append(scripts, ScriptDefinition{
@@ -229,6 +248,9 @@ func loadPyprojectTOML(path string) ([]ScriptDefinition, error) {
 type cargoTOML struct {
 	Package struct {
 		Metadata struct {
+			XPM struct {
+				Scripts map[string]string `toml:"scripts"`
+			} `toml:"xpm"`
 			UPM struct {
 				Scripts map[string]string `toml:"scripts"`
 			} `toml:"upm"`
@@ -237,7 +259,8 @@ type cargoTOML struct {
 }
 
 // loadCargoTOML loads scripts from a Cargo.toml file.
-// It looks for scripts in [package.metadata.upm.scripts].
+// It looks for scripts in [package.metadata.xpm.scripts] (legacy
+// [package.metadata.upm.scripts] is read when the xpm table is absent or empty).
 func loadCargoTOML(path string) ([]ScriptDefinition, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -249,8 +272,13 @@ func loadCargoTOML(path string) ([]ScriptDefinition, error) {
 		return nil, err
 	}
 
-	scripts := make([]ScriptDefinition, 0)
-	for name, cmd := range config.Package.Metadata.UPM.Scripts {
+	table := config.Package.Metadata.XPM.Scripts
+	if len(table) == 0 {
+		table = config.Package.Metadata.UPM.Scripts
+	}
+
+	scripts := make([]ScriptDefinition, 0, len(table))
+	for name, cmd := range table {
 		scripts = append(scripts, ScriptDefinition{
 			Name:    name,
 			Command: cmd,

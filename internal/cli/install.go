@@ -259,7 +259,7 @@ func ensureManager(id pm.ID) error {
 	}
 	if !cfg.AutoInstallPM {
 		if hint := strings.TrimSpace(pm.InstallHint(id)); hint != "" {
-			fmt.Println("Hint:", hint)
+			fmt.Println("To install it:", hint)
 		}
 		return fmt.Errorf("%s is not installed (auto-install is disabled in config)", meta.Name)
 	}

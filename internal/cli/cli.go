@@ -2,14 +2,8 @@
 //
 // This package handles argument parsing, command dispatch, and user interaction.
 // It provides commands for installing packages, checking package availability,
-// and diagnosing the local environment.
-//
-// Commands:
-//   - install: Install packages or project dependencies
-//   - which: Check which ecosystems have a package
-//   - doctor: Check installed package managers
-//   - version: Show version information
-//   - help: Show usage information
+// and diagnosing the local environment. The full command list, with aliases,
+// is commandTable in man.go.
 package cli
 
 import (
@@ -17,12 +11,13 @@ import (
 	"os"
 	"strings"
 
+	"github.com/manifoldco/promptui"
+
 	"github.com/crenspire/xpm/internal/config"
 	"github.com/crenspire/xpm/internal/doctor"
 	"github.com/crenspire/xpm/internal/logx"
 	"github.com/crenspire/xpm/internal/pm"
 	"github.com/crenspire/xpm/internal/search"
-	"github.com/manifoldco/promptui"
 )
 
 // Version is the current version of xpm.
@@ -62,7 +57,7 @@ func printBanner() {
 
 	// Version and tagline
 	fmt.Printf("%s%s", colorCyan, colorBold)
-	fmt.Printf("     Universal Package Manager")
+	fmt.Printf("     Cross-ecosystem package manager")
 	fmt.Printf("%s\n", colorReset)
 	fmt.Printf("%s%s", colorGreen, colorBold)
 	fmt.Printf("              v%s\n", Version)
@@ -76,39 +71,9 @@ func usage() {
 
 	fmt.Printf("%s%sCommands:%s\n", colorBold, colorYellow, colorReset)
 
-	commands := []struct {
-		name        string
-		aliases     []string
-		description string
-	}{
-		{"install", []string{"i"}, "Install packages or project dependencies"},
-		{"run", []string{"r"}, "Run project scripts (from package.json, etc.)"},
-		{"which", []string{"w"}, "Check which ecosystems have a package"},
-		{"list", []string{"l"}, "List installed packages for current project"},
-		{"update", []string{"u"}, "Update packages in the current project"},
-		{"remove", []string{"rm"}, "Remove a package from the current project"},
-		{"info", nil, "Show detailed package information"},
-		{"lock", nil, "Generate or verify unified lockfile (xpm-lock.yaml)"},
-		{"cache", nil, "Manage dependency cache (tree, size, clean, gc)"},
-		{"graph", []string{"g"}, "Show unified dependency graph across all ecosystems"},
-		{"search", []string{"s"}, "Interactive TUI package search"},
-		{"workspaces", nil, "List detected workspaces/monorepos"},
-		{"env", nil, "Manage runtime versions (node, python, go, java, rust, bun, deno)"},
-		{"doctor", []string{"d"}, "Comprehensive environment & project diagnostics"},
-		{"config", nil, "View or edit configuration"},
-		{"version", []string{"-v"}, "Show version information"},
-		{"help", []string{"-h"}, "Show this help message"},
-		{"man", nil, "Show detailed manual for commands"},
-	}
-
-	for _, cmd := range commands {
-		name := cmd.name
-		if len(cmd.aliases) > 0 {
-			name += ", " + strings.Join(cmd.aliases, ", ")
-		}
-		fmt.Printf("  %s%s%-20s%s %s\n", colorBold, colorCyan, name, colorReset, cmd.description)
-	}
-
+	printCommandTable()
+	fmt.Println()
+	fmt.Println(experimentalNote)
 	fmt.Printf("\n%sRun%s '%sxpm man <command>%s' for detailed help on a specific command.\n", colorBold, colorReset, colorCyan, colorReset)
 }
 
@@ -190,12 +155,6 @@ func Run() int {
 		return cmdInfo(rest)
 	case "lock":
 		return cmdLock(rest)
-	case "cc":
-		return cmdCache([]string{"clean"})
-	case "cg":
-		return cmdCache([]string{"gc"})
-	case "cache":
-		return cmdCache(rest)
 	case "g", "graph":
 		return cmdGraph(rest)
 	case "s", "search":

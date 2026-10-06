@@ -1,0 +1,11 @@
+# Pinned by pip-compile
+--index-url https://pypi.org/simple
+-r requirements-base.txt
+
+Django==5.0.6
+djangorestframework>=3.15,<4  # api
+psycopg[binary]==3.1.19 ; sys_platform != "win32"
+gunicorn==22.0.0 \
+    --hash=sha256:350679f91b24062c86e386e198a15438d53a7a8207235a78ba1b53df4c4378d9
+-e ./libs/shared
+https://example.com/wheels/internal_tool-1.0-py3-none-any.whl
