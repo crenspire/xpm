@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -27,6 +30,9 @@ func latestFake(t *testing.T, h http.HandlerFunc) {
 		GoProxy:     srv.URL + "/goproxy",
 	}))
 	t.Cleanup(SetCacheDir(""))
+	t.Setenv("GOPROXY", "")
+	t.Setenv("GOPRIVATE", "")
+	t.Setenv("GONOPROXY", "")
 }
 
 func TestLatestVersionsPerRegistry(t *testing.T) {
@@ -118,13 +124,13 @@ func TestLatestVersionsMavenRequiresExactCoordinates(t *testing.T) {
 }
 
 func TestLatestVersionsConcurrencyCap(t *testing.T) {
-	var cur, max int32
+	var cur, peak int32
 	var mu sync.Mutex
 	latestFake(t, func(w http.ResponseWriter, r *http.Request) {
 		n := atomic.AddInt32(&cur, 1)
 		mu.Lock()
-		if n > max {
-			max = n
+		if n > peak {
+			peak = n
 		}
 		mu.Unlock()
 		time.Sleep(20 * time.Millisecond)
@@ -140,8 +146,8 @@ func TestLatestVersionsConcurrencyCap(t *testing.T) {
 			t.Errorf("result %d = %+v", i, r)
 		}
 	}
-	if max > latestConcurrency || max < 2 {
-		t.Errorf("max in flight = %d, want 2..%d", max, latestConcurrency)
+	if peak > latestConcurrency || peak < 2 {
+		t.Errorf("max in flight = %d, want 2..%d", peak, latestConcurrency)
 	}
 }
 
@@ -154,5 +160,137 @@ func TestLatestVersionsTimeout(t *testing.T) {
 	}
 	if time.Since(start) > 2*time.Second {
 		t.Errorf("took %v", time.Since(start))
+	}
+}
+
+func TestLatestVersionsComposerLargeBody(t *testing.T) {
+	latestFake(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/packagist/p2/aws/aws-sdk-php.json" {
+			http.NotFound(w, r)
+			return
+		}
+		fmt.Fprint(w, `{"minified":"x","packages":{"other/pkg":[{"version":"9.9.9"}],"aws/aws-sdk-php":[{"version":"3.5.0-RC1"},{"version":"3.4.0"}`)
+		pad := strings.Repeat("x", 1000)
+		for i := 0; i < 1500; i++ {
+			fmt.Fprintf(w, `,{"version":"2.%d.0","description":%q}`, i, pad)
+		}
+		fmt.Fprint(w, `]}}`)
+	})
+	got := LatestVersions([]LatestQuery{{pm.Composer, "AWS/aws-sdk-php"}}, Options{})
+	if got[0].Err != nil || !got[0].Found || got[0].Version != "3.4.0" {
+		t.Fatalf("result = %+v", got[0])
+	}
+}
+
+func TestLatestVersionsComposerEdgeCases(t *testing.T) {
+	latestFake(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/packagist/p2/v/prerelease.json":
+			fmt.Fprint(w, `{"packages":{"v/prerelease":[{"version":"2.0.0-beta2"},{"version":"2.0.0-a1"},{"version":"dev-main"}]}}`)
+		case "/packagist/p2/v/patch.json":
+			fmt.Fprint(w, `{"packages":{"v/patch":[{"version":"1.0.0-p1"},{"version":"1.0.0"}]}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	got := LatestVersions([]LatestQuery{
+		{pm.Composer, "v/missing"},
+		{pm.Composer, "v/prerelease"},
+		{pm.Composer, "v/patch"},
+		{pm.Composer, "noslash"},
+	}, Options{})
+	if got[0].Found || got[0].Err != nil {
+		t.Errorf("404: %+v", got[0])
+	}
+	if !got[1].Found || got[1].Version != "2.0.0-beta2" {
+		t.Errorf("no-stable fallback: %+v", got[1])
+	}
+	if !got[2].Found || got[2].Version != "1.0.0-p1" {
+		t.Errorf("patch is stable: %+v", got[2])
+	}
+	if got[3].Err == nil || !strings.Contains(got[3].Err.Error(), "invalid package name") {
+		t.Errorf("noslash: %+v", got[3])
+	}
+}
+
+func TestLatestVersionsGoEdgeCases(t *testing.T) {
+	var calls int32
+	latestFake(t, func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		switch r.URL.Path {
+		case "/goproxy/example.com/gone/@latest":
+			http.Error(w, "gone", http.StatusGone)
+		case "/goproxy/example.com/empty/@latest":
+			fmt.Fprint(w, `{"Version":""}`)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	got := LatestVersions([]LatestQuery{{pm.GoMod, "example.com/gone"}, {pm.GoMod, "example.com/empty"}}, Options{})
+	for i, r := range got {
+		if r.Found || r.Err != nil {
+			t.Errorf("result %d = %+v", i, r)
+		}
+	}
+}
+
+func TestLatestVersionsGoPrivateAndProxyEnv(t *testing.T) {
+	var calls int32
+	var lastPath atomic.Value
+	latestFake(t, func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		lastPath.Store(r.URL.Path)
+		fmt.Fprint(w, `{"Version":"v1.0.0"}`)
+	})
+	q := []LatestQuery{{pm.GoMod, "corp.example/team/mod"}}
+
+	t.Setenv("GOPRIVATE", "corp.example")
+	if r := LatestVersions(q, Options{})[0]; !errors.Is(r.Err, ErrNotChecked) || r.Found {
+		t.Errorf("GOPRIVATE: %+v", r)
+	}
+	t.Setenv("GOPRIVATE", "")
+	t.Setenv("GONOPROXY", "corp.example/team")
+	if r := LatestVersions(q, Options{})[0]; !errors.Is(r.Err, ErrNotChecked) {
+		t.Errorf("GONOPROXY: %+v", r)
+	}
+	t.Setenv("GONOPROXY", "")
+	t.Setenv("GOPROXY", "off")
+	if r := LatestVersions(q, Options{})[0]; !errors.Is(r.Err, ErrNotChecked) {
+		t.Errorf("GOPROXY=off: %+v", r)
+	}
+	t.Setenv("GOPROXY", "direct")
+	if r := LatestVersions(q, Options{})[0]; !errors.Is(r.Err, ErrNotChecked) {
+		t.Errorf("GOPROXY=direct: %+v", r)
+	}
+	if n := atomic.LoadInt32(&calls); n != 0 {
+		t.Fatalf("%d requests made, want 0", n)
+	}
+
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		lastPath.Store("other" + r.URL.Path)
+		fmt.Fprint(w, `{"Version":"v2.0.0"}`)
+	}))
+	defer other.Close()
+	t.Setenv("GOPROXY", other.URL+"/,direct")
+	r := LatestVersions(q, Options{})[0]
+	if r.Err != nil || r.Version != "v2.0.0" || lastPath.Load() != "other/corp.example/team/mod/@latest" {
+		t.Errorf("GOPROXY list: %+v path=%v", r, lastPath.Load())
+	}
+}
+
+func TestLatestVersionsComposerCacheUsesLatestDir(t *testing.T) {
+	latestFake(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"packages":{"v/p":[{"version":"1.2.3"}]}}`)
+	})
+	dir := t.TempDir()
+	defer SetCacheDir(dir)()
+	if r := LatestVersions([]LatestQuery{{pm.Composer, "v/p"}}, Options{})[0]; !r.Found {
+		t.Fatalf("result = %+v", r)
+	}
+	if _, err := os.Stat(cachePath(filepath.Join(dir, "latest"), pm.Composer, "v/p")); err != nil {
+		t.Errorf("cache entry not under latest/: %v", err)
+	}
+	if _, err := os.Stat(cachePath(dir, pm.Composer, "v/p")); err == nil {
+		t.Error("version-less search cache key was written")
 	}
 }
