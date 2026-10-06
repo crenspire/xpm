@@ -87,3 +87,27 @@ func TestJavaInstallMacHoistsContentsHome(t *testing.T) {
 		t.Fatalf("release path %s: '+' must be sent as %%2B", got)
 	}
 }
+
+func TestJavaInstallJava8(t *testing.T) {
+	skipWindows(t)
+	setHost(t, "linux", "amd64")
+	top := "jdk8u422-b05/"
+	entries := []tarEntry{dir(top), dir(top + "bin")}
+	for _, b := range []string{"java", "javac", "jar", "keytool"} {
+		entries = append(entries, reg(top+"bin/"+b, b))
+	}
+	archive := tarGzBytes(t, entries)
+	file := "OpenJDK8U-jdk_x64_linux_hotspot_8u422b05.tar.gz"
+	release := `{"binaries":[{"package":{"checksum":"` + shaBytes(archive) + `","link":"LINK","name":"` + file + `"}}],"release_name":"jdk8u422-b05"}`
+	q := "architecture=x64&heap_size=normal&image_type=jdk&jvm_impl=hotspot&os=linux"
+	routes := map[string]route{"/dl/" + file: {body: archive}}
+	url, _ := newServer(t, routes)
+	routes["/v3/assets/release_name/eclipse/jdk8u422-b05?"+q] = route{body: []byte(strings.Replace(release, "LINK", url+"/dl/"+file, 1))}
+	setVar(t, &adoptiumAPI, url)
+	dest := installInto(t, &JavaInstaller{}, "8u422-b05")
+	for _, b := range (&JavaInstaller{}).BinaryPaths() {
+		if got, err := readFile(dest, b); err != nil || got != strings.TrimPrefix(b, "bin/") {
+			t.Errorf("%s: %q, %v", b, got, err)
+		}
+	}
+}

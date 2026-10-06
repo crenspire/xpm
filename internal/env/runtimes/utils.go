@@ -391,6 +391,7 @@ func hoistDir(dest, sub string) error {
 	return os.RemoveAll(parked)
 }
 
+// singleTopDir returns the only directory at the root of dest (ignoring
 // hidden entries), as found in JDK archives ("jdk-21.0.4+7/").
 func singleTopDir(dest string) (string, error) {
 	entries, err := os.ReadDir(dest)
