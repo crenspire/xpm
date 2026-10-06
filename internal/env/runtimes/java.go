@@ -1,6 +1,7 @@
 package runtimes
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -26,7 +27,7 @@ func (j *JavaInstaller) Name() string {
 }
 
 // ListRemote fetches available Java versions from Adoptium API.
-func (j *JavaInstaller) ListRemote() ([]string, error) {
+func (j *JavaInstaller) ListRemote(_ context.Context) ([]string, error) {
 	// Use Adoptium API
 	url := "https://api.adoptium.net/v3/info/available_releases"
 	resp, err := http.Get(url)
@@ -66,8 +67,17 @@ func (j *JavaInstaller) ValidateVersion(version string) error {
 	return nil
 }
 
+// Install adapts the v1 installer to the v2 interface; the installer
+// rewrite replaces it.
+func (j *JavaInstaller) Install(_ context.Context, req env.InstallRequest) error {
+	if err := j.install(req.Version, req.Dest); err != nil {
+		return err
+	}
+	return j.PostInstall(req.Version, req.Dest)
+}
+
 // Install downloads and installs a Java version.
-func (j *JavaInstaller) Install(version string, dest string) error {
+func (j *JavaInstaller) install(version string, dest string) error {
 	// Determine platform
 	goos := runtime.GOOS
 	goarch := runtime.GOARCH
@@ -175,7 +185,7 @@ func (j *JavaInstaller) PostInstall(version, dest string) error {
 }
 
 // BinaryPaths returns the paths to Java binaries.
-func (j *JavaInstaller) BinaryPaths(version, dest string) []string {
+func (j *JavaInstaller) BinaryPaths() []string {
 	if runtime.GOOS == "windows" {
 		return []string{"bin\\java.exe", "bin\\javac.exe", "bin\\keytool.exe"}
 	}

@@ -12,7 +12,7 @@ import (
 
 // RemoveVersion removes an installed version. It refuses the version that is
 // active here or set as the global default.
-func RemoveVersion(_ context.Context, m *Manager, runtime, version string) error {
+func RemoveVersion(ctx context.Context, m *Manager, runtime, version string) error {
 	dir, err := m.versionDir(runtime, version)
 	if err != nil {
 		return err
@@ -34,6 +34,13 @@ func RemoveVersion(_ context.Context, m *Manager, runtime, version string) error
 	if g != "" {
 		if exact, ok := m.resolveInstalled(runtime, g); ok && exact == version {
 			return fmt.Errorf("cannot remove %s@%s: it is the global default (set in %s)\nSwitch first: xpm env use --global %s@<other-version>", runtime, version, m.activePath, runtime)
+		}
+	}
+	if inst, err := GetInstaller(runtime); err == nil {
+		if r, ok := inst.(Remover); ok {
+			if err := r.Remove(ctx, version, dir, m.envPath); err != nil {
+				return fmt.Errorf("remove %s@%s: %w", runtime, version, err)
+			}
 		}
 	}
 	// Rename first so the version disappears atomically, then delete.

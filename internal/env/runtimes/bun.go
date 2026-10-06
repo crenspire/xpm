@@ -1,6 +1,7 @@
 package runtimes
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -26,7 +27,7 @@ func (b *BunInstaller) Name() string {
 }
 
 // ListRemote fetches available Bun versions from GitHub releases.
-func (b *BunInstaller) ListRemote() ([]string, error) {
+func (b *BunInstaller) ListRemote(_ context.Context) ([]string, error) {
 	resp, err := http.Get("https://api.github.com/repos/oven-sh/bun/releases")
 	if err != nil {
 		return nil, err
@@ -58,8 +59,17 @@ func (b *BunInstaller) ValidateVersion(version string) error {
 	return nil
 }
 
+// Install adapts the v1 installer to the v2 interface; the installer
+// rewrite replaces it.
+func (b *BunInstaller) Install(_ context.Context, req env.InstallRequest) error {
+	if err := b.install(req.Version, req.Dest); err != nil {
+		return err
+	}
+	return b.PostInstall(req.Version, req.Dest)
+}
+
 // Install downloads and installs a Bun version.
-func (b *BunInstaller) Install(version string, dest string) error {
+func (b *BunInstaller) install(version string, dest string) error {
 	// Determine platform
 	goos := runtime.GOOS
 	goarch := runtime.GOARCH
@@ -161,7 +171,7 @@ func (b *BunInstaller) PostInstall(version, dest string) error {
 }
 
 // BinaryPaths returns the paths to Bun binaries.
-func (b *BunInstaller) BinaryPaths(version, dest string) []string {
+func (b *BunInstaller) BinaryPaths() []string {
 	if runtime.GOOS == "windows" {
 		return []string{"bin\\bun.exe"}
 	}

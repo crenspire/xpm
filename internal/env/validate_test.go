@@ -5,6 +5,7 @@ import (
 	"errors"
 	"go/parser"
 	"go/token"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,7 +28,8 @@ func chdir(t *testing.T, dir string) {
 }
 
 // isolate points HOME at a temp dir, chdirs into another (the repo root has
-// its own .xpm-env) and returns a Manager rooted in a third.
+// its own .xpm-env) and returns a Manager rooted in a third. Progress
+// output is discarded.
 func isolate(t *testing.T) *Manager {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
@@ -37,6 +39,7 @@ func isolate(t *testing.T) *Manager {
 	if err != nil {
 		t.Fatal(err)
 	}
+	m.SetOutput(io.Discard)
 	return m
 }
 

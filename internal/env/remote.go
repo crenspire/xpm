@@ -1,17 +1,18 @@
 package env
 
 import (
+	"context"
 	"fmt"
 	"strings"
 )
 
-// ListRemote returns available remote versions for a runtime, newest first.
-func ListRemote(manager *Manager, runtime string) ([]string, error) {
+// ListRemote returns the runtime's available versions, newest first.
+func ListRemote(ctx context.Context, runtime string) ([]string, error) {
 	installer, err := GetInstaller(runtime)
 	if err != nil {
 		return nil, err
 	}
-	versions, err := installer.ListRemote()
+	versions, err := installer.ListRemote(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch remote versions: %w", err)
 	}

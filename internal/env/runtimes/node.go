@@ -32,7 +32,7 @@ type NodeRelease struct {
 }
 
 // ListRemote fetches available Node.js versions.
-func (n *NodeInstaller) ListRemote() ([]string, error) {
+func (n *NodeInstaller) ListRemote(_ context.Context) ([]string, error) {
 	resp, err := http.Get("https://nodejs.org/dist/index.json")
 	if err != nil {
 		return nil, err
@@ -56,7 +56,7 @@ func (n *NodeInstaller) ListRemote() ([]string, error) {
 
 // GetLatestVersion returns the latest current version.
 func (n *NodeInstaller) GetLatestVersion() (string, error) {
-	versions, err := n.ListRemote()
+	versions, err := n.ListRemote(context.Background())
 	if err != nil {
 		return "", err
 	}
@@ -65,6 +65,11 @@ func (n *NodeInstaller) GetLatestVersion() (string, error) {
 	}
 	// First version is the latest
 	return versions[0], nil
+}
+
+// LatestLTS implements env.LTSResolver.
+func (n *NodeInstaller) LatestLTS(_ context.Context) (string, error) {
+	return n.GetLTSVersion()
 }
 
 // GetLTSVersion returns the latest LTS version.
@@ -111,7 +116,7 @@ func (n *NodeInstaller) resolveVersion(version string) (string, error) {
 	}
 
 	// Fetch available versions
-	versions, err := n.ListRemote()
+	versions, err := n.ListRemote(context.Background())
 	if err != nil {
 		return "", err
 	}
@@ -148,9 +153,18 @@ func (n *NodeInstaller) ValidateVersion(version string) error {
 	return nil
 }
 
+// Install adapts the v1 installer to the v2 interface; the installer
+// rewrite replaces it.
+func (n *NodeInstaller) Install(_ context.Context, req env.InstallRequest) error {
+	if err := n.install(req.Version, req.Dest); err != nil {
+		return err
+	}
+	return n.PostInstall(req.Version, req.Dest)
+}
+
 // Install downloads and installs a Node.js version.
 // Returns the resolved version and any alias used.
-func (n *NodeInstaller) Install(version string, dest string) error {
+func (n *NodeInstaller) install(version string, dest string) error {
 	return n.InstallWithAlias(version, dest, "")
 }
 
@@ -375,7 +389,7 @@ func (n *NodeInstaller) InstallWithAlias(version string, dest string, alias stri
 // PostInstall performs post-installation setup.
 func (n *NodeInstaller) PostInstall(version, dest string) error {
 	// Ensure binaries are executable
-	binaryPaths := n.BinaryPaths(version, dest)
+	binaryPaths := n.BinaryPaths()
 	for _, relPath := range binaryPaths {
 		fullPath := filepath.Join(dest, relPath)
 		if info, err := os.Stat(fullPath); err == nil {
@@ -389,7 +403,7 @@ func (n *NodeInstaller) PostInstall(version, dest string) error {
 }
 
 // BinaryPaths returns the paths to Node.js binaries.
-func (n *NodeInstaller) BinaryPaths(version, dest string) []string {
+func (n *NodeInstaller) BinaryPaths() []string {
 	if runtime.GOOS == "windows" {
 		return []string{"node.exe", "npm.cmd", "npx.cmd"}
 	}

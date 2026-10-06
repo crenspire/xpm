@@ -1,6 +1,7 @@
 package runtimes
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -25,7 +26,7 @@ func (p *PythonInstaller) Name() string {
 }
 
 // ListRemote fetches available Python versions from pyenv mirror.
-func (p *PythonInstaller) ListRemote() ([]string, error) {
+func (p *PythonInstaller) ListRemote(_ context.Context) ([]string, error) {
 	// Use pyenv's version list API or python.org
 	// For simplicity, we'll fetch from a known source
 	// In production, this could use python.org/downloads API
@@ -107,7 +108,7 @@ func (p *PythonInstaller) ValidateVersion(version string) error {
 
 // GetLatestVersion returns the latest Python version.
 func (p *PythonInstaller) GetLatestVersion() (string, error) {
-	versions, err := p.ListRemote()
+	versions, err := p.ListRemote(context.Background())
 	if err != nil {
 		return "", err
 	}
@@ -118,8 +119,17 @@ func (p *PythonInstaller) GetLatestVersion() (string, error) {
 	return versions[0], nil
 }
 
+// Install adapts the v1 installer to the v2 interface; the installer
+// rewrite replaces it.
+func (p *PythonInstaller) Install(_ context.Context, req env.InstallRequest) error {
+	if err := p.install(req.Version, req.Dest); err != nil {
+		return err
+	}
+	return p.PostInstall(req.Version, req.Dest)
+}
+
 // Install downloads and installs a Python version.
-func (p *PythonInstaller) Install(version string, dest string) error {
+func (p *PythonInstaller) install(version string, dest string) error {
 	// Handle special aliases
 	if version == "latest" {
 		latest, err := p.GetLatestVersion()
@@ -229,7 +239,7 @@ func (p *PythonInstaller) PostInstall(version, dest string) error {
 }
 
 // BinaryPaths returns the paths to Python binaries.
-func (p *PythonInstaller) BinaryPaths(version, dest string) []string {
+func (p *PythonInstaller) BinaryPaths() []string {
 	if runtime.GOOS == "windows" {
 		return []string{"python.exe", "python3.exe", "Scripts\\pip.exe"}
 	}

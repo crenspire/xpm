@@ -1,6 +1,7 @@
 package runtimes
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -26,7 +27,7 @@ func (p *PHPInstaller) Name() string {
 }
 
 // ListRemote fetches available PHP versions.
-func (p *PHPInstaller) ListRemote() ([]string, error) {
+func (p *PHPInstaller) ListRemote(_ context.Context) ([]string, error) {
 	// PHP.net releases API
 	resp, err := http.Get("https://www.php.net/releases/index.php?json&max=100")
 	if err != nil {
@@ -116,7 +117,7 @@ func (p *PHPInstaller) ValidateVersion(version string) error {
 
 // GetLatestVersion returns the latest PHP version.
 func (p *PHPInstaller) GetLatestVersion() (string, error) {
-	versions, err := p.ListRemote()
+	versions, err := p.ListRemote(context.Background())
 	if err != nil {
 		return "", err
 	}
@@ -127,8 +128,17 @@ func (p *PHPInstaller) GetLatestVersion() (string, error) {
 	return versions[0], nil
 }
 
+// Install adapts the v1 installer to the v2 interface; the installer
+// rewrite replaces it.
+func (p *PHPInstaller) Install(_ context.Context, req env.InstallRequest) error {
+	if err := p.install(req.Version, req.Dest); err != nil {
+		return err
+	}
+	return p.PostInstall(req.Version, req.Dest)
+}
+
 // Install downloads and installs a PHP version.
-func (p *PHPInstaller) Install(version string, dest string) error {
+func (p *PHPInstaller) install(version string, dest string) error {
 	// Handle special aliases
 	if version == "latest" {
 		latest, err := p.GetLatestVersion()
@@ -492,7 +502,7 @@ exec "%s" "$@"
 }
 
 // BinaryPaths returns the paths to PHP binaries.
-func (p *PHPInstaller) BinaryPaths(version, dest string) []string {
+func (p *PHPInstaller) BinaryPaths() []string {
 	if runtime.GOOS == "windows" {
 		return []string{"php.exe"}
 	}

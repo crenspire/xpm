@@ -1,6 +1,7 @@
 package runtimes
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -26,7 +27,7 @@ func (d *DenoInstaller) Name() string {
 }
 
 // ListRemote fetches available Deno versions from GitHub releases.
-func (d *DenoInstaller) ListRemote() ([]string, error) {
+func (d *DenoInstaller) ListRemote(_ context.Context) ([]string, error) {
 	resp, err := http.Get("https://api.github.com/repos/denoland/deno/releases")
 	if err != nil {
 		return nil, err
@@ -58,8 +59,17 @@ func (d *DenoInstaller) ValidateVersion(version string) error {
 	return nil
 }
 
+// Install adapts the v1 installer to the v2 interface; the installer
+// rewrite replaces it.
+func (d *DenoInstaller) Install(_ context.Context, req env.InstallRequest) error {
+	if err := d.install(req.Version, req.Dest); err != nil {
+		return err
+	}
+	return d.PostInstall(req.Version, req.Dest)
+}
+
 // Install downloads and installs a Deno version.
-func (d *DenoInstaller) Install(version string, dest string) error {
+func (d *DenoInstaller) install(version string, dest string) error {
 	// Determine platform
 	goos := runtime.GOOS
 	goarch := runtime.GOARCH
@@ -154,7 +164,7 @@ func (d *DenoInstaller) PostInstall(version, dest string) error {
 }
 
 // BinaryPaths returns the paths to Deno binaries.
-func (d *DenoInstaller) BinaryPaths(version, dest string) []string {
+func (d *DenoInstaller) BinaryPaths() []string {
 	if runtime.GOOS == "windows" {
 		return []string{"bin\\deno.exe"}
 	}

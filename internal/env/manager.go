@@ -3,6 +3,7 @@ package env
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +18,7 @@ type Manager struct {
 	runtimesPath string
 	shimsPath    string
 	activePath   string
+	out          io.Writer // progress and status messages
 }
 
 // NewManager creates a new environment manager.
@@ -42,6 +44,7 @@ func NewManager(cfg config.Config) (*Manager, error) {
 		runtimesPath: filepath.Join(envPath, "runtimes"),
 		shimsPath:    filepath.Join(envPath, "shims"),
 		activePath:   filepath.Join(envPath, "active.json"),
+		out:          os.Stdout,
 	}
 
 	if err := m.EnsureDirs(); err != nil {
@@ -50,6 +53,9 @@ func NewManager(cfg config.Config) (*Manager, error) {
 
 	return m, nil
 }
+
+// SetOutput redirects progress and status messages.
+func (m *Manager) SetOutput(w io.Writer) { m.out = w }
 
 // GetEnvPath returns the environment root path.
 func (m *Manager) GetEnvPath() string {
@@ -79,4 +85,8 @@ func (m *Manager) EnsureDirs() error {
 		}
 	}
 	return nil
+}
+
+func (m *Manager) printf(format string, args ...any) {
+	_, _ = fmt.Fprintf(m.out, format, args...)
 }

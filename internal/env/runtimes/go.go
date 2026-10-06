@@ -25,7 +25,7 @@ func (g *GoInstaller) Name() string {
 }
 
 // ListRemote fetches available stable Go versions (newest first).
-func (g *GoInstaller) ListRemote() ([]string, error) {
+func (g *GoInstaller) ListRemote(_ context.Context) ([]string, error) {
 	data, err := fetchSmall(context.TODO(), goDLURL+"/?mode=json&include=all")
 	if err != nil {
 		return nil, err
@@ -77,7 +77,7 @@ func (g *GoInstaller) ValidateVersion(version string) error {
 
 // GetLatestVersion returns the latest Go version.
 func (g *GoInstaller) GetLatestVersion() (string, error) {
-	versions, err := g.ListRemote()
+	versions, err := g.ListRemote(context.Background())
 	if err != nil {
 		return "", err
 	}
@@ -88,8 +88,17 @@ func (g *GoInstaller) GetLatestVersion() (string, error) {
 	return versions[0], nil
 }
 
+// Install adapts the v1 installer to the v2 interface; the installer
+// rewrite replaces it.
+func (g *GoInstaller) Install(_ context.Context, req env.InstallRequest) error {
+	if err := g.install(req.Version, req.Dest); err != nil {
+		return err
+	}
+	return g.PostInstall(req.Version, req.Dest)
+}
+
 // Install downloads and installs a Go version.
-func (g *GoInstaller) Install(version string, dest string) error {
+func (g *GoInstaller) install(version string, dest string) error {
 	// Handle special aliases
 	if version == "latest" {
 		latest, err := g.GetLatestVersion()
@@ -150,7 +159,7 @@ func (g *GoInstaller) PostInstall(version, dest string) error {
 }
 
 // BinaryPaths returns the paths to Go binaries.
-func (g *GoInstaller) BinaryPaths(version, dest string) []string {
+func (g *GoInstaller) BinaryPaths() []string {
 	return []string{"bin/go"}
 }
 

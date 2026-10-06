@@ -1,6 +1,7 @@
 package runtimes
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -24,7 +25,7 @@ func (r *RustInstaller) Name() string {
 }
 
 // ListRemote fetches available Rust versions.
-func (r *RustInstaller) ListRemote() ([]string, error) {
+func (r *RustInstaller) ListRemote(_ context.Context) ([]string, error) {
 	// Use rustup to list available toolchains
 	if rustupExists() {
 		cmd := exec.Command("rustup", "toolchain", "list", "--available")
@@ -69,10 +70,19 @@ func (r *RustInstaller) ValidateVersion(version string) error {
 	return nil
 }
 
+// Install adapts the v1 installer to the v2 interface; the installer
+// rewrite replaces it.
+func (r *RustInstaller) Install(_ context.Context, req env.InstallRequest) error {
+	if err := r.install(req.Version, req.Dest); err != nil {
+		return err
+	}
+	return r.PostInstall(req.Version, req.Dest)
+}
+
 // Install installs a Rust toolchain via the user's rustup. xpm deliberately
 // does not bootstrap rustup itself: that meant running an unverified download
 // that also rewrote ~/.cargo and shell profiles.
-func (r *RustInstaller) Install(version string, dest string) error {
+func (r *RustInstaller) install(version string, dest string) error {
 	if !rustupExists() {
 		return fmt.Errorf("rust needs rustup: install it from https://rustup.rs, then re-run `xpm env install rust@%s`", version)
 	}
@@ -113,7 +123,7 @@ func (r *RustInstaller) PostInstall(version, dest string) error {
 }
 
 // BinaryPaths returns the paths to Rust binaries.
-func (r *RustInstaller) BinaryPaths(version, dest string) []string {
+func (r *RustInstaller) BinaryPaths() []string {
 	if runtime.GOOS == "windows" {
 		return []string{"bin\\rustc.exe", "bin\\cargo.exe"}
 	}

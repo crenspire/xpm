@@ -2,9 +2,12 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	"github.com/crenspire/xpm/internal/config"
 	"github.com/crenspire/xpm/internal/env"
@@ -87,15 +90,18 @@ func cmdEnvInstall(manager *env.Manager, args []string) int {
 		return 1
 	}
 
-	// Detect if an alias was used
-	var alias string
-	if version == "latest" || version == "lts" {
-		alias = version
-	}
-
-	if err := env.InstallRuntimeWithAlias(manager, runtime, version, alias); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if _, err := env.InstallRuntime(ctx, manager, runtime, version); err != nil {
+		if errors.Is(err, context.Canceled) {
+			fmt.Fprintln(os.Stderr, "Cancelled; nothing was installed.")
+			return 130
+		}
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return 1
+	}
+	if err := env.CreateShims(manager); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not update shims: %v\n", err)
 	}
 
 	return 0
@@ -153,7 +159,7 @@ func cmdEnvListRemote(manager *env.Manager, args []string) int {
 	}
 
 	runtime := args[0]
-	versions, err := env.ListRemote(manager, runtime)
+	versions, err := env.ListRemote(context.Background(), runtime)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return 1
