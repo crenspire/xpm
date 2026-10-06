@@ -188,3 +188,42 @@ func TestConfigManListsSettableKeys(t *testing.T) {
 		}
 	}
 }
+
+func TestManUnknownCommandExitsOne(t *testing.T) {
+	var code int
+	captureStdout(t, func() { code = cmdMan([]string{"nosuchcommand"}) })
+	if code != 1 {
+		t.Fatalf("cmdMan(unknown) = %d, want 1", code)
+	}
+}
+
+func TestManListPrintsExperimentalNote(t *testing.T) {
+	out := captureStdout(t, listCommands)
+	if !strings.Contains(out, experimentalNote) {
+		t.Errorf("xpm man list lacks the experimental note")
+	}
+}
+
+func TestRunHelpPutsWorkspaceFlagBeforeTask(t *testing.T) {
+	if out := captureStdout(t, showRunHelp); !strings.Contains(out, "xpm run -w <task>") {
+		t.Errorf("run help lacks `xpm run -w <task>`")
+	}
+	page, err := GenerateManPage("run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	page = roffFontRe.ReplaceAllString(page, "")
+	if !strings.Contains(page, "[-w|--workspace] [task]") {
+		t.Errorf("run man synopsis must put -w before the task:\n%s", page)
+	}
+}
+
+func TestManPageTHLine(t *testing.T) {
+	page, err := GenerateManPage("config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(page, `.TH "XPM-CONFIG" "1" "`) || !strings.Contains(page, `"User Commands"`) {
+		t.Errorf("malformed .TH line:\n%s", page)
+	}
+}

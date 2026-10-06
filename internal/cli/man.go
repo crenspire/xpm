@@ -49,7 +49,9 @@ func cmdMan(args []string) int {
 	}
 
 	command := args[0]
-	showCommandHelp(command)
+	if !showCommandHelp(command) {
+		return 1
+	}
 	return 0
 }
 
@@ -107,11 +109,14 @@ func listCommands() {
 
 	printCommandTable()
 	fmt.Println()
+	fmt.Println(experimentalNote)
+	fmt.Println()
 	fmt.Printf("%sRun%s '%sxpm man <command>%s' for detailed help on a specific command.\n", colorBold, colorReset, colorCyan, colorReset)
 }
 
-// showCommandHelp displays detailed help for a specific command.
-func showCommandHelp(command string) {
+// showCommandHelp displays detailed help for a specific command. It reports
+// false for an unknown command (after listing the commands).
+func showCommandHelp(command string) bool {
 	// Normalize command name (handle aliases)
 	normalized := normalizeCommand(command)
 
@@ -157,7 +162,9 @@ func showCommandHelp(command string) {
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n\n", command)
 		listCommands()
+		return false
 	}
+	return true
 }
 
 // normalizeCommand converts aliases to their canonical command names.
@@ -263,6 +270,7 @@ func showRunHelp() {
 	fmt.Printf("  %s                        List available scripts\n", colorCommand("xpm run"))
 	fmt.Printf("  %s                 Run a specific task\n", colorCommand("xpm run <task>"))
 	fmt.Printf("  %s       Run task with additional arguments\n", colorCommand("xpm run <task> -- <args>"))
+	fmt.Printf("  %s              Run task in every workspace project (flag before the task)\n", colorCommand("xpm run -w <task>"))
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("OPTIONS:"))
 	fmt.Printf("  %s                 Run task in all workspace projects (experimental)\n", colorOption("-w, --workspace"))
@@ -464,7 +472,7 @@ func showSearchHelp() {
 	fmt.Println("  The interactive TUI opens only when stdin and stdout are terminals and the")
 	fmt.Println("  interactive and searchUI.enabled settings are true; otherwise results are printed")
 	fmt.Println("  as plain text, and a query is required.")
-	fmt.Println("  Registries that do not answer within 2.5 s (by default) are listed as Unavailable.")
+	fmt.Println("  In plain output, registries that do not answer within 2.5 s (by default) are listed as Unavailable.")
 	fmt.Println("  Plain output exits with status 1 when nothing matches or every registry fails.")
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("SYNTAX:"))
@@ -557,8 +565,8 @@ func showConfigHelp() {
 	fmt.Printf("  %s       Comma-separated manager IDs: npm, yarn, pnpm, bun, pip, poetry,\n", colorOption("prefer"))
 	fmt.Println("                 pipenv, composer, cargo, gomod, maven, gradle")
 	fmt.Printf("  %s  true/false (also yes/no, on/off, 1/0)\n", colorOption("autoInstallPM"))
-	fmt.Printf("  %s    true/false\n", colorOption("interactive"))
-	fmt.Printf("  %s  true/false: enable or disable one registry (id from the prefer list)\n", colorOption("search.<id>"))
+	fmt.Printf("  %s    true/false (also yes/no, on/off, 1/0)\n", colorOption("interactive"))
+	fmt.Printf("  %s  true/false (also yes/no, on/off, 1/0): enable or disable one registry;\n                 id is one of npm, pip, composer, cargo, maven\n", colorOption("search.<id>"))
 	fmt.Println("  Values are validated before anything is written; unknown keys are rejected.")
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("EXAMPLES:"))

@@ -38,7 +38,7 @@ $ xpm run test               # runs package.json / composer.json / pyproject scr
 
 ## Why xpm
 
-- **Fast.** All registries are queried in parallel with a hard 2.5 s deadline, and answers are cached on disk. A first lookup takes about a second; a repeat lookup takes under 10 ms.
+- **Fast.** All registries are queried in parallel with a 2.5 s deadline by default, and answers are cached on disk. A first lookup takes about a second; a repeat lookup takes under 10 ms.
 - **One syntax.** `name@version` works everywhere: xpm translates it to `npm i name@v`, `pip install name==v`, `composer require name:v`, `cargo add name@v` or `go get name@v`.
 - **Respects your project.** Inside a project, `xpm install <name>` uses the project's own ecosystem (`xpm install phpunit` next to `composer.json` runs `composer require phpunit/phpunit`, not npm's squatter), and lockfiles pick the tool inside it (`yarn.lock` → yarn, `poetry.lock` → poetry, `build.gradle` → Gradle) for `install`, `list`, `update`, `remove` and `ci`. Outside a project, a name that exists in several ecosystems is your choice (or your `prefer` list's).
 - **Safe by default.** Package names that look like flags are rejected, runtime downloads are checked against published SHA-256 checksums, and archive extraction cannot write outside its folder.
@@ -106,7 +106,7 @@ xpm search http client  # several words are one query; opens the interactive TUI
 xpm info serde          # details for one package
 ```
 
-If a registry doesn't answer within 2.5 s, xpm shows what the others found and lists that registry under **Unavailable**, separately from **Not found in**. If every registry fails (for example, you're offline), the command exits with an error rather than claiming "no matches". When nothing matches, `xpm which`, `xpm search` and `xpm install` exit 1.
+If a registry doesn't answer within 2.5 s, xpm shows what the others found. `xpm which`, `xpm info` and plain `xpm search` list that registry under **Unavailable**, separately from **Not found in**. If every registry fails (for example, you're offline), the command exits with an error rather than claiming "no matches". When nothing matches, `xpm which`, `xpm info`, `xpm search` and `xpm install` exit 1.
 
 ### Install
 
@@ -178,7 +178,7 @@ Without a terminal (stdin and stdout both must be terminals; pipes and CI are no
 | Exit code | Meaning |
 |---|---|
 | `0` | Success |
-| `1` | Error, cancelled, invalid arguments, **no matches**, or a refused non-interactive guess |
+| `1` | Error, cancelled install prompt, invalid arguments, **no matches**, or a refused non-interactive guess |
 | other | `install` (no package argument), `ci`, `list` / `update` / `remove` / `run` pass through the underlying tool's exit code |
 
 ### Changes in this release
@@ -228,7 +228,7 @@ Behaviour changes to check if you script xpm:
 
 | Variable | Effect |
 |---|---|
-| `XPM_NO_CACHE=1` | Skip the on-disk lookup cache (results are cached for 1 h, "not found" for 15 min) |
+| `XPM_NO_CACHE` (any non-empty value, e.g. `1`) | Skip the on-disk lookup cache (results are cached for 1 h, "not found" for 15 min) |
 | `XPM_CACHE_DIR=<dir>` | Keep xpm's lookup cache in `<dir>/lookups` instead of the OS cache folder (used by `make perf`) |
 
 ## Performance

@@ -2,14 +2,8 @@
 //
 // This package handles argument parsing, command dispatch, and user interaction.
 // It provides commands for installing packages, checking package availability,
-// and diagnosing the local environment.
-//
-// Commands:
-//   - install: Install packages or project dependencies
-//   - which: Check which ecosystems have a package
-//   - doctor: Check installed package managers
-//   - version: Show version information
-//   - help: Show usage information
+// and diagnosing the local environment. The full command list, with aliases,
+// is commandTable in man.go.
 package cli
 
 import (
@@ -62,7 +56,7 @@ func printBanner() {
 
 	// Version and tagline
 	fmt.Printf("%s%s", colorCyan, colorBold)
-	fmt.Printf("     Universal Package Manager")
+	fmt.Printf("     Cross-ecosystem package manager")
 	fmt.Printf("%s\n", colorReset)
 	fmt.Printf("%s%s", colorGreen, colorBold)
 	fmt.Printf("              v%s\n", Version)

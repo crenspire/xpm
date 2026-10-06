@@ -14,7 +14,7 @@ func GenerateManPage(command string) (string, error) {
 	normalized := normalizeCommand(command)
 
 	manPageTemplate := `.\" Man page for xpm {{.Command}}
-.TH XPM {{.Command}} "1" "{{.Date}}" "xpm {{.Version}}" "User Commands"
+.TH "XPM-{{upper .Command}}" "1" "{{.Date}}" "xpm {{.Version}}" "User Commands"
 .SH NAME
 xpm {{.Command}} \- {{.Description}}
 .SH SYNOPSIS
@@ -32,7 +32,7 @@ xpm {{.Command}} \- {{.Description}}
 \fBinstall\fR (without packages), \fBci\fR, \fBlist\fR, \fBupdate\fR, \fBremove\fR and \fBrun\fR pass through the underlying tool's exit code.
 .SH ENVIRONMENT
 .TP
-\fBXPM_NO_CACHE=1\fR
+\fBXPM_NO_CACHE\fR (any non-empty value, e.g. 1)
 Skip the on-disk registry lookup cache.
 .TP
 \fBXPM_CACHE_DIR\fR=\fIdir\fR
@@ -47,7 +47,7 @@ Crenspire
 Copyright (C) 2024 Crenspire
 `
 
-	tmpl, err := template.New("manpage").Parse(manPageTemplate)
+	tmpl, err := template.New("manpage").Funcs(template.FuncMap{"upper": strings.ToUpper}).Parse(manPageTemplate)
 	if err != nil {
 		return "", err
 	}
@@ -144,7 +144,7 @@ Frozen install for every detected project`
 	case "run":
 		data.Description = "Run project scripts"
 		data.Synopsis = `.B xpm run
-[\fItask\fR] [\fB--\fR \fIargs\fR] [\fB-w\fR|\fB--workspace\fR]`
+[\fB-w\fR|\fB--workspace\fR] [\fItask\fR] [\fB--\fR \fIargs\fR]`
 		data.FullDescription = `Run scripts defined in package.json, composer.json, pyproject.toml, or Cargo.toml.
 If no task is specified, lists all available scripts.
 .PP
@@ -302,7 +302,7 @@ Export as JSON`
 [\fIquery\fR ...]`
 		data.FullDescription = `Search all ecosystems' registries. Several words are one query.
 The interactive TUI opens only when stdin and stdout are terminals and the \fBinteractive\fR and \fBsearchUI.enabled\fR settings are true; otherwise results are printed as plain text, and a query is required.
-Registries that do not answer within 2.5 s (by default) are listed as Unavailable.
+In plain output, registries that do not answer within 2.5 s (by default) are listed as Unavailable.
 Plain output exits with status 1 when nothing matches or every registry fails.`
 		data.Options = ""
 		data.Examples = `.B xpm search
@@ -392,10 +392,10 @@ Comma-separated manager IDs: npm, yarn, pnpm, bun, pip, poetry, pipenv, composer
 true/false (also yes/no, on/off, 1/0)
 .TP
 \fBinteractive\fR
-true/false
+true/false (also yes/no, on/off, 1/0)
 .TP
 \fBsearch.\fR\fIid\fR
-true/false: enable or disable one registry (id from the prefer list)`
+true/false (also yes/no, on/off, 1/0): enable or disable one registry; id is one of npm, pip, composer, cargo, maven`
 		data.Examples = `.B xpm config show
 Show current config
 .PP
