@@ -1,15 +1,20 @@
 package graph
 
 import (
+	"bytes"
+	"encoding/xml"
+	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 )
 
-// JavaExtractor extracts dependencies from Java projects (Maven/Gradle).
+// JavaExtractor extracts dependencies from Maven and Gradle projects.
 type JavaExtractor struct{}
 
 func (e *JavaExtractor) Name() string {
@@ -17,215 +22,392 @@ func (e *JavaExtractor) Name() string {
 }
 
 func (e *JavaExtractor) Supports(file string) bool {
-	return file == "pom.xml" || file == "build.gradle" || file == "build.gradle.kts"
+	return file == "pom.xml" || file == "gradle.lockfile" ||
+		file == "build.gradle" || file == "build.gradle.kts" ||
+		file == "settings.gradle" || file == "settings.gradle.kts"
 }
 
-func (e *JavaExtractor) Extract(dir string, _ ExtractOptions) (*DepGraph, error) {
-	// Try Maven first
-	if graph, err := e.extractMaven(dir); err == nil && graph != nil {
-		return graph, nil
-	}
-
-	// Try Gradle
-	if graph, err := e.extractGradle(dir); err == nil && graph != nil {
-		return graph, nil
-	}
-
-	return nil, fmt.Errorf("no supported Java dependency file found")
-}
-
-func (e *JavaExtractor) extractMaven(dir string) (*DepGraph, error) {
-	pomPath := filepath.Join(dir, "pom.xml")
-	if _, err := os.Stat(pomPath); err != nil {
+// Extract reads Maven (pom.xml) first, else Gradle. Without opts.Exec it
+// only parses files: pom.xml's direct dependencies, or gradle.lockfile.
+// With opts.Exec it runs `mvn dependency:tree` / `gradle dependencies` for
+// the full tree and falls back to the files, with a warning, on failure.
+func (e *JavaExtractor) Extract(dir string, opts ExtractOptions) (*DepGraph, error) {
+	name := dirName(dir)
+	if pom, err := os.ReadFile(filepath.Join(dir, "pom.xml")); err == nil {
+		if opts.Exec {
+			g, err := mavenTree(dir, opts)
+			if err == nil {
+				return g, nil
+			}
+			opts.warn("java: `mvn dependency:tree` failed, using pom.xml direct dependencies only: %v", err)
+		}
+		return parsePom(pom, name)
+	} else if !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
 	}
 
-	// Run mvn dependency:tree
-	cmd := exec.Command("mvn", "dependency:tree", "-DoutputType=tgf")
-	cmd.Dir = dir
-	output, err := cmd.Output()
-	if err != nil {
-		// Fallback to parsing pom.xml directly
-		return e.extractPomXML(pomPath)
+	if opts.Exec {
+		out, err := opts.run(dir, wrapperOr(dir, "gradlew", "gradlew.bat", "gradle"),
+			"dependencies", "--configuration", "runtimeClasspath", "--console=plain")
+		if err == nil {
+			g, perr := parseGradleDependencies(out, name)
+			if perr == nil {
+				return g, nil
+			}
+			err = perr
+		}
+		opts.warn("java: `gradle dependencies` failed, using gradle.lockfile: %v", err)
 	}
-
-	return e.parseTGF(string(output))
-}
-
-func (e *JavaExtractor) extractPomXML(path string) (*DepGraph, error) {
-	// Simple XML parsing for pom.xml (basic implementation)
-	// In production, use proper XML parser
-	data, err := os.ReadFile(path)
+	lock, err := os.ReadFile(filepath.Join(dir, "gradle.lockfile"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("no gradle.lockfile (enable Gradle dependency locking, or pass --exec to run gradle)")
+	}
 	if err != nil {
 		return nil, err
 	}
-
-	graph := NewGraph()
-	content := string(data)
-
-	// Extract groupId, artifactId, version
-	groupId := e.extractXMLTag(content, "groupId")
-	artifactId := e.extractXMLTag(content, "artifactId")
-	version := e.extractXMLTag(content, "version")
-
-	if groupId == "" {
-		groupId = e.extractXMLTag(content, "parent", "groupId")
-	}
-	if version == "" {
-		version = e.extractXMLTag(content, "parent", "version")
-	}
-
-	if artifactId != "" {
-		rootNode := NewDepNode("java", groupId+":"+artifactId, version)
-		graph.AddNode(rootNode)
-		graph.AddRoot(rootNode.ID)
-	}
-
-	return graph, nil
+	return parseGradleLockfile(lock, name)
 }
 
-func (e *JavaExtractor) extractXMLTag(content, tag string, parents ...string) string {
-	// Simple regex-based extraction (basic implementation)
-	pattern := fmt.Sprintf(`<%s>([^<]+)</%s>`, tag, tag)
-	re := regexp.MustCompile(pattern)
-	matches := re.FindStringSubmatch(content)
-	if len(matches) > 1 {
-		return strings.TrimSpace(matches[1])
+// wrapperOr returns the project's wrapper script (gradlew/mvnw, .bat/.cmd on
+// Windows) as an absolute path when it exists, else the plain tool name.
+func wrapperOr(dir, unix, windows, tool string) string {
+	name := unix
+	if runtime.GOOS == "windows" {
+		name = windows
 	}
-	return ""
+	p := filepath.Join(dir, name)
+	if _, err := os.Stat(p); err == nil {
+		if abs, err := filepath.Abs(p); err == nil {
+			return abs
+		}
+		return p
+	}
+	return tool
 }
 
-func (e *JavaExtractor) parseTGF(tgf string) (*DepGraph, error) {
-	graph := NewGraph()
-	lines := strings.Split(tgf, "\n")
-	nodeMap := make(map[string]*DepNode)
-	inNodes := true
+// mavenTree runs `mvn dependency:tree` in TGF format into a temp file
+// (-q keeps stdout quiet; appendOutput collects every reactor module).
+func mavenTree(dir string, opts ExtractOptions) (*DepGraph, error) {
+	f, err := os.CreateTemp("", "xpm-mvn-*.tgf")
+	if err != nil {
+		return nil, err
+	}
+	out := f.Name()
+	defer os.Remove(out)
+	if err := f.Close(); err != nil {
+		return nil, err
+	}
+	if _, err := opts.run(dir, wrapperOr(dir, "mvnw", "mvnw.cmd", "mvn"), "-q", "dependency:tree",
+		"-DoutputType=tgf", "-DoutputFile="+out, "-DappendOutput=true"); err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(out)
+	if err != nil {
+		return nil, err
+	}
+	return parseMavenTGF(data)
+}
 
-	for _, line := range lines {
+type pomDependency struct {
+	GroupID    string `xml:"groupId"`
+	ArtifactID string `xml:"artifactId"`
+	Version    string `xml:"version"`
+	Scope      string `xml:"scope"`
+	Optional   string `xml:"optional"`
+}
+
+type pomProject struct {
+	GroupID    string `xml:"groupId"`
+	ArtifactID string `xml:"artifactId"`
+	Version    string `xml:"version"`
+	Parent     struct {
+		GroupID string `xml:"groupId"`
+		Version string `xml:"version"`
+	} `xml:"parent"`
+	Properties struct {
+		Entries []struct {
+			XMLName xml.Name
+			Value   string `xml:",chardata"`
+		} `xml:",any"`
+	} `xml:"properties"`
+	// Only <project><dependencies>: dependencyManagement, profiles and
+	// plugin dependencies sit at other paths and are not matched.
+	Dependencies []pomDependency `xml:"dependencies>dependency"`
+}
+
+// xmlCharsetReader accepts the encodings POMs declare: UTF-8/ASCII pass
+// through, ISO-8859-1 (Latin-1) is converted to UTF-8.
+func xmlCharsetReader(charset string, in io.Reader) (io.Reader, error) {
+	switch strings.ToLower(charset) {
+	case "utf-8", "utf8", "us-ascii", "ascii":
+		return in, nil
+	case "iso-8859-1", "iso8859-1", "latin1", "latin-1":
+		data, err := io.ReadAll(in)
+		if err != nil {
+			return nil, err
+		}
+		runes := make([]rune, len(data))
+		for i, b := range data {
+			runes[i] = rune(b)
+		}
+		return strings.NewReader(string(runes)), nil
+	}
+	return nil, fmt.Errorf("unsupported XML encoding %q", charset)
+}
+
+var pomProperty = regexp.MustCompile(`\$\{([^}]+)\}`)
+
+// parsePom builds the project (groupId:artifactId@version, inheriting from
+// <parent>) with an edge to each direct <dependency>. ${...} references are
+// resolved from <properties> and project.*; unknown ones stay as written,
+// and a missing version (managed by a parent or BOM) stays empty.
+func parsePom(data []byte, fallback string) (*DepGraph, error) {
+	var p pomProject
+	dec := xml.NewDecoder(bytes.NewReader(data))
+	dec.CharsetReader = xmlCharsetReader
+	if err := dec.Decode(&p); err != nil {
+		return nil, fmt.Errorf("pom.xml: %w", err)
+	}
+	if p.GroupID == "" {
+		p.GroupID = p.Parent.GroupID
+	}
+	if p.Version == "" {
+		p.Version = p.Parent.Version
+	}
+	props := map[string]string{
+		"project.groupId": p.GroupID, "project.artifactId": p.ArtifactID, "project.version": p.Version,
+		"pom.groupId": p.GroupID, "pom.artifactId": p.ArtifactID, "pom.version": p.Version,
+		"project.parent.version": p.Parent.Version,
+	}
+	for _, e := range p.Properties.Entries {
+		props[e.XMLName.Local] = strings.TrimSpace(e.Value)
+	}
+	expand := func(s string) string {
+		return pomProperty.ReplaceAllStringFunc(strings.TrimSpace(s), func(ref string) string {
+			if v, ok := props[ref[2:len(ref)-1]]; ok && !strings.Contains(v, "${") {
+				return v
+			}
+			return ref
+		})
+	}
+	g := NewGraph()
+	name := ""
+	if p.ArtifactID != "" {
+		name = expand(p.GroupID) + ":" + expand(p.ArtifactID)
+	}
+	project := addProject(g, "java", name, expand(p.Version), fallback)
+	for _, d := range p.Dependencies {
+		if d.GroupID == "" || d.ArtifactID == "" {
+			return nil, fmt.Errorf("pom.xml: <dependency> without groupId or artifactId")
+		}
+		n := NewDepNode("java", expand(d.GroupID)+":"+expand(d.ArtifactID), expand(d.Version))
+		scope := strings.TrimSpace(d.Scope)
+		if scope == "" {
+			scope = "compile"
+		}
+		n.WithMetadata("scope", scope)
+		if strings.TrimSpace(d.Optional) == "true" {
+			n.WithMetadata("optional", "true")
+		}
+		if g.GetNode(n.ID) == nil {
+			g.AddNode(n)
+		}
+		g.AddEdge(NewEdge(project, n.ID))
+	}
+	return g, nil
+}
+
+// mavenLabel parses a TGF node label: groupId:artifactId:type:version[:scope]
+// or groupId:artifactId:type:classifier:version:scope.
+func mavenLabel(label string) (name, version, scope string, ok bool) {
+	p := strings.Split(label, ":")
+	switch len(p) {
+	case 4:
+		return p[0] + ":" + p[1], p[3], "", true
+	case 5:
+		return p[0] + ":" + p[1], p[3], p[4], true
+	case 6:
+		return p[0] + ":" + p[1], p[4], p[5], true
+	}
+	return "", "", "", false
+}
+
+// parseMavenTGF parses `mvn dependency:tree -DoutputType=tgf` output: blocks
+// of "id label" node lines, a "#" line, then "from to scope" edge lines. With
+// -DappendOutput a multi-module build appends one block per module; the
+// first node of each block (the module) is a root.
+func parseMavenTGF(data []byte) (*DepGraph, error) {
+	g := NewGraph()
+	ids := map[string]string{}
+	inEdges, first := false, true
+	for i, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-
 		if line == "#" {
-			inNodes = false
+			inEdges = true
 			continue
 		}
-
-		if inNodes {
-			// Node format: ID label
-			parts := strings.Fields(line)
-			if len(parts) >= 2 {
-				id := parts[0]
-				label := strings.Join(parts[1:], " ")
-				// Parse groupId:artifactId:version from label
-				node := e.parseMavenLabel(label)
-				if node != nil {
-					graph.AddNode(node)
-					nodeMap[id] = node
-					if len(graph.Root) == 0 {
-						graph.AddRoot(node.ID)
-					}
-				}
-			}
-		} else {
-			// Edge format: FROM TO
-			parts := strings.Fields(line)
-			if len(parts) >= 2 {
-				fromID := parts[0]
-				toID := parts[1]
-				if fromNode, ok := nodeMap[fromID]; ok {
-					if toNode, ok := nodeMap[toID]; ok {
-						graph.AddEdge(NewEdge(fromNode.ID, toNode.ID))
-					}
-				}
-			}
+		f := strings.Fields(line)
+		if inEdges && len(f) == 2 && strings.Contains(f[1], ":") { // next module's block
+			inEdges, first, ids = false, true, map[string]string{}
 		}
-	}
-
-	return graph, nil
-}
-
-func (e *JavaExtractor) parseMavenLabel(label string) *DepNode {
-	// Format: groupId:artifactId:type:version or groupId:artifactId:version
-	parts := strings.Split(label, ":")
-	if len(parts) >= 3 {
-		groupId := parts[0]
-		artifactId := parts[1]
-		version := parts[len(parts)-1]
-		name := groupId + ":" + artifactId
-		return NewDepNode("java", name, version)
-	}
-	return nil
-}
-
-func (e *JavaExtractor) extractGradle(dir string) (*DepGraph, error) {
-	buildGradle := filepath.Join(dir, "build.gradle")
-	buildGradleKts := filepath.Join(dir, "build.gradle.kts")
-	if _, err := os.Stat(buildGradle); err != nil {
-		if _, err := os.Stat(buildGradleKts); err != nil {
-			return nil, err
+		if !inEdges {
+			if len(f) != 2 {
+				return nil, fmt.Errorf("tgf line %d: want \"id label\", got %q", i+1, line)
+			}
+			name, version, scope, ok := mavenLabel(f[1])
+			if !ok {
+				return nil, fmt.Errorf("tgf line %d: cannot parse %q", i+1, f[1])
+			}
+			n := NewDepNode("java", name, version)
+			if scope != "" {
+				n.WithMetadata("scope", scope)
+			}
+			if g.GetNode(n.ID) == nil {
+				g.AddNode(n)
+			}
+			ids[f[0]] = n.ID
+			if first {
+				g.AddRoot(n.ID)
+				first = false
+			}
+			continue
 		}
+		if len(f) < 2 {
+			return nil, fmt.Errorf("tgf line %d: want \"from to [scope]\", got %q", i+1, line)
+		}
+		from, ok1 := ids[f[0]]
+		to, ok2 := ids[f[1]]
+		if !ok1 || !ok2 {
+			return nil, fmt.Errorf("tgf line %d: edge references an unknown node", i+1)
+		}
+		g.AddEdge(NewEdge(from, to))
 	}
-
-	// Run gradle dependencies
-	cmd := exec.Command("gradle", "dependencies", "--console=plain")
-	cmd.Dir = dir
-	output, err := cmd.Output()
-	if err != nil {
-		return nil, err
+	if len(g.Root) == 0 {
+		return nil, fmt.Errorf("tgf: no nodes")
 	}
-
-	return e.parseGradleOutput(string(output))
+	return g, nil
 }
 
-func (e *JavaExtractor) parseGradleOutput(output string) (*DepGraph, error) {
-	graph := NewGraph()
-	lines := strings.Split(output, "\n")
-	var currentPath []string
-	nodeMap := make(map[string]*DepNode)
-
-	for _, line := range lines {
+// parseGradleLockfile reads gradle.lockfile ("group:artifact:version=conf,..."
+// lines; "empty=..." lists configurations with no dependencies) as the
+// project (named fallback) with an edge to each locked module.
+func parseGradleLockfile(data []byte, fallback string) (*DepGraph, error) {
+	g := NewGraph()
+	project := addProject(g, "java", "", "", fallback)
+	for i, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, ">") {
+		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-
-		// Parse dependency line (indentation indicates depth)
-		depth := 0
-		for i, r := range line {
-			if r != ' ' && r != '+' && r != '|' && r != '\\' {
-				depth = i
-				break
-			}
+		coords, confs, ok := strings.Cut(line, "=")
+		if !ok {
+			return nil, fmt.Errorf("gradle.lockfile line %d: missing '='", i+1)
 		}
+		if coords == "empty" {
+			continue
+		}
+		p := strings.Split(coords, ":")
+		if len(p) != 3 || p[0] == "" || p[1] == "" || p[2] == "" {
+			return nil, fmt.Errorf("gradle.lockfile line %d: want group:artifact:version, got %q", i+1, coords)
+		}
+		n := NewDepNode("java", p[0]+":"+p[1], p[2])
+		n.WithMetadata("configurations", confs)
+		g.AddNode(n)
+		g.AddEdge(NewEdge(project, n.ID))
+	}
+	return g, nil
+}
 
-		// Extract dependency info
-		parts := strings.Fields(line)
-		if len(parts) >= 2 {
-			depSpec := parts[len(parts)-1]
-			// Format: group:artifact:version
-			node := e.parseMavenLabel(depSpec)
-			if node != nil {
-				graph.AddNode(node)
-				nodeMap[depSpec] = node
+var gradleRootProject = regexp.MustCompile(`^Root project '([^']+)'`)
 
-				// Build dependency tree
-				if depth > 0 && len(currentPath) >= depth {
-					parentSpec := currentPath[depth-1]
-					if parentNode, ok := nodeMap[parentSpec]; ok {
-						graph.AddEdge(NewEdge(parentNode.ID, node.ID))
-					}
-				}
+// gradleNode parses one tree entry ("g:a:1.0", "g:a:1.0 -> 2.0", "g:a -> 2.0",
+// "project :core", with optional "(*)", "(n)" or "FAILED" suffixes). ok is
+// false for "(c)" constraints, which are not dependencies.
+func gradleNode(spec string) (name, version string, ok bool, err error) {
+	spec = strings.TrimSpace(spec)
+	for _, suffix := range []string{" (*)", " (n)", " FAILED"} {
+		spec = strings.TrimSuffix(spec, suffix)
+	}
+	if strings.HasSuffix(spec, " (c)") {
+		return "", "", false, nil
+	}
+	if rest, isProject := strings.CutPrefix(spec, "project "); isProject {
+		return rest, "", true, nil
+	}
+	coords, target, arrow := strings.Cut(spec, " -> ")
+	p := strings.Split(coords, ":")
+	if len(p) < 2 || p[0] == "" || p[1] == "" {
+		return "", "", false, fmt.Errorf("cannot parse dependency %q", spec)
+	}
+	if len(p) >= 3 {
+		version = p[2]
+	}
+	if arrow {
+		version = strings.TrimSpace(target)
+	}
+	return p[0] + ":" + p[1], version, true, nil
+}
 
-				// Update current path
-				if depth < len(currentPath) {
-					currentPath = currentPath[:depth]
-				}
-				currentPath = append(currentPath, depSpec)
-			}
+// parseGradleDependencies parses the first configuration tree of
+// `gradle dependencies --console=plain` output. The root is the project
+// ("Root project 'name'", else fallback); repeated subtrees "(*)" are
+// linked, not expanded again.
+func parseGradleDependencies(out []byte, fallback string) (*DepGraph, error) {
+	lines := strings.Split(strings.ReplaceAll(string(out), "\r\n", "\n"), "\n")
+	name := ""
+	for _, l := range lines {
+		if m := gradleRootProject.FindStringSubmatch(strings.TrimSpace(l)); m != nil {
+			name = m[1]
+			break
 		}
 	}
-
-	return graph, nil
+	g := NewGraph()
+	project := addProject(g, "java", name, "", fallback)
+	var stack []string // stack[d] is the node at depth d; "" for a constraint
+	seen := false
+	for i, line := range lines {
+		at := strings.Index(line, "+--- ")
+		if at < 0 {
+			at = strings.Index(line, `\--- `)
+		}
+		if at < 0 || at%5 != 0 || strings.Trim(line[:at], " |") != "" {
+			if seen && strings.TrimSpace(line) == "" {
+				break // end of the first configuration
+			}
+			continue
+		}
+		seen = true
+		depth := at / 5
+		if depth > len(stack) {
+			return nil, fmt.Errorf("gradle output line %d: indentation skips a level", i+1)
+		}
+		stack = stack[:depth]
+		depName, version, ok, err := gradleNode(line[at+5:])
+		if err != nil {
+			return nil, fmt.Errorf("gradle output line %d: %w", i+1, err)
+		}
+		if !ok {
+			stack = append(stack, "")
+			continue
+		}
+		n := NewDepNode("java", depName, version)
+		if g.GetNode(n.ID) == nil {
+			g.AddNode(n)
+		}
+		parent := project
+		if depth > 0 {
+			parent = stack[depth-1]
+		}
+		if parent != "" {
+			g.AddEdge(NewEdge(parent, n.ID))
+		}
+		stack = append(stack, n.ID)
+	}
+	if !seen && !bytes.Contains(out, []byte("No dependencies")) {
+		return nil, fmt.Errorf("no dependency tree in gradle output")
+	}
+	return g, nil
 }

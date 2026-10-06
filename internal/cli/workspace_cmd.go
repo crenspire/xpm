@@ -119,7 +119,7 @@ func cmdGraphWorkspace(jsonFlag, svgFlag bool, depthFlag string, rest []string) 
 	for _, ws := range workspaces {
 		for _, project := range ws.Projects {
 			// Extract graph for this project
-			g, err := graph.ExtractAll(project.Path)
+			g, err := graph.ExtractAll(project.Path, graph.ExtractOptions{Warn: func(msg string) { fmt.Fprintln(os.Stderr, "warning:", msg) }})
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "warning: failed to extract graph for %s: %v\n", project.Name, err)
 				continue

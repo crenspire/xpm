@@ -55,7 +55,7 @@ func cmdGraph(args []string) int {
 
 	if packageArg != "" {
 		// Extract graph for specific package
-		depGraph, err = graph.ExtractAll(dir)
+		depGraph, err = graph.ExtractAll(dir, graph.ExtractOptions{Warn: func(msg string) { fmt.Fprintln(os.Stderr, "warning:", msg) }})
 		if err == nil {
 			depGraph, err = graph.Subgraph(depGraph, packageArg)
 		}
@@ -65,7 +65,7 @@ func cmdGraph(args []string) int {
 		}
 	} else {
 		// Extract all dependencies
-		depGraph, err = graph.ExtractAll(dir)
+		depGraph, err = graph.ExtractAll(dir, graph.ExtractOptions{Warn: func(msg string) { fmt.Fprintln(os.Stderr, "warning:", msg) }})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			return 1
