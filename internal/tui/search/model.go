@@ -85,12 +85,6 @@ type errMsg struct {
 	err error
 }
 
-// resizeMsg is sent when the terminal is resized.
-type resizeMsg struct {
-	width  int
-	height int
-}
-
 // installSelectMsg is sent when entering install mode.
 type installSelectMsg struct {
 	result search.Result

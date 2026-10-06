@@ -27,47 +27,6 @@ type mavenSearchResponse struct {
 	} `json:"response"`
 }
 
-// searchMaven searches for an artifact in Maven Central.
-// Returns the first matching result or nil if no matches found.
-func searchMaven(pkg string) (*Result, error) {
-	url := fmt.Sprintf("%s?q=%s&rows=5&wt=json", MavenSearchURL, url.QueryEscape(pkg))
-	logx.Info("query maven: %s", url)
-
-	resp, err := httpClient.Get(url)
-	if err != nil {
-		return nil, fmt.Errorf("maven request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("maven returned status %d", resp.StatusCode)
-	}
-
-	var data mavenSearchResponse
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		return nil, fmt.Errorf("failed to decode maven response: %w", err)
-	}
-
-	if len(data.Response.Docs) == 0 {
-		return nil, nil // No results
-	}
-
-	doc := data.Response.Docs[0]
-	coordinate := fmt.Sprintf("%s:%s", doc.Group, doc.Artifact)
-
-	return &Result{
-		Manager: pm.Maven,
-		Name:    coordinate,
-		Info:    "Maven artifact",
-		Extra: map[string]string{
-			"version":  doc.LatestVersion,
-			"id":       doc.ID,
-			"group":    doc.Group,
-			"artifact": doc.Artifact,
-		},
-	}, nil
-}
-
 // SearchMavenCentral searches Maven Central for artifacts.
 func SearchMavenCentral(query string, limit int) ([]Result, error) {
 	url := fmt.Sprintf("%s?q=%s&rows=%d&wt=json", MavenSearchURL, url.QueryEscape(query), limit)

@@ -27,43 +27,6 @@ type packagistSearchResponse struct {
 	Total int `json:"total"`
 }
 
-// searchComposer searches for a package in Packagist (PHP/Composer registry).
-// Returns the first matching result or nil if no matches found.
-func searchComposer(pkg string) (*Result, error) {
-	url := fmt.Sprintf("%s/search.json?q=%s", PackagistURL, url.QueryEscape(pkg))
-	logx.Info("query packagist: %s", url)
-
-	resp, err := httpClient.Get(url)
-	if err != nil {
-		return nil, fmt.Errorf("packagist request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("packagist returned status %d", resp.StatusCode)
-	}
-
-	var data packagistSearchResponse
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		return nil, fmt.Errorf("failed to decode packagist response: %w", err)
-	}
-
-	if len(data.Results) == 0 {
-		return nil, nil // No results
-	}
-
-	first := data.Results[0]
-	return &Result{
-		Manager: pm.Composer,
-		Name:    first.Name,
-		Info:    first.Description,
-		Extra: map[string]string{
-			"url":       first.URL,
-			"downloads": fmt.Sprintf("%d", first.Downloads),
-		},
-	}, nil
-}
-
 // SearchPackagistPackages searches Packagist for multiple results.
 // Packagist API: https://packagist.org/apidoc#search-packages
 // The search endpoint is /search.json with query parameter 'q'

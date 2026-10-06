@@ -30,18 +30,3 @@ func debounceSearchCmd(query string, opts search.Options, delay time.Duration) t
 		return searchCmd(query, opts)()
 	})
 }
-
-// resizeCmd handles terminal resize events.
-func resizeCmd() tea.Cmd {
-	return func() tea.Msg {
-		// This will be handled by tea.WindowSizeMsg
-		return nil
-	}
-}
-
-// installSelectCmd triggers install mode selection.
-func installSelectCmd(result search.Result) tea.Cmd {
-	return func() tea.Msg {
-		return installSelectMsg{result: result}
-	}
-}

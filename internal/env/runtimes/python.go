@@ -5,7 +5,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -235,10 +234,4 @@ func (p *PythonInstaller) BinaryPaths(version, dest string) []string {
 		return []string{"python.exe", "python3.exe", "Scripts\\pip.exe"}
 	}
 	return []string{"bin/python", "bin/python3", "bin/pip"}
-}
-
-// pyenvExists checks if pyenv is available.
-func pyenvExists() bool {
-	_, err := exec.LookPath("pyenv")
-	return err == nil
 }

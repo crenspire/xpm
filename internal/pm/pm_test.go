@@ -1,7 +1,6 @@
 package pm
 
 import (
-	"os/exec"
 	"testing"
 )
 
@@ -196,10 +195,4 @@ func TestAdapterID(t *testing.T) {
 type MockCommandRunner struct {
 	Commands   []string
 	ShouldFail bool
-}
-
-// commandExecutor allows mocking command execution in tests.
-var commandExecutor = func(bin string, args ...string) error {
-	cmd := exec.Command(bin, args...)
-	return cmd.Run()
 }

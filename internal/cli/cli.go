@@ -342,20 +342,18 @@ func filterResultsByLockFiles(results []search.Result, lockFiles map[pm.Ecosyste
 			}
 			// If no result for that exact PM but we have npm result and user has yarn/pnpm/bun lock
 			// Use the npm result but switch the manager
-			if autoSelect != nil {
-				found := false
-				for _, r := range filtered {
-					if r.Manager == *autoSelect {
-						found = true
-						break
-					}
+			found := false
+			for _, r := range filtered {
+				if r.Manager == *autoSelect {
+					found = true
+					break
 				}
-				if !found && len(ecoResults) > 0 {
-					// Clone the first result but with the detected PM
-					r := ecoResults[0]
-					r.Manager = *autoSelect
-					filtered = append(filtered, r)
-				}
+			}
+			if !found && len(ecoResults) > 0 {
+				// Clone the first result but with the detected PM
+				r := ecoResults[0]
+				r.Manager = *autoSelect
+				filtered = append(filtered, r)
 			}
 			continue
 		}

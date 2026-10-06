@@ -3,6 +3,7 @@ package search
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/crenspire/xpm/internal/pm"
@@ -384,7 +385,7 @@ func TestURLInjectionPrevention(t *testing.T) {
 			if tc.wantErr {
 				if err == nil {
 					t.Errorf("validatePackageNameForURL() expected error for %q, got nil", tc.pkg)
-				} else if tc.contains != "" && !contains(err.Error(), tc.contains) {
+				} else if tc.contains != "" && !strings.Contains(err.Error(), tc.contains) {
 					t.Errorf("validatePackageNameForURL() error = %v, want error containing %q", err, tc.contains)
 				}
 			} else {
