@@ -8,12 +8,13 @@ import (
 	"github.com/crenspire/xpm/internal/pm"
 )
 
-// withLookups swaps in fake registries for one test.
+// withLookups swaps in fake registries and disables the on-disk cache so
+// fakes never leak into the user's real cache directory.
 func withLookups(t *testing.T, ls []lookup) {
 	t.Helper()
-	orig := exactLookups
-	exactLookups = ls
-	t.Cleanup(func() { exactLookups = orig })
+	origLookups, origDir := exactLookups, lookupCacheDir
+	exactLookups, lookupCacheDir = ls, ""
+	t.Cleanup(func() { exactLookups, lookupCacheDir = origLookups, origDir })
 }
 
 func withDeadline(t *testing.T, d time.Duration) {

@@ -350,9 +350,10 @@ func SearchEverywhere(pkg string, opts Options) ([]Result, error) {
 	}
 	// Buffered so goroutines that finish after the deadline never block.
 	ch := make(chan outcome, len(enabled))
+	cacheDir := lookupCacheDir
 	for i, l := range enabled {
 		go func(i int, l lookup) {
-			res, err := l.fn(pkg)
+			res, err := cachedLookup(cacheDir, l, pkg)
 			ch <- outcome{i: i, res: res, err: err}
 		}(i, l)
 	}
