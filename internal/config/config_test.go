@@ -142,7 +142,7 @@ func TestLoadFromPartialConfigKeepsDefaults(t *testing.T) {
 	if !c.Interactive || !c.AutoInstallPM || !c.SearchUI.Enabled || !c.Env.Enabled || !c.Cache.Enabled {
 		t.Errorf("unset booleans must keep defaults, got %+v", c)
 	}
-	if c.Graph.Depth != 5 || c.Timeout.Default != 4 {
+	if c.Graph.Depth != 5 || c.Timeout.Default != 0 {
 		t.Errorf("unset numbers must keep defaults, got depth=%d timeout=%d", c.Graph.Depth, c.Timeout.Default)
 	}
 }

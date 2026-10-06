@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/crenspire/xpm/internal/config"
 	"github.com/crenspire/xpm/internal/pm"
 	"github.com/crenspire/xpm/internal/search"
 	tuisearch "github.com/crenspire/xpm/internal/tui/search"
@@ -12,7 +11,6 @@ import (
 
 // cmdSearch handles the search command.
 func cmdSearch(args []string) int {
-	cfg := config.Load()
 
 	// Check if TUI is enabled
 	if !cfg.SearchUI.Enabled {
@@ -26,20 +24,7 @@ func cmdSearch(args []string) int {
 		initialQuery = args[0]
 	}
 
-	// Build search options
-	searchOpts := search.Options{
-		Enable: make(map[pm.ID]bool),
-	}
-	for id := range map[pm.ID]struct{}{
-		pm.Npm: {}, pm.Pip: {}, pm.Composer: {}, pm.Cargo: {}, pm.Maven: {},
-	} {
-		name := string(id)
-		enabled := true
-		if v, ok := cfg.Search[name]; ok {
-			enabled = v
-		}
-		searchOpts.Enable[id] = enabled
-	}
+	searchOpts := search.OptionsFromConfig(cfg)
 
 	// Run TUI search
 	result, err := tuisearch.Run(initialQuery, searchOpts)
@@ -68,20 +53,7 @@ func cmdSearchNonInteractive(args []string) int {
 	pkg := args[0]
 	fmt.Printf("Searching for %q...\n\n", pkg)
 
-	cfg := config.Load()
-	searchOpts := search.Options{
-		Enable: make(map[pm.ID]bool),
-	}
-	for id := range map[pm.ID]struct{}{
-		pm.Npm: {}, pm.Pip: {}, pm.Composer: {}, pm.Cargo: {}, pm.Maven: {},
-	} {
-		name := string(id)
-		enabled := true
-		if v, ok := cfg.Search[name]; ok {
-			enabled = v
-		}
-		searchOpts.Enable[id] = enabled
-	}
+	searchOpts := search.OptionsFromConfig(cfg)
 
 	results, err := search.SearchEverywhereParallel(pkg, searchOpts)
 	if err != nil {
@@ -120,7 +92,6 @@ func cmdSearchNonInteractive(args []string) int {
 
 // installFromSearchResult installs a package from a search result.
 func installFromSearchResult(result search.Result, pmID pm.ID) int {
-	cfg := config.Load()
 	meta, ok := pm.MetaFor(pmID)
 	if !ok {
 		fmt.Fprintf(os.Stderr, "Unsupported package manager: %s\n", pmID)

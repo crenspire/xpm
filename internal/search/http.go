@@ -40,16 +40,6 @@ func SetHTTPConfig(cfg HTTPConfig) {
 	httpClient.Timeout = cfg.Timeout
 }
 
-// SetTimeoutForRegistry sets a custom timeout for a specific registry.
-// This allows per-registry timeout configuration.
-func SetTimeoutForRegistry(registry string, timeout time.Duration) {
-	// Update the default timeout if this is the first registry configured
-	// For now, we use a single timeout for all registries
-	// Future enhancement: maintain per-registry timeouts
-	httpConfig.Timeout = timeout
-	httpClient.Timeout = timeout
-}
-
 // GetHTTPConfig returns the current HTTP configuration.
 func GetHTTPConfig() HTTPConfig {
 	return httpConfig

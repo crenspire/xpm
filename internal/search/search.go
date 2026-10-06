@@ -40,19 +40,26 @@ type Result struct {
 	Extra map[string]string
 }
 
-// Options controls search behavior.
+// Options controls search behavior. Build it with OptionsFromConfig.
 type Options struct {
 	// Enable specifies which package managers to include in the search.
 	// If nil or a key is missing, that ecosystem is searched by default.
 	Enable map[pm.ID]bool
+	// Timeout bounds each registry and therefore the whole fan-out;
+	// 0 means lookupDeadline (2.5 s).
+	Timeout time.Duration
+	// RegistryTimeout overrides Timeout for individual registries.
+	RegistryTimeout map[pm.ID]time.Duration
 }
 
 // DefaultTimeout is the HTTP request timeout for registry queries.
 const DefaultTimeout = 4 * time.Second
 
-// httpClient is the shared HTTP client for all registry queries.
+// httpClient is the shared HTTP client for all registry queries. Every
+// request carries a context deadline (Options.timeoutFor); the client
+// timeout is only a backstop for callers that pass context.Background().
 var httpClient = &http.Client{
-	Timeout: DefaultTimeout,
+	Timeout: 30 * time.Second,
 }
 
 // Enabled checks if a package manager is enabled in the given options.

@@ -31,7 +31,7 @@ func SearchReport(query string, opts Options) (Report, error) {
 		if !Enabled(opts, m.id) {
 			continue
 		}
-		calls = append(calls, registryCall{id: m.id, timeout: lookupDeadline, fn: func(ctx context.Context) ([]Result, error) {
+		calls = append(calls, registryCall{id: m.id, timeout: opts.timeoutFor(m.id), fn: func(ctx context.Context) ([]Result, error) {
 			return cachedSearch(ctx, cacheDir, m, query)
 		}})
 	}

@@ -152,7 +152,7 @@ func SearchEverywhereReport(pkg string, opts Options) (Report, error) {
 		if !Enabled(opts, l.id) {
 			continue
 		}
-		calls = append(calls, registryCall{id: l.id, timeout: lookupDeadline, fn: func(ctx context.Context) ([]Result, error) {
+		calls = append(calls, registryCall{id: l.id, timeout: opts.timeoutFor(l.id), fn: func(ctx context.Context) ([]Result, error) {
 			res, err := cachedLookup(ctx, cacheDir, l, pkg)
 			if err != nil || res == nil {
 				return nil, err

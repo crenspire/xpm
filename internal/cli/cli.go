@@ -486,19 +486,7 @@ func cmdInstall(args []string) int {
 		fmt.Printf("Searching for %q across ecosystems...\n\n", pkg)
 	}
 
-	searchOpts := search.Options{
-		Enable: make(map[pm.ID]bool),
-	}
-	for id := range map[pm.ID]struct{}{
-		pm.Npm: {}, pm.Pip: {}, pm.Composer: {}, pm.Cargo: {}, pm.Maven: {},
-	} {
-		name := string(id)
-		enabled := true
-		if v, ok := cfg.Search[name]; ok {
-			enabled = v
-		}
-		searchOpts.Enable[id] = enabled
-	}
+	searchOpts := search.OptionsFromConfig(cfg)
 
 	results, err := search.SearchEverywhere(pkg, searchOpts)
 	if err != nil {
@@ -685,19 +673,7 @@ func cmdWhich(args []string) int {
 
 	fmt.Printf("Searching for %q...\n\n", pkg)
 
-	searchOpts := search.Options{
-		Enable: make(map[pm.ID]bool),
-	}
-	for id := range map[pm.ID]struct{}{
-		pm.Npm: {}, pm.Pip: {}, pm.Composer: {}, pm.Cargo: {}, pm.Maven: {},
-	} {
-		name := string(id)
-		enabled := true
-		if v, ok := cfg.Search[name]; ok {
-			enabled = v
-		}
-		searchOpts.Enable[id] = enabled
-	}
+	searchOpts := search.OptionsFromConfig(cfg)
 
 	results, err := search.SearchEverywhere(pkg, searchOpts)
 	if err != nil {
