@@ -222,48 +222,6 @@ func existsInComposer(ctx context.Context, pkg string) (*Result, error) {
 	}, nil
 }
 
-// existsInCrates checks if a crate exists in crates.io (Rust registry).
-// Returns (nil, nil) if the crate is not found.
-func existsInCrates(ctx context.Context, pkg string) (*Result, error) {
-	if err := validatePackageNameForURL(pkg); err != nil {
-		return nil, fmt.Errorf("invalid package name: %w", err)
-	}
-	u := fmt.Sprintf("%s/crates/%s?include=default_version", cratesAPIURL, url.PathEscape(pkg))
-	logx.Info("query crates.io: %s", u)
-	resp, err := httpGet(ctx, u)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNotFound {
-		return nil, nil
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, statusError("crates.io", resp)
-	}
-	var data struct {
-		Crate struct {
-			Description    string `json:"description"`
-			MaxVersion     string `json:"max_version"`
-			DefaultVersion string `json:"default_version"`
-			Name           string `json:"name"`
-		} `json:"crate"`
-	}
-	if err := decodeJSON("crates.io", pkg, resp.Body, &data); err != nil {
-		return nil, err
-	}
-	version := data.Crate.DefaultVersion // newest stable; max_version can be a prerelease
-	if version == "" {
-		version = data.Crate.MaxVersion
-	}
-	return &Result{
-		Manager: pm.Cargo,
-		Name:    data.Crate.Name,
-		Info:    data.Crate.Description,
-		Extra:   map[string]string{"version": version},
-	}, nil
-}
-
 // existsInMaven searches Maven Central and returns the first hit.
 // Returns (nil, nil) if there are no hits.
 func existsInMaven(ctx context.Context, pkg string) (*Result, error) {
