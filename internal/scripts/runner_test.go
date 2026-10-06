@@ -51,3 +51,33 @@ func TestBuildShellCommandDoesNotEvaluateExtraArgs(t *testing.T) {
 		t.Errorf("output = %q, want %q", out.String(), want)
 	}
 }
+
+func TestShellCommandTrimsTrailingWhitespaceBeforeAppendingArgs(t *testing.T) {
+	got := shellCommand("echo hi\n", []string{"a"}).Args
+	want := []string{"sh", "-c", `echo hi "$@"`, "sh", "a"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Args = %q, want %q", got, want)
+	}
+	if got := shellCommand("echo hi\n", nil).Args; got[2] != "echo hi\n" {
+		t.Errorf("without extras the command must be left alone, got %q", got[2])
+	}
+}
+
+func TestShellCommandMultilineScriptWithTrailingNewlineReceivesArgs(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires sh")
+	}
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not found")
+	}
+	cmd := buildShellCommand(ScriptDefinition{Command: "printf '%s\\n'\n"}, []string{"a"})
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("run: %v (%q)", err, out.String())
+	}
+	if want := "a\n"; out.String() != want {
+		t.Errorf("output = %q, want %q", out.String(), want)
+	}
+}

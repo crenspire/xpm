@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/crenspire/xpm/internal/pm"
 )
@@ -95,13 +96,14 @@ func buildComposerCommand(script ScriptDefinition, extraArgs []string) *exec.Cmd
 
 // shellCommand runs command through `sh -c`. Extra arguments are passed as
 // positional parameters and appended as "$@", so the shell never re-splits
-// or evaluates them. On Windows this needs an `sh` on PATH (Git for Windows,
+// or evaluates them. Trailing whitespace is trimmed first so a script ending
+// in a newline does not put "$@" on a line of its own. On Windows this needs an `sh` on PATH (Git for Windows,
 // MSYS2 or WSL), exactly as before; xpm does not translate scripts to cmd.exe.
 func shellCommand(command string, extraArgs []string) *exec.Cmd {
 	if len(extraArgs) == 0 {
 		return exec.Command("sh", "-c", command)
 	}
-	args := append([]string{"-c", command + ` "$@"`, "sh"}, extraArgs...)
+	args := append([]string{"-c", strings.TrimRight(command, " \t\r\n") + ` "$@"`, "sh"}, extraArgs...)
 	return exec.Command("sh", args...)
 }
 
