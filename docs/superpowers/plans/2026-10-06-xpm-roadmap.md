@@ -51,7 +51,7 @@ P0 Green ──► P1 Speed core ─────► P3 Install correctness ─�
 | P0 | Green build | ~0.5 day | [Plan A](2026-10-06-xpm-p0-p1-green-and-fast.md) Tasks 1–6 |
 | P1 | Speed core | ~1 day | [Plan A](2026-10-06-xpm-p0-p1-green-and-fast.md) Tasks 7–11 |
 | P2 | Security hardening | ~1.5 days | [Plan B](2026-10-06-xpm-p2-security.md) |
-| P3 | Install/search correctness | ~4 days | write JIT |
+| P3 | Install/search correctness | ~4 days | [Plan C](2026-10-07-xpm-p3-install-search.md) |
 | P4 | Scope cut & docs truth | ~1 day, spread | write JIT |
 | P5 | Runtime manager rework | ~1.5 weeks | write JIT |
 | P6 | Graph / lock / workspace correctness | ~1.5 weeks | write JIT |

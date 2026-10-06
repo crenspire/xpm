@@ -40,7 +40,7 @@ $ xpm run test               # runs package.json / composer.json / pyproject scr
 
 - **Fast.** All registries are queried in parallel with a hard 2.5 s deadline, and answers are cached on disk. A first lookup takes about a second; a repeat lookup takes under 10 ms.
 - **One syntax.** `name@version` works everywhere: xpm translates it to `npm i name@v`, `pip install name==v`, `composer require name:v`, `cargo add name@v` or `go get name@v`.
-- **Respects your project.** On install, lockfiles decide which tool runs (`yarn.lock` → yarn, `poetry.lock` → poetry, …). `update`/`remove` get the same treatment in P3.
+- **Respects your project.** Lockfiles pick the tool inside their ecosystem (`yarn.lock` → yarn, `poetry.lock` → poetry, `build.gradle` → Gradle) for `install`, `list`, `update`, `remove` and `ci`. If a name exists in several ecosystems, xpm still asks which one you mean.
 - **Safe by default.** Package names that look like flags are rejected, runtime downloads are checked against published SHA-256 checksums, and archive extraction cannot write outside its folder.
 
 ## Status
@@ -50,7 +50,7 @@ xpm is young. The core commands are solid; the bigger subsystems are being rebui
 | Area | Commands | Status |
 |---|---|---|
 | Cross-registry search & lookup | `which`, `search`, `info` | ✅ Stable |
-| Install / update / remove | `install`, `update`, `remove`, `list` | ✅ Stable (Go/Gradle via `install` coming in P3) |
+| Install / update / remove | `install`, `ci`, `update`, `remove`, `list` | ✅ Stable (Go modules and Gradle included) |
 | Project scripts | `run` | ✅ Stable |
 | Diagnostics | `doctor` | ✅ Stable |
 | Runtime versions (node, go, …) | `env` | 🧪 Experimental: Node and Go are checksum-verified; Rust needs rustup; others in progress |
@@ -77,12 +77,12 @@ sudo mv xpm /usr/local/bin/
 
 | Ecosystem | Tools | Lockfile that selects it | Registry searched |
 |---|---|---|---|
-| Node.js | npm, yarn, pnpm, bun | `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `bun.lockb` | npm |
-| Python | pip, poetry, pipenv | `requirements.txt`, `poetry.lock`, `Pipfile.lock` | PyPI |
-| PHP | Composer | `composer.lock` | Packagist |
-| Rust | Cargo | `Cargo.lock` | crates.io |
-| Java | Maven, Gradle | — (prints the dependency snippet) | Maven Central |
-| Go | Go modules | `go.sum` | — (install by module path) |
+| Node.js | npm, yarn, pnpm, bun | `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `bun.lock` / `bun.lockb` | npm |
+| Python | pip, poetry, pipenv | `requirements.txt`, `poetry.lock`, `Pipfile` / `Pipfile.lock` | PyPI |
+| PHP | Composer | `composer.json` | Packagist |
+| Rust | Cargo | `Cargo.toml` | crates.io |
+| Java | Maven, Gradle | `pom.xml` / `build.gradle(.kts)` pick the tool (xpm prints the dependency snippet) | Maven Central |
+| Go | Go modules | `go.mod` | — (`xpm install github.com/x/y` runs `go get` directly) |
 
 ## Usage
 
@@ -90,22 +90,31 @@ sudo mv xpm /usr/local/bin/
 
 ```bash
 xpm which lodash        # which registries have it, latest versions, descriptions
-xpm search              # interactive TUI search across registries
+xpm search http client  # several words are one query; opens the interactive TUI on a terminal, plain output otherwise
 xpm info serde          # details for one package
 ```
 
-If a registry doesn't answer within 2.5 s, xpm returns what the others found instead of waiting. If every registry fails (for example, you're offline), the command exits with an error rather than claiming "no matches".
+If a registry doesn't answer within 2.5 s, xpm shows what the others found and lists that registry under **Unavailable**, separately from **Not found in**. If every registry fails (for example, you're offline), the command exits with an error rather than claiming "no matches". When nothing matches, `xpm which`, `xpm search` and `xpm install` exit 1.
 
 ### Install
 
 ```bash
 xpm install axios               # search, then install with the right tool
-xpm install axios@1.7.0         # pin a version (universal @ syntax)
-xpm install -g typescript       # global install where the tool supports it
-xpm install                     # no args: install this project's dependencies
+xpm install axios@1.7.0         # pin a version (universal @ syntax); without @ the tool picks its latest
+xpm install axios lodash        # several packages, in order (stops at the first failure)
+xpm install -g typescript       # global install where the tool supports it (-g may also come last)
+xpm install github.com/gin-gonic/gin   # Go module path: runs go get, no registry search
+xpm install                     # no args: install this project's dependencies with its own tool
+xpm ci                          # frozen install: npm ci, pnpm/yarn/bun --frozen-lockfile, yarn --immutable,
+                                # composer install, pip install -r, pipenv --deploy, cargo build --locked,
+                                # go mod download
 ```
 
-When a package exists in several ecosystems, xpm asks which one you mean. Lockfiles in the current directory narrow the choice of tool.
+xpm installs the registry's own name (`xpm install monolog` → `composer require monolog/monolog`) and tells you when it differs from what you typed. A name that is only a close match (not the same package) is confirmed with you first, and refused when there is no terminal; PyPI names that differ only in case or `-`/`_`/`.` count as the same package. Lockfiles narrow the tool within an ecosystem; across ecosystems you choose. `xpm ci` never deletes lockfiles, and deletes `node_modules/` (yarn, pnpm, bun) or Composer's `vendor/` only if you confirm. In a Go project `xpm install` runs `go mod tidy`, while `xpm ci` runs `go mod download`.
+
+For a Maven or Gradle project (`pom.xml`, `build.gradle`), `xpm install <name>` prints the dependency snippet to paste instead of editing your build file. In the search TUI, a Maven Central hit can be installed as a Maven or a Gradle snippet.
+
+xpm never pipes a remote install script into a shell. If a tool such as bun, rustup or Composer is missing, it prints the official install instructions instead.
 
 ### Run project scripts
 
@@ -135,6 +144,28 @@ xpm env list
 
 Global flags go **before** the command: `xpm -v install axios` turns on verbose logs. Anything after the command belongs to that command, so `xpm run test -- --version` passes `--version` to your test script.
 
+### Scripts and CI
+
+Without a terminal (stdin and stdout both must be terminals; pipes and CI are not), xpm never prompts and the search TUI does not open. Installs pick the first match only within one ecosystem, or across ecosystems when your `prefer` list ranks exactly one of them first; otherwise they refuse and list the candidates. If a registry was unavailable they refuse to guess and exit 1, so retry or turn that registry off (`xpm config set search.maven false`). `update` and `remove` with a package name refuse when several project types are present.
+
+| Exit code | Meaning |
+|---|---|
+| `0` | Success |
+| `1` | Error, cancelled, invalid arguments, **no matches**, or a refused non-interactive guess |
+| other | `list` / `update` / `remove` / `run` pass through the underlying tool's exit code |
+
+### Changes in this release
+
+Behaviour changes to check if you script xpm:
+
+- **Exit codes.** "No matches" now exits 1 (it was 0) for `which`, `search` and `install`. A search where every registry fails exits 1 as well.
+- **No terminal means no prompts.** When stdin or stdout is not a terminal, xpm behaves as if `interactive` were `false`: it never prompts, never opens the TUI, and refuses ambiguous or fuzzy installs instead of guessing.
+- **Extra arguments are errors.** `xpm install a b c` installs all three; commands that take no package (`ci`, `list`) or exactly one (`which`, `info`) now reject extra arguments instead of ignoring them.
+- **Unknown flags are errors.** `xpm install` accepts only `-g` / `--global` (before or after the packages) and `--` to end flags. `--global=false` and any other flag are rejected.
+- **`-v` goes before the command.** `xpm -v install axios` is verbose logging; after the command, `-v` belongs to the command (`xpm install axios -v` is an unknown-flag error).
+- **`xpm ci` is a native frozen install** (see above) and deletes nothing unasked; it no longer removes lockfiles.
+- **Missing package managers** get printed official install steps; xpm no longer runs remote install scripts.
+
 ## Configuration
 
 `~/.config/xpm/xpmrc.json` (Windows: `%APPDATA%\xpm\xpmrc.json`). Every key is optional; keys you leave out keep their defaults.
@@ -152,13 +183,18 @@ Global flags go **before** the command: `xpm -v install axios` turns on verbose 
 |---|---|---|
 | `prefer` | `[]` | Package managers to list first when choosing |
 | `search.<id>` | `true` | Turn a registry off (`npm`, `pip`, `composer`, `cargo`, `maven`) |
-| `interactive` | `true` | Prompt for choices; `false` picks the preferred option (CI) |
+| `interactive` | `true` | Prompt for choices (only when a terminal is attached); `false` picks the preferred option |
 | `autoInstallPM` | `true` | Offer to install a missing package manager (always asks first) |
 | `searchUI.enabled` | `true` | Use the TUI for `xpm search` |
+| `searchUI.debounceMs` / `searchUI.pageSize` | `200` / `20` | TUI typing pause before searching / max rows per page |
+| `timeout.default` | `0` | Seconds each registry may take; `0` = built-in 2.5 s. Older configs written by `xpm config set` contain `4`, which is also treated as the built-in deadline |
+| `timeout.perRegistry` | `{}` | Per-registry override in seconds, e.g. `{"crates": 4}` (`npm`, `pypi`, `packagist`, `crates`, `maven`) |
 | `scripts.prefer` | `[]` | Which script source wins when names collide |
 | `env.enabled` / `env.path` | `true` / `~/.xpm/env` | Runtime manager on/off and install root |
 | `graph.depth` | `5` | Max depth for `xpm graph` |
 | `workspace.parallel` | `true` | Run workspace operations in parallel |
+
+`xpm config set` accepts `prefer`, `autoInstallPM`, `interactive` and `search.<id>`, and validates the value before writing anything.
 
 ### Environment variables
 
@@ -175,6 +211,7 @@ Measured on macOS arm64 (2026-10-06):
 |---|---|---|
 | `xpm which axios`, first lookup | 3–6 s | ~1.0–1.4 s |
 | `xpm which axios`, repeat | 3–6 s | < 10 ms |
+| `xpm search axios` (plain), first lookup | 1.08 s | ~1.2 s (bounded by crates.io's search API) |
 | Worst case, one registry hangs | up to 20 s | ≤ 2.5 s |
 | npm data per lookup (`typescript`) | 15.7 MB | 3.5 KB |
 
