@@ -6,7 +6,9 @@ BINARY_NAME=xpm
 # Version can be set via: make build VERSION=1.0.0
 # Defaults to git tag, or 0.0.1 if no tags exist
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "0.0.1")
-LDFLAGS=-trimpath -ldflags "-s -w -X github.com/crenspire/xpm/internal/cli.Version=$(VERSION)"
+# Tags are v-prefixed (v0.1.0); the binary's banner adds its own "v"
+VERSION_NOV := $(patsubst v%,%,$(VERSION))
+LDFLAGS=-trimpath -ldflags "-s -w -X github.com/crenspire/xpm/internal/cli.Version=$(VERSION_NOV)"
 
 # Go variables
 GO=go
@@ -35,6 +37,8 @@ help:
 	@echo "  make fmt         Format code"
 	@echo "  make clean       Remove build artifacts"
 	@echo "  make release     Build release binaries for all platforms"
+	@echo "  make snapshot    Build a local goreleaser snapshot in dist/ (no publishing)"
+	@echo "  make release-check  Validate .goreleaser.yaml"
 	@echo "  make deps        Download dependencies"
 	@echo "  make tidy        Run go mod tidy"
 	@echo ""
@@ -139,6 +143,20 @@ release: clean
 	
 	@echo "Release binaries built in $(BUILD_DIR)/"
 	@ls -la $(BUILD_DIR)/
+
+# GoReleaser (the real release runs in .github/workflows/release.yml on a v* tag),
+# pinned to the version .goreleaser.yaml was validated with
+GORELEASER=$(GO) run github.com/goreleaser/goreleaser/v2@v2.18.2
+
+# Local snapshot build into dist/; publishes nothing (sbom skipped: needs syft)
+.PHONY: snapshot
+snapshot:
+	$(GORELEASER) release --snapshot --clean --skip=publish,sbom
+
+# Validate .goreleaser.yaml
+.PHONY: release-check
+release-check:
+	$(GORELEASER) check
 
 # Create checksums for release binaries
 .PHONY: checksums

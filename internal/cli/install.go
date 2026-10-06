@@ -31,6 +31,13 @@ func cmdInstall(args []string) int {
 		showCommandUsage("install")
 		return 1
 	}
+	if ia.Workspace {
+		if len(ia.Packages) > 0 {
+			fmt.Fprintln(os.Stderr, "error: --workspace installs project dependencies; it cannot be combined with package names")
+			return 1
+		}
+		return cmdInstallWorkspace(ia.Global)
+	}
 	if len(ia.Packages) == 0 {
 		if ia.Global {
 			fmt.Fprintln(os.Stderr, "error: -g/--global needs a package name (project dependencies are never global)")

@@ -72,14 +72,18 @@ var commandTable = []commandInfo{
 	{"search", []string{"s"}, "Search all registries (TUI on a terminal, plain output otherwise)", false},
 	{"info", nil, "Show detailed package information", false},
 	{"list", []string{"l"}, "List installed packages for the current project", false},
+	{"outdated", nil, "Show dependencies with newer versions, across ecosystems", false},
+	{"audit", nil, "Check locked dependencies for known vulnerabilities (OSV.dev)", false},
 	{"update", []string{"u"}, "Update packages in the current project", false},
 	{"remove", []string{"rm"}, "Remove a package from the current project", false},
 	{"doctor", []string{"d"}, "Environment & project diagnostics", false},
 	{"config", nil, "View or edit configuration", false},
 	{"env", nil, "Manage runtime versions (node, go, ...)", true},
 	{"graph", []string{"g"}, "Dependency graph across ecosystems", true},
+	{"why", nil, "Show why a package is in the dependency graph", false},
 	{"lock", nil, "Generate or verify the unified lockfile (xpm-lock.yaml)", true},
 	{"workspaces", nil, "List detected workspaces/monorepos", true},
+	{"completion", nil, "Print a shell completion script (bash, zsh, fish)", false},
 	{"version", []string{"-v", "-V", "--version"}, "Show version information", false},
 	{"help", []string{"-h", "--help"}, "Show this help message", false},
 	{"man", nil, "Show the detailed manual for a command", false},
@@ -130,6 +134,10 @@ func showCommandHelp(command string) bool {
 		showWhichHelp()
 	case "list":
 		showListHelp()
+	case "outdated":
+		showOutdatedHelp()
+	case "audit":
+		showAuditHelp()
 	case "update":
 		showUpdateHelp()
 	case "remove":
@@ -140,6 +148,8 @@ func showCommandHelp(command string) bool {
 		showLockHelp()
 	case "graph":
 		showGraphHelp()
+	case "why":
+		showWhyHelp()
 	case "search":
 		showSearchHelp()
 	case "workspaces":
@@ -156,6 +166,8 @@ func showCommandHelp(command string) bool {
 		showHelpHelp()
 	case "man":
 		showManHelp()
+	case "completion":
+		showCompletionHelp()
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n\n", command)
 		listCommands()
@@ -189,7 +201,7 @@ func showCommandUsage(command string) {
 // Individual help functions for each command
 
 func showInstallHelp() {
-	fmt.Printf("%s\n", colorCommand("xpm install [-g|--global] [package[@version] ...] [--]"))
+	fmt.Printf("%s\n", colorCommand("xpm install [-g|--global] [-w|--workspace] [package[@version] ...] [--]"))
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("DESCRIPTION:"))
 	fmt.Println("  Install one or several packages, or, without packages, this project's dependencies.")
@@ -210,6 +222,7 @@ func showInstallHelp() {
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("OPTIONS:"))
 	fmt.Printf("  %s       Install globally (if the tool supports it); may come before or after the packages\n", colorOption("-g, --global"))
+	fmt.Printf("  %s     Install dependencies in every workspace project (honours workspace.include/exclude and workspace.parallel); cannot be combined with packages or -g\n", colorOption("-w, --workspace"))
 	fmt.Printf("  %s                 Ends flag parsing; names starting with - are still rejected\n", colorOption("--"))
 	fmt.Println("  Any other flag, including --global=false, is rejected.")
 	fmt.Println()
@@ -217,6 +230,7 @@ func showInstallHelp() {
 	fmt.Printf("  %s                    Install dependencies for detected projects\n", colorExample("xpm install"))
 	fmt.Printf("  %s              Install axios (searches all ecosystems)\n", colorExample("xpm install axios"))
 	fmt.Printf("  %s       Install several packages in order\n", colorExample("xpm install axios lodash"))
+	fmt.Printf("  %s   Install dependencies in every workspace project\n", colorExample("xpm install --workspace"))
 	fmt.Printf("  %s        Install specific version\n", colorExample("xpm install axios@1.0.0"))
 	fmt.Printf("  %s   Install globally\n", colorExample("xpm install typescript -g"))
 	fmt.Printf("  %s   go get a Go module\n", colorExample("xpm install github.com/gin-gonic/gin"))
@@ -414,6 +428,38 @@ func showLockHelp() {
 	fmt.Printf("  %s                    Install dependencies\n", colorCommand("xpm install"))
 }
 
+func showOutdatedHelp() {
+	fmt.Printf("%s\n", colorCommand("xpm outdated [options]"))
+	fmt.Println()
+	fmt.Printf("%s\n", colorSection("DESCRIPTION:"))
+	fmt.Println("  Show which dependencies have a newer version in their registry, across ecosystems.")
+	fmt.Println("  Versions come from the lockfiles; dependencies without a locked version are not")
+	fmt.Println("  checked (a note on stderr counts them). Registries: npm, PyPI, Packagist, crates.io")
+	fmt.Println("  (sparse index), Maven Central, the Go module proxy. Go modules matched by GOPRIVATE or")
+	fmt.Println("  GONOPROXY are not looked up, nor when GOPROXY's first entry is off, direct or not an")
+	fmt.Println("  http(s) URL (these settings are read from the environment or from `go env -w`).")
+	fmt.Println("  Lookups use the lookup cache and the registry timeouts.")
+	fmt.Println("  A package a registry does not know is shown as \"not found\" and counted separately")
+	fmt.Println("  (exit status unaffected); a failed lookup is \"unavailable\". If the project has")
+	fmt.Println("  dependencies but none could be checked, an error on stderr says so (exit status 2).")
+	fmt.Println()
+	fmt.Printf("%s\n", colorSection("EXIT STATUS:"))
+	fmt.Println("  0 all current, 1 some outdated, 2 usage error or incomplete check (a lookup failed")
+	fmt.Println("  and nothing is outdated, or no dependency could be checked).")
+	fmt.Println()
+	fmt.Printf("%s\n", colorSection("OPTIONS:"))
+	fmt.Printf("  %s                         Print the result as JSON\n", colorOption("--json"))
+	fmt.Printf("  %s                          Check every locked package, not only direct dependencies\n", colorOption("--all"))
+	fmt.Printf("  %s                    Combine all workspace projects (-w)\n", colorOption("--workspace"))
+	fmt.Println()
+	fmt.Printf("%s\n", colorSection("EXAMPLES:"))
+	fmt.Printf("  %s                    Show outdated direct dependencies\n", colorExample("xpm outdated"))
+	fmt.Printf("  %s       Check every locked package, as JSON\n", colorExample("xpm outdated --all --json"))
+	fmt.Println()
+	fmt.Printf("%s\n", colorSection("RELATED COMMANDS:"))
+	fmt.Printf("  %s                       Update packages\n", colorCommand("xpm update"))
+}
+
 func showGraphHelp() {
 	fmt.Printf("%s\n", colorCommand("xpm graph [package] [options]"))
 	fmt.Println()
@@ -486,6 +532,7 @@ func showWorkspacesHelp() {
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("RELATED COMMANDS:"))
 	fmt.Printf("  %s     Run task across workspaces\n", colorCommand("xpm run --workspace <task>"))
+	fmt.Printf("  %s     Install dependencies in every workspace project\n", colorCommand("xpm install --workspace"))
 }
 
 func showEnvHelp() {
@@ -618,4 +665,81 @@ func showManHelp() {
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("RELATED COMMANDS:"))
 	fmt.Printf("  %s                       Show brief help\n", colorCommand("xpm help"))
+}
+
+func showCompletionHelp() {
+	fmt.Printf("%s\n", colorCommand("xpm completion <bash|zsh|fish>"))
+	fmt.Println()
+	fmt.Printf("%s\n", colorSection("DESCRIPTION:"))
+	fmt.Println("  Print a shell completion script on stdout. It completes commands, aliases,")
+	fmt.Println("  per-command flags and the arguments of man, completion, config and env.")
+	fmt.Println()
+	fmt.Printf("%s\n", colorSection("INSTALL:"))
+	fmt.Printf("  %s\n", colorExample("source <(xpm completion bash)"))
+	fmt.Println("    bash: or save to /usr/local/etc/bash_completion.d/xpm or")
+	fmt.Println("    ~/.local/share/bash-completion/completions/xpm")
+	fmt.Printf("  %s\n", colorExample("xpm completion zsh > \"${fpath[1]}/_xpm\""))
+	fmt.Printf("  %s\n", colorExample("xpm completion fish > ~/.config/fish/completions/xpm.fish"))
+	fmt.Println()
+	fmt.Printf("%s\n", colorSection("EXIT STATUS:"))
+	fmt.Println("  0 on success; 2 on a usage error (missing, extra or unknown shell argument).")
+}
+
+func showWhyHelp() {
+	fmt.Printf("%s\n", colorCommand("xpm why <package> [options]"))
+	fmt.Println()
+	fmt.Printf("%s\n", colorSection("DESCRIPTION:"))
+	fmt.Println("  Show the dependency paths from the project's root packages to a package, read")
+	fmt.Println("  from the lockfiles. Each version of the package in the graph gets one block with")
+	fmt.Println("  one line per path. Cycles are cut, so a path never repeats a package.")
+	fmt.Println()
+	fmt.Printf("%s\n", colorSection("EXIT STATUS:"))
+	fmt.Println("  0 package found and paths printed, 1 package not in the dependency graph,")
+	fmt.Println("  2 usage error or unreadable project.")
+	fmt.Println()
+	fmt.Printf("%s\n", colorSection("OPTIONS:"))
+	fmt.Printf("  %s                         Print the paths as JSON (package, targets with id, paths, truncated)\n", colorOption("--json"))
+	fmt.Printf("  %s <N>                   Maximum number of paths to show per version, shortest first (default 10; 0 = all)\n", colorOption("--limit"))
+	fmt.Printf("  %s                    Combine all workspace projects (-w)\n", colorOption("--workspace"))
+	fmt.Println()
+	fmt.Printf("%s\n", colorSection("EXAMPLES:"))
+	fmt.Printf("  %s                 Show why lodash is in the graph\n", colorExample("xpm why lodash"))
+	fmt.Printf("  %s   Every path to lodash, as JSON\n", colorExample("xpm why lodash --limit 0 --json"))
+	fmt.Println()
+	fmt.Printf("%s\n", colorSection("RELATED COMMANDS:"))
+	fmt.Printf("  %s                      Show the dependency graph\n", colorCommand("xpm graph"))
+	fmt.Printf("  %s                      Check for known vulnerabilities\n", colorCommand("xpm audit"))
+}
+
+func showAuditHelp() {
+	fmt.Printf("%s\n", colorCommand("xpm audit [options]"))
+	fmt.Println()
+	fmt.Printf("%s\n", colorSection("DESCRIPTION:"))
+	fmt.Println("  Check the locked dependencies against the OSV.dev vulnerability database, across")
+	fmt.Println("  ecosystems (npm, PyPI, Packagist, crates.io, Go, Maven). Only dependencies with a")
+	fmt.Println("  locked version are checked; the rest are counted in a note on stderr. If the project")
+	fmt.Println("  has dependencies but none could be checked, an error on stderr says so (exit status 2).")
+	fmt.Println("  PRIVACY: package names and versions from your lockfiles are sent to api.osv.dev,")
+	fmt.Println("  one batch request per 1000 packages plus one details request per distinct")
+	fmt.Println("  vulnerability found. Nothing else is sent. Go modules matched by GOPRIVATE or")
+	fmt.Println("  GONOPROXY (environment or `go env -w`) are never sent; they are listed as unchecked.")
+	fmt.Println("  `xpm doctor` is separate: it keeps running the ecosystems' own audit tools")
+	fmt.Println("  (npm audit, pip-audit, ...), which xpm does not route through OSV.")
+	fmt.Println()
+	fmt.Printf("%s\n", colorSection("EXIT STATUS:"))
+	fmt.Println("  0 no known vulnerabilities, 1 vulnerabilities found, 2 usage error or the check could")
+	fmt.Println("  not be completed (OSV.dev unreachable, or no dependency could be checked).")
+	fmt.Println()
+	fmt.Printf("%s\n", colorSection("OPTIONS:"))
+	fmt.Printf("  %s                         Print the result as JSON\n", colorOption("--json"))
+	fmt.Printf("  %s <duration>           Time limit for the OSV.dev queries (default 30s, at most 1h; a bare number is seconds)\n", colorOption("--timeout"))
+	fmt.Printf("  %s                    Combine all workspace projects (-w)\n", colorOption("--workspace"))
+	fmt.Println()
+	fmt.Printf("%s\n", colorSection("EXAMPLES:"))
+	fmt.Printf("  %s                       Audit the locked dependencies\n", colorExample("xpm audit"))
+	fmt.Printf("  %s     Audit with a 10 second limit, as JSON\n", colorExample("xpm audit --json --timeout 10s"))
+	fmt.Println()
+	fmt.Printf("%s\n", colorSection("RELATED COMMANDS:"))
+	fmt.Printf("  %s                    Show newer versions\n", colorCommand("xpm outdated"))
+	fmt.Printf("  %s                      Environment and project diagnostics\n", colorCommand("xpm doctor"))
 }

@@ -1,0 +1,136 @@
+# GoReleaser configuration for xpm. Validate with `make release-check`;
+# build a local snapshot (no publishing) with `make snapshot`.
+version: 2
+
+project_name: xpm
+
+before:
+  hooks:
+    - go mod download
+    - sh -c 'rm -rf completions manpages && mkdir -p completions manpages'
+    - sh -c 'go run ./cmd/xpm completion bash > completions/xpm.bash'
+    - sh -c 'go run ./cmd/xpm completion zsh > completions/_xpm'
+    - sh -c 'go run ./cmd/xpm completion fish > completions/xpm.fish'
+    # Same -X as the build so the man pages' footer shows the release version.
+    - go run -ldflags "-X github.com/crenspire/xpm/internal/cli.Version={{ .Version }}" ./cmd/xpm man --generate manpages
+
+builds:
+  - id: xpm
+    main: ./cmd/xpm
+    binary: xpm
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X github.com/crenspire/xpm/internal/cli.Version={{.Version}}
+    mod_timestamp: '{{ .CommitTimestamp }}'
+
+archives:
+  - id: default
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: '{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
+    # Fixed mtimes keep the archives reproducible.
+    files:
+      - src: README.md
+        info:
+          mtime: '{{ .CommitDate }}'
+      - src: LICENSE
+        info:
+          mtime: '{{ .CommitDate }}'
+      - src: completions/*
+        info:
+          mtime: '{{ .CommitDate }}'
+      - src: manpages/*
+        info:
+          mtime: '{{ .CommitDate }}'
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+# Needs syft on PATH (the release workflow installs it).
+sboms:
+  - artifacts: archive
+
+snapshot:
+  version_template: '{{ incpatch .Version }}-next'
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+      - '^Merge pull request'
+      - '^Merge branch'
+      - '^Merge remote-tracking branch'
+
+release:
+  github:
+    owner: crenspire
+    name: xpm
+  prerelease: auto
+  draft: false
+
+# Homebrew cask in crenspire/homebrew-tap (Casks/xpm.rb). goreleaser v2.10+
+# deprecates `brews` (and `goreleaser check` fails on it), so this is a cask:
+# `brew install --cask crenspire/tap/xpm`. Upload is skipped unless
+# HOMEBREW_TAP_GITHUB_TOKEN is set (the workflow's GITHUB_TOKEN cannot push to
+# another repository).
+homebrew_casks:
+  - name: xpm
+    ids: [default]
+    repository:
+      owner: crenspire
+      name: homebrew-tap
+      token: '{{ envOrDefault "HOMEBREW_TAP_GITHUB_TOKEN" "" }}'
+    directory: Casks
+    skip_upload: '{{ if eq (envOrDefault "HOMEBREW_TAP_GITHUB_TOKEN" "") "" }}true{{ else }}auto{{ end }}'
+    homepage: https://github.com/crenspire/xpm
+    description: One CLI for npm, pip, cargo, go, composer, maven and other package managers
+    license: MIT
+    binaries: [xpm]
+    completions:
+      bash: completions/xpm.bash
+      zsh: completions/_xpm
+      fish: completions/xpm.fish
+    # One entry per command in commandTable (internal/cli/man.go);
+    # TestGoreleaserCaskListsEveryManPage keeps this list in sync.
+    manpages:
+      - manpages/xpm-install.1
+      - manpages/xpm-ci.1
+      - manpages/xpm-run.1
+      - manpages/xpm-which.1
+      - manpages/xpm-search.1
+      - manpages/xpm-info.1
+      - manpages/xpm-list.1
+      - manpages/xpm-outdated.1
+      - manpages/xpm-audit.1
+      - manpages/xpm-update.1
+      - manpages/xpm-remove.1
+      - manpages/xpm-doctor.1
+      - manpages/xpm-config.1
+      - manpages/xpm-env.1
+      - manpages/xpm-graph.1
+      - manpages/xpm-why.1
+      - manpages/xpm-lock.1
+      - manpages/xpm-workspaces.1
+      - manpages/xpm-completion.1
+      - manpages/xpm-version.1
+      - manpages/xpm-help.1
+      - manpages/xpm-man.1
+    hooks:
+      post:
+        # The binaries are not notarized; drop the quarantine flag so macOS
+        # runs them.
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/xpm"]
+          end

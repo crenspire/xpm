@@ -53,16 +53,42 @@ xpm is young. The core commands are solid; the bigger subsystems are being rebui
 | Install / update / remove | `install`, `ci`, `update`, `remove`, `list` | ✅ Stable (Go modules and Gradle included) |
 | Project scripts | `run` | ✅ Stable |
 | Diagnostics | `doctor` | ✅ Stable |
+| Outdated dependencies | `outdated` | ✅ Stable: compares locked versions with each registry's latest |
+| Vulnerability audit | `audit` | ✅ Stable: checks locked versions against [OSV.dev](https://osv.dev) (sends package names and versions to `api.osv.dev`) |
+| Why is this installed | `why` | ✅ Stable: every dependency path to a package, read from your lockfiles and manifests |
+| Shell completions | `completion` | ✅ Stable: bash, zsh and fish |
 | Runtime versions (node, go, …) | `env` | 🧪 Experimental (macOS and Linux): node, go, python, java, bun and deno are checksum-verified; rust uses a private rustup; php uses Homebrew on macOS only |
 | Dependency graph | `graph` | 🧪 Experimental: parses npm, pnpm, yarn, Cargo, Go, Poetry, pyproject.toml, requirements.txt, Composer, Maven and Gradle files; runs build tools only with `--exec` |
 | Unified lockfile | `lock` | 🧪 Experimental: records lockfile hashes in `xpm-lock.yaml`; `--verify` detects changed, added and removed lockfiles and fails on entries it cannot check |
-| Monorepos | `workspaces`, `run --workspace`, `graph --workspace` | 🧪 Experimental: `xpm install --workspace` is not wired yet |
+| Monorepos | `workspaces`, `run --workspace`, `graph --workspace` | 🧪 Experimental: `install --workspace` (also `outdated`, `audit` and `why` with `--workspace`) |
 
 ## Install
 
+The first release (v0.1.0) has not been tagged yet. Until it is, the install script and the Homebrew cask have nothing to download, and `go install …@latest` installs a pseudo-version of the default branch rather than a release; use `go install …@develop` or build from source. See [docs/RELEASING.md](docs/RELEASING.md) for how a release is cut.
+
+Install script (Linux and macOS; available once the first release is cut, since the URL below is served from the `main` branch, which is created then; verifies the archive's SHA-256 against the release's `checksums.txt` before installing anything):
+
 ```bash
-go install github.com/crenspire/xpm/cmd/xpm@latest
+curl -fsSL https://raw.githubusercontent.com/crenspire/xpm/main/scripts/install.sh | sh
 ```
+
+It installs the latest release into `/usr/local/bin` (or `~/.local/bin` if that is not writable). Set `XPM_VERSION=v0.1.0` to pin a release and `XPM_INSTALL_DIR=<dir>` to choose the directory (`--version` and `--dir` do the same; `sh install.sh --help` lists everything).
+
+Homebrew (macOS; a cask, available once the `crenspire/homebrew-tap` repository is published):
+
+```bash
+brew install --cask crenspire/tap/xpm
+```
+
+The release binaries are not notarized, so the cask removes macOS's quarantine attribute on install.
+
+With Go:
+
+```bash
+go install github.com/crenspire/xpm/cmd/xpm@latest   # `xpm --version` reports the module version
+```
+
+Prebuilt archives for Linux, macOS and Windows (amd64 and arm64) are on the [Releases page](https://github.com/crenspire/xpm/releases), with `checksums.txt` and a cosign signature of it. Each archive holds the binary, README, LICENSE, shell completions and man pages.
 
 Or build from source:
 
@@ -71,6 +97,16 @@ git clone https://github.com/crenspire/xpm.git && cd xpm
 make build          # stripped binary at ./xpm (~10–11 MB)
 sudo mv xpm /usr/local/bin/
 ```
+
+### Shell completions
+
+```bash
+xpm completion bash > ~/.local/share/bash-completion/completions/xpm
+xpm completion zsh  > "${fpath[1]}/_xpm"          # any directory on your $fpath
+xpm completion fish > ~/.config/fish/completions/xpm.fish
+```
+
+Restart the shell afterwards. The release archives also ship the scripts in `completions/`. `xpm completion` with no shell, or one other than `bash`, `zsh` or `fish`, exits 2.
 
 ## Supported package managers
 
@@ -121,6 +157,7 @@ xpm install -g typescript       # → npm install -g typescript (-g may also com
 xpm install -g golang.org/x/tools/gopls   # Go: go install golang.org/x/tools/gopls@latest
 xpm install github.com/gin-gonic/gin   # Go module path: runs go get, no registry search
 xpm install                     # no args: install this project's dependencies with its own tool
+xpm install --workspace         # no args: install dependencies in every workspace project (-w; not with packages or -g)
 xpm ci                          # frozen/locked install where the tool supports it (see below)
 ```
 
@@ -158,6 +195,27 @@ xpm doctor              # installed tools, runtimes, lockfiles and project healt
 
 A security audit whose tool fails, prints unreadable output or audits nothing is reported as unavailable, never as passing. Lockfile drift is checked by content for `package-lock.json` (v2/v3), `pnpm-lock.yaml`, `Cargo.lock` and `go.sum`; `composer.lock`, `poetry.lock`, `uv.lock`, `pdm.lock` and `Pipfile.lock` are only checked to parse, and `yarn.lock` and bun lockfiles are not compared. File modification times are never used.
 
+### Outdated, audit and why
+
+```bash
+xpm outdated                # direct dependencies whose registry has a newer version
+xpm outdated --all          # every locked package, not only direct dependencies
+xpm outdated --json         # {"dependencies": [...], "unchecked": [...]}
+xpm audit                   # known vulnerabilities in the locked versions (OSV.dev)
+xpm audit --json --timeout 60s
+xpm why lodash              # every path from your root packages to lodash
+xpm why lodash --limit 0 --json
+xpm outdated --workspace    # all three accept -w / --workspace
+```
+
+All three read your lockfiles and manifests (the same sources as `xpm graph`) and never run a build tool. A dependency without a locked version, or in an ecosystem the check does not cover, is not checked: xpm says so on stderr and lists the reason under `unchecked` in the JSON. If the project has dependencies but none of them could be checked, `outdated` and `audit` print an error on stderr and exit 2 (a project with no dependencies at all exits 0).
+
+- `outdated` queries the registries in parallel and prints a table of ecosystem, package, current and latest version and status (up-to-date rows are left out). Each row of the JSON has `ecosystem`, `name`, `current`, `latest` (when known), `status` (`outdated`, `current`, `unavailable` or `not found`) and `error`. Packages a registry does not know are counted as "not found" in the summary and do not change the exit status. Go modules matched by `GOPRIVATE` or `GONOPROXY` are not looked up, nor are Go modules when the first `GOPROXY` entry is `off`, `direct` or not an http(s) URL; these are read from the environment or, when unset there, from the file `go env -w` writes (xpm does not run `go`).
+- `audit` sends the names and versions of your locked packages to `api.osv.dev` (one batch request per 1000 packages, plus one details request per distinct vulnerability found; only package names and versions are sent; Go modules matched by `GOPRIVATE` or `GONOPROXY`, from the environment or `go env -w`, are never sent and are listed as unchecked) and prints each vulnerability with its ID, aliases, severity and the versions that fix it. `--timeout` takes a duration such as `30s` or a number of seconds (default `30s`, at most `1h`). The JSON has `scanned`, `vulnerable` (each with `ecosystem`, `name`, `version` and `vulns` of `id`, `aliases`, `summary`, `severity`, `fixed`) and `unchecked`.
+- `why` takes exactly one package and prints, for each version of it in the graph, the dependency chains that lead to it, shortest first. `--limit N` caps the paths shown **per version** (default 10; `0` shows all); the JSON has `package` and `targets` of `id`, `paths` and `truncated`.
+
+Exit codes, the same for all three: `0` nothing to report, `1` something to report, `2` a usage error or a check that could not be completed (see [Scripts and CI](#scripts-and-ci)).
+
 ### Dependency graph, lockfile and monorepos (experimental)
 
 ```bash
@@ -168,13 +226,14 @@ xpm graph --json > g.json  # machine-readable; stdout carries only the graph, wa
 xpm graph --svg > g.svg    # needs GraphViz `dot`
 xpm graph --exec           # also run mvn / gradle / go mod graph for full Java and Go trees
 xpm graph --workspace      # combine the graphs of all workspace projects
+xpm why lodash             # every path from your root packages to lodash (details above)
 xpm lock                   # write xpm-lock.yaml (hashes of the lockfiles in the project root)
 xpm lock --verify          # exit 1 if a lockfile changed, appeared or disappeared since `xpm lock`, or cannot be checked (unreadable, or a recorded path outside the project)
 xpm workspaces             # list monorepo projects (npm/yarn/pnpm, Cargo, go.work, Poetry and uv, Maven, Gradle, Composer)
 xpm run --workspace test   # run `test` in every project that defines it (`-- args` are passed to the task in every project)
 ```
 
-`xpm graph` reads files only; it never runs a build tool unless you pass `--exec`. `xpm-lock.yaml` has no timestamps, so running `xpm lock` again on an unchanged project leaves the file untouched. Workspace commands honour `workspace.include` / `workspace.exclude` (glob lists matched against each project's path relative to the workspace root, `**` allowed). `workspace.parallel` applies to `run --workspace` (and to `install --workspace` once it is wired), not to `workspaces` or `graph --workspace`; a parallel run prints each project's output when that project finishes, not live. `graph --workspace` reads npm/pnpm/yarn and Cargo workspaces from the root lockfile, which covers their members.
+`xpm graph` reads files only; it never runs a build tool unless you pass `--exec`. `xpm-lock.yaml` has no timestamps, so running `xpm lock` again on an unchanged project leaves the file untouched. Workspace commands honour `workspace.include` / `workspace.exclude` (glob lists matched against each project's path relative to the workspace root, `**` allowed). `workspace.parallel` applies to `run --workspace` and `install --workspace`, not to `workspaces` or `graph --workspace`; a parallel run prints each project's output when that project finishes, not live. `graph --workspace` reads npm/pnpm/yarn and Cargo workspaces from the root lockfile, which covers their members.
 
 The dependency cache (`xpm cache`) was removed: npm, pip, Cargo, Go and the others already keep their own caches.
 
@@ -227,8 +286,10 @@ Without a terminal (stdin and stdout both must be terminals; pipes and CI are no
 |---|---|
 | `0` | Success |
 | `1` | Error, cancelled install prompt, invalid arguments, **no matches**, or a refused non-interactive guess |
-| `2` | `graph` usage error (bad flag or argument) |
+| `2` | Usage error (bad flag or argument) of `graph`, `completion`, `outdated`, `audit` or `why`; `outdated`, `audit` and `why` also exit 2 when the project cannot be read; `outdated` / `audit` also when the check could not be completed (registries or OSV.dev unreachable, lookups failed and nothing was found to report, or the project has dependencies but none could be checked) |
 | other | `install` (no package argument), `ci`, `list` / `update` / `remove` / `run` pass through the underlying tool's exit code (`run --workspace` exits 1 if any project fails) |
+
+`outdated`, `audit` and `why` use `0` for nothing to report (all current / no known vulnerabilities / package found) and `1` for something to report (outdated dependencies / vulnerabilities / package not in the dependency graph).
 
 ### Changes in this release
 
@@ -288,6 +349,7 @@ Measured on macOS arm64 (2026-10-06):
 |---|---|---|
 | `xpm which axios`, first lookup | 3–6 s | ~1.0–1.4 s |
 | `xpm which axios`, repeat | 3–6 s | < 10 ms |
+| Shim overhead (`xpm env` shim) | needs a Go compiler at install time | ~5.1–5.6 ms (budget < 5 ms: slightly over, see the [roadmap](docs/superpowers/plans/2026-10-06-xpm-roadmap.md)) |
 | `xpm search axios` (plain), first lookup | 1.08 s* | ~1.2 s (budget ≤ 1.5 s); < 10 ms cached |
 | Worst case, one registry hangs | up to 20 s | ≤ 2.5 s |
 | npm data per lookup (`typescript`) | 15.7 MB | 3.5 KB |

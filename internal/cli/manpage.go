@@ -29,7 +29,10 @@ xpm {{.Command}} \- {{.Description}}
 {{.Examples}}
 .SH EXIT STATUS
 0 on success; 1 on errors, invalid arguments, cancelled install prompts, no matches, or a refused non-interactive choice.
-2 on a \fBgraph\fR usage error (bad flag or argument).
+2 on a usage error (bad flag or argument) of \fBgraph\fR, \fBcompletion\fR, \fBoutdated\fR, \fBaudit\fR or \fBwhy\fR.
+\fBoutdated\fR: 0 all current, 1 some outdated, 2 usage error or incomplete check (a lookup failed and nothing is outdated, or no dependency could be checked).
+\fBaudit\fR: 0 no known vulnerabilities, 1 vulnerabilities found, 2 usage error or the check could not be completed (OSV.dev unreachable, or no dependency could be checked).
+\fBwhy\fR: 0 package found and paths printed, 1 package not in the dependency graph, 2 usage error or unreadable project.
 \fBinstall\fR (without packages), \fBci\fR, \fBlist\fR, \fBupdate\fR, \fBremove\fR and \fBrun\fR pass through the underlying tool's exit code; \fBrun -w\fR exits 1 if any project fails.
 .SH ENVIRONMENT
 .TP
@@ -81,14 +84,14 @@ func getManPageData(command string) manPageData {
 	data := manPageData{
 		Command: command,
 		Date:    "2024",
-		Version: Version,
+		Version: versionString(),
 	}
 
 	switch command {
 	case "install":
 		data.Description = "Install packages or project dependencies"
 		data.Synopsis = `.B xpm install
-[\fB-g\fR|\fB--global\fR] [\fIpackage\fR[@\fIversion\fR] ...] [\fB--\fR]`
+[\fB-g\fR|\fB--global\fR] [\fB-w\fR|\fB--workspace\fR] [\fIpackage\fR[@\fIversion\fR] ...] [\fB--\fR]`
 		data.FullDescription = `Install one or several packages, or, without packages, the dependencies of the detected project.
 Several packages are installed in order; xpm stops at the first failure.
 Without packages, the detected project's tool runs its install (with several projects, a terminal asks which one or all; a script runs all).
@@ -104,6 +107,9 @@ A Maven or Gradle hit only prints the dependency snippet to add.`
 \fB-g\fR, \fB--global\fR
 Install globally (if the tool supports it); may come before or after the packages.
 .TP
+\fB-w\fR, \fB--workspace\fR
+Install dependencies in every workspace project (honours workspace.include/exclude and workspace.parallel); cannot be combined with packages or \fB-g\fR.
+.TP
 \fB--\fR
 Ends flag parsing; names starting with - are still rejected by name validation.
 .PP
@@ -116,6 +122,9 @@ Install axios (searches all ecosystems)
 .PP
 .B xpm install axios lodash
 Install several packages in order
+.PP
+.B xpm install --workspace
+Install dependencies in every workspace project
 .PP
 .B xpm install axios@1.0.0
 Install specific version
@@ -189,6 +198,84 @@ Find lodash across all registries`
 		data.Examples = `.B xpm list
 List all installed packages`
 		data.SeeAlso = `\fBxpm\fR(1), \fBxpm info\fR(1)`
+
+	case "outdated":
+		data.Description = "Show dependencies with newer versions"
+		data.Synopsis = `.B xpm outdated
+[\fB--json\fR] [\fB--all\fR] [\fB--workspace\fR|\fB-w\fR]`
+		data.FullDescription = `Show which of the project's dependencies have a newer version in their registry, across ecosystems.
+Versions come from the lockfiles; only dependencies with a locked version are checked, the rest are counted in a note on stderr (add a lockfile).
+Registries used: npm, PyPI, Packagist, the crates.io sparse index, Maven Central and the Go module proxy (proxy.golang.org, or the first entry of GOPROXY). Go modules matched by GOPRIVATE or GONOPROXY are not looked up, nor are Go modules when GOPROXY's first entry is off, direct or not an http(s) URL, nor registries turned off in the config. GOPRIVATE, GONOPROXY and GOPROXY are read from the environment or, when unset there, from the go env file written by \fBgo env -w\fR (\fB$GOENV\fR); the go command is not run. Lookups use the registry lookup cache and the registry timeouts from the config.
+The table lists every dependency that is not current, with a summary line. With \fB--json\fR, stdout is one JSON document with \fBdependencies\fR and \fBunchecked\fR arrays.
+A package a registry does not know (for example a private package) is shown as \fBnot found\fR, counted separately in the summary, and does not change the exit status; a lookup that failed is shown as \fBunavailable\fR.
+If the project has dependencies but none of them could be checked (no locked versions, no lookup, or all skipped), an error on stderr says so and the exit status is 2.
+Takes no arguments; an unknown flag or an argument is a usage error (exit status 2).`
+		data.Options = `.TP
+\fB--json\fR
+Print the result as JSON
+.TP
+\fB--all\fR
+Check every locked package, not only direct dependencies
+.TP
+\fB--workspace\fR, \fB-w\fR
+Combine all workspace projects`
+		data.Examples = `.B xpm outdated
+Show outdated direct dependencies
+.PP
+.B xpm outdated --all --json
+Check every locked package and print JSON`
+		data.SeeAlso = `\fBxpm\fR(1), \fBxpm update\fR(1), \fBxpm list\fR(1)`
+
+	case "audit":
+		data.Description = "Check dependencies for known vulnerabilities"
+		data.Synopsis = `.B xpm audit
+[\fB--json\fR] [\fB--timeout\fR \fIduration\fR] [\fB--workspace\fR|\fB-w\fR]`
+		data.FullDescription = `Check the project's locked dependencies against the OSV.dev vulnerability database, across ecosystems (npm, PyPI, Packagist, crates.io, Go and Maven).
+Only dependencies with a locked version are checked; the rest are counted in a note on stderr, and listed with a reason under \fBunchecked\fR in the JSON output. If the project has dependencies but none of them could be checked, an error on stderr says so and the exit status is 2.
+Privacy: package names and versions from the lockfiles are sent to api.osv.dev, one batch request per 1000 packages plus one details request per distinct vulnerability found. Nothing else is sent. Go modules matched by GOPRIVATE or GONOPROXY (from the environment or, when unset there, from the go env file written by \fBgo env -w\fR) are never sent; they are listed under \fBunchecked\fR as private modules.
+\fBxpm doctor\fR is separate: it keeps running the ecosystems' own audit tools (npm audit, pip-audit and so on), which do not go through OSV.
+Each vulnerable package is listed with its vulnerabilities, severity and fixed versions. With \fB--json\fR, stdout is one JSON document with \fBscanned\fR, \fBvulnerable\fR and \fBunchecked\fR.
+Takes no arguments; an unknown flag or an argument is a usage error (exit status 2).`
+		data.Options = `.TP
+\fB--json\fR
+Print the result as JSON
+.TP
+\fB--timeout\fR \fIduration\fR
+Time limit for the OSV.dev queries (default 30s, at most 1h; a bare number is seconds)
+.TP
+\fB--workspace\fR, \fB-w\fR
+Combine all workspace projects`
+		data.Examples = `.B xpm audit
+Audit the locked dependencies
+.PP
+.B xpm audit --json --timeout 10s
+Audit with a 10 second limit and print JSON`
+		data.SeeAlso = `\fBxpm\fR(1), \fBxpm outdated\fR(1), \fBxpm doctor\fR(1)`
+
+	case "why":
+		data.Description = "Show why a package is in the dependency graph"
+		data.Synopsis = `.B xpm why
+\fIpackage\fR [\fB--json\fR] [\fB--limit\fR \fIN\fR] [\fB--workspace\fR|\fB-w\fR]`
+		data.FullDescription = `Show the dependency paths from the project's root packages to a package, across ecosystems, read from the lockfiles.
+Each version of the package that is in the graph gets one block, followed by one line per path, for example \fBmy-app > express@4.18.2 > body-parser@1.20.1 > lodash@4.17.21\fR.
+At most \fB--limit\fR paths are shown per version, shortest first (default 10; 0 shows all); a version with more paths ends with a line saying so. Cycles are cut, so a path never repeats a package.
+With \fB--json\fR, stdout is one JSON document with \fBpackage\fR and \fBtargets\fR, one entry per version with its \fBid\fR, \fBpaths\fR (lists of node IDs from a root to it) and \fBtruncated\fR.
+Exit status: 0 if the package is in the graph, 1 if it is not, 2 on a usage error (a missing or extra package name, a bad flag, a negative limit) or an unreadable project.`
+		data.Options = `.TP
+\fB--json\fR
+Print the paths as JSON
+.TP
+\fB--limit\fR \fIN\fR
+Maximum number of paths to show per version (default 10; 0 = all)
+.TP
+\fB--workspace\fR, \fB-w\fR
+Combine all workspace projects`
+		data.Examples = `.B xpm why lodash
+Show why lodash is installed
+.PP
+.B xpm why lodash --limit 0 --json
+Print every path to lodash as JSON`
+		data.SeeAlso = `\fBxpm\fR(1), \fBxpm graph\fR(1), \fBxpm audit\fR(1)`
 
 	case "update":
 		data.Description = "Update packages"
@@ -299,11 +386,15 @@ Search for axios`
 		data.Description = "List detected workspaces/monorepos (experimental)"
 		data.Synopsis = `.B xpm workspaces`
 		data.FullDescription = `List detected workspaces/monorepos.
+Related: \fBxpm install --workspace\fR installs dependencies in every workspace project and \fBxpm run --workspace\fR runs a task in each.
 This command is experimental and is being reworked; its behaviour and output may change.`
 		data.Options = ""
 		data.Examples = `.B xpm workspaces
-List all detected workspaces`
-		data.SeeAlso = `\fBxpm\fR(1), \fBxpm run\fR(1)`
+List all detected workspaces
+.PP
+.B xpm install --workspace
+Install dependencies in every workspace project`
+		data.SeeAlso = `\fBxpm\fR(1), \fBxpm run\fR(1), \fBxpm install\fR(1)`
 
 	case "env":
 		data.Description = "Manage runtime versions (experimental)"
@@ -432,6 +523,28 @@ List commands
 .PP
 .B xpm man install
 Show install command help`
+		data.SeeAlso = `\fBxpm\fR(1), \fBxpm help\fR(1)`
+
+	case "completion":
+		data.Description = "Print a shell completion script (bash, zsh, fish)"
+		data.Synopsis = `.B xpm completion
+\fI<bash|zsh|fish>\fR`
+		data.FullDescription = `Print a completion script for the given shell on standard output. It completes command names and aliases, the flags of each command, and the arguments of \fBman\fR, \fBcompletion\fR, \fBconfig\fR and \fBenv\fR; everything else falls back to file completion.
+Exactly one argument is required; anything else is a usage error (exit status 2).`
+		data.Options = `.TP
+\fBbash\fR
+\fBsource <(xpm completion bash)\fR, or save the output to /usr/local/etc/bash_completion.d/xpm or ~/.local/share/bash-completion/completions/xpm.
+.TP
+\fBzsh\fR
+\fBxpm completion zsh > "${fpath[1]}/_xpm"\fR
+.TP
+\fBfish\fR
+\fBxpm completion fish > ~/.config/fish/completions/xpm.fish\fR`
+		data.Examples = `.B source <(xpm completion bash)
+Enable completion in the current bash session
+.PP
+.B xpm completion fish > ~/.config/fish/completions/xpm.fish
+Install fish completion`
 		data.SeeAlso = `\fBxpm\fR(1), \fBxpm help\fR(1)`
 
 	default:

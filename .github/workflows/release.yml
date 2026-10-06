@@ -2,69 +2,72 @@ name: Release
 
 on:
   push:
-    tags:
-      - 'v*'
+    tags: ['v*']
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - run: go test -race ./...
+
   release:
     name: Release
     runs-on: ubuntu-latest
-
+    needs: test
+    permissions:
+      contents: write # create the GitHub release and upload assets
+      id-token: write # keyless cosign signing of checksums.txt
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
+          fetch-depth: 0 # goreleaser needs the tags and history for the changelog
+      - uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
-
-      - name: Run tests
-        run: go test -v ./...
-
-      - name: Build release binaries
-        run: make release
-
-      - name: Create checksums
-        run: make checksums
-
-      - name: Get version
-        id: version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
+          go-version: stable
+      - uses: anchore/sbom-action/download-syft@v0 # syft, for the archive SBOMs
+      - uses: goreleaser/goreleaser-action@v6
         with:
-          name: Release ${{ steps.version.outputs.VERSION }}
-          draft: false
-          prerelease: ${{ contains(steps.version.outputs.VERSION, '-') }}
-          files: |
-            build/*
-          generate_release_notes: true
+          distribution: goreleaser
+          version: 'v2.18.2' # keep in sync with GORELEASER in the Makefile
+          args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Optional: without it the Homebrew cask is built but not pushed to
+          # crenspire/homebrew-tap.
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
 
-  homebrew:
-    name: Update Homebrew Formula
-    runs-on: ubuntu-latest
-    needs: release
-    if: "!contains(github.ref, '-')"
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Get version
-        id: version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
-
-      - name: Update Homebrew formula
-        run: |
-          echo "Homebrew formula would be updated here for version ${{ steps.version.outputs.VERSION }}"
-          # Add steps to update your Homebrew tap if you have one
-
+      # Signing checksums.txt is best-effort: a signing failure must not fail a
+      # release whose archives are already published. checksums.txt covers every
+      # archive, so verifying its signature verifies them all:
+      #
+      #   cosign verify-blob \
+      #     --certificate-identity-regexp 'https://github.com/crenspire/xpm/.*' \
+      #     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+      #     --signature checksums.txt.sig --certificate checksums.txt.pem \
+      #     checksums.txt
+      #   sha256sum --ignore-missing -c checksums.txt
+      - uses: sigstore/cosign-installer@v3
+        continue-on-error: true
+        timeout-minutes: 5
+      - name: Sign checksums.txt
+        continue-on-error: true
+        timeout-minutes: 5
+        run: >-
+          cosign sign-blob --yes
+          --output-signature dist/checksums.txt.sig
+          --output-certificate dist/checksums.txt.pem
+          dist/checksums.txt
+      - name: Upload signature
+        continue-on-error: true
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$GITHUB_REF_NAME" dist/checksums.txt.sig dist/checksums.txt.pem --clobber
