@@ -22,7 +22,6 @@ import (
 
 	"github.com/crenspire/xpm/internal/config"
 	"github.com/crenspire/xpm/internal/doctor"
-	"github.com/crenspire/xpm/internal/env"
 	"github.com/crenspire/xpm/internal/logx"
 	"github.com/crenspire/xpm/internal/pm"
 	"github.com/crenspire/xpm/internal/search"
@@ -116,51 +115,42 @@ func usage() {
 	fmt.Printf("\n%sRun%s '%sxpm man <command>%s' for detailed help on a specific command.\n", colorBold, colorReset, colorCyan, colorReset)
 }
 
+// splitGlobalFlags consumes xpm's own flags (-v, --verbose, --version, -V)
+// only while they appear BEFORE the subcommand. Everything from the
+// subcommand onward is returned untouched, so `xpm run test -- --version`
+// passes --version to the script instead of printing xpm's version.
+// A lone `-v` means version; `-v` followed by a command means verbose.
+func splitGlobalFlags(raw []string) (args []string, verbose, showVersion bool) {
+	for i, a := range raw {
+		switch a {
+		case "--version", "-V":
+			showVersion = true
+		case "-v":
+			if len(raw) == 1 {
+				showVersion = true
+			} else {
+				verbose = true
+			}
+		case "--verbose":
+			verbose = true
+		default:
+			return raw[i:], verbose, showVersion
+		}
+	}
+	return nil, verbose, showVersion
+}
+
 // Run is the main entry point for the CLI.
 // It parses arguments, loads configuration, and dispatches to the appropriate command.
 // Returns an exit code (0 for success, non-zero for errors).
 func Run() int {
 	rawArgs := os.Args[1:]
 
-	var verbose bool
-	var showVersion bool
-	args := make([]string, 0, len(rawArgs))
-
-	// Handle version flags first
-	for _, a := range rawArgs {
-		if a == "--version" || a == "-V" {
-			showVersion = true
-			break
-		}
-	}
-
-	// Process other flags
-	for _, a := range rawArgs {
-		if a == "-v" {
-			// -v is version if it's the only arg, otherwise verbose
-			if len(rawArgs) == 1 {
-				showVersion = true
-			} else {
-				verbose = true
-			}
-		} else if a == "--verbose" {
-			verbose = true
-		} else if a != "--version" && a != "-V" {
-			args = append(args, a)
-		}
-	}
+	args, verbose, showVersion := splitGlobalFlags(rawArgs)
 	logx.Verbose = verbose
 
 	cfg = config.Load()
 	logx.Info("config loaded: %+v", cfg)
-
-	// Auto-activate versions from .xpm-env
-	if cfg.Env.Enabled {
-		manager, err := env.NewManager(cfg)
-		if err == nil {
-			env.ActivateFromLocalEnv(manager)
-		}
-	}
 
 	// Show banner and version if no args or version flag
 	if len(rawArgs) == 0 {
@@ -343,20 +333,18 @@ func filterResultsByLockFiles(results []search.Result, lockFiles map[pm.Ecosyste
 			}
 			// If no result for that exact PM but we have npm result and user has yarn/pnpm/bun lock
 			// Use the npm result but switch the manager
-			if autoSelect != nil {
-				found := false
-				for _, r := range filtered {
-					if r.Manager == *autoSelect {
-						found = true
-						break
-					}
+			found := false
+			for _, r := range filtered {
+				if r.Manager == *autoSelect {
+					found = true
+					break
 				}
-				if !found && len(ecoResults) > 0 {
-					// Clone the first result but with the detected PM
-					r := ecoResults[0]
-					r.Manager = *autoSelect
-					filtered = append(filtered, r)
-				}
+			}
+			if !found && len(ecoResults) > 0 {
+				// Clone the first result but with the detected PM
+				r := ecoResults[0]
+				r.Manager = *autoSelect
+				filtered = append(filtered, r)
 			}
 			continue
 		}

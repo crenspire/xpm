@@ -148,4 +148,3 @@ func FormatVerificationResults(results []VerificationResult) string {
 
 	return output
 }
-

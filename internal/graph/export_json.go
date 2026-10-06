@@ -78,4 +78,3 @@ func WriteJSON(graph *DepGraph, w io.Writer) error {
 
 	return nil
 }
-

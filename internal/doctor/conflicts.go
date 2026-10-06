@@ -161,4 +161,3 @@ func HasLockFileConflicts(conflicts []Conflict) bool {
 	}
 	return false
 }
-

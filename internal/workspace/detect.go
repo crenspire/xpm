@@ -115,4 +115,3 @@ func validateWorkspace(w Workspace) error {
 
 	return nil
 }
-

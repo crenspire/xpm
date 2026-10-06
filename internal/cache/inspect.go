@@ -17,9 +17,9 @@ type EcosystemStats struct {
 
 // CacheStats holds overall cache statistics.
 type CacheStats struct {
-	TotalSize    int64
+	TotalSize     int64
 	TotalPackages int
-	ByEcosystem  map[Ecosystem]*EcosystemStats
+	ByEcosystem   map[Ecosystem]*EcosystemStats
 }
 
 // TreeNode represents a node in the cache tree.
@@ -354,4 +354,3 @@ func formatTreeNode(sb *strings.Builder, node *TreeNode, indent string, isRoot b
 		}
 	}
 }
-

@@ -97,4 +97,3 @@ type PackageInfo struct {
 		URL string `json:"url"`
 	} `json:"source"`
 }
-

@@ -51,7 +51,7 @@ func GetInstaller(name string) (RuntimeInstaller, error) {
 		if suggestion != "" {
 			return nil, fmt.Errorf("no installer found for runtime: %s\n\nDid you mean: %s?\n\nNote: %s is a package manager, not a runtime. Install the runtime instead:\n  xpm env install %s@<version>", name, suggestion, name, suggestion)
 		}
-		
+
 		// List available runtimes
 		var available []string
 		for n := range installers {
@@ -66,24 +66,24 @@ func GetInstaller(name string) (RuntimeInstaller, error) {
 // suggestRuntime suggests a runtime name for common package manager names.
 func suggestRuntime(name string) string {
 	aliases := map[string]string{
-		"npm":   "node",
-		"yarn":  "node",
-		"pnpm":  "node",
-		"bun":   "bun", // bun is both a runtime and package manager
-		"pip":   "python",
-		"pip3":  "python",
-		"poetry": "python",
-		"php":   "php",
+		"npm":      "node",
+		"yarn":     "node",
+		"pnpm":     "node",
+		"bun":      "bun", // bun is both a runtime and package manager
+		"pip":      "python",
+		"pip3":     "python",
+		"poetry":   "python",
+		"php":      "php",
 		"composer": "php",
-		"go":    "go",
-		"golang": "go",
-		"java":  "java",
-		"jdk":   "java",
-		"rust":  "rust",
-		"cargo": "rust",
-		"deno":  "deno",
+		"go":       "go",
+		"golang":   "go",
+		"java":     "java",
+		"jdk":      "java",
+		"rust":     "rust",
+		"cargo":    "rust",
+		"deno":     "deno",
 	}
-	
+
 	if suggested, ok := aliases[name]; ok {
 		return suggested
 	}
@@ -102,4 +102,3 @@ func ListRuntimes() []string {
 
 	return names
 }
-

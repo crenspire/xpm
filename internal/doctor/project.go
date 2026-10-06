@@ -7,10 +7,10 @@ import (
 
 // ProjectFileInfo holds information about a detected project file.
 type ProjectFileInfo struct {
-	Name     string
-	Path     string
-	Exists   bool
-	Type     FileType
+	Name      string
+	Path      string
+	Exists    bool
+	Type      FileType
 	Ecosystem string
 }
 
@@ -25,11 +25,11 @@ const (
 
 // ProjectFileSpec defines a project file to detect.
 type ProjectFileSpec struct {
-	Name       string
-	Type       FileType
-	Ecosystem  string
-	LockFile   string // Associated lock file (for dependency files)
-	DepFile    string // Associated dependency file (for lock files)
+	Name      string
+	Type      FileType
+	Ecosystem string
+	LockFile  string // Associated lock file (for dependency files)
+	DepFile   string // Associated dependency file (for lock files)
 }
 
 // projectFileSpecs defines all project files to check.
@@ -69,7 +69,7 @@ var projectFileSpecs = []ProjectFileSpec{
 
 // ProjectScanResult holds the results of scanning a project directory.
 type ProjectScanResult struct {
-	Files           []ProjectFileInfo
+	Files            []ProjectFileInfo
 	MissingLockFiles []string
 	Ecosystems       map[string]bool
 }
@@ -211,4 +211,3 @@ func GetFilesForEcosystem(result ProjectScanResult, ecosystem string) []ProjectF
 	}
 	return files
 }
-

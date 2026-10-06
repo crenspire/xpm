@@ -165,4 +165,3 @@ func formatEcosystemName(ecosystem, manager string) string {
 	}
 	return name
 }
-

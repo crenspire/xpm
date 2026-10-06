@@ -133,4 +133,3 @@ func (e *GoExtractor) moduleNameFromPath(path string) string {
 	}
 	return path
 }
-

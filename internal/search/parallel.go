@@ -124,7 +124,7 @@ func SearchEverywhereParallelWithConfig(pkg string, opts Options, cfg ParallelSe
 					return
 				}
 			}
-			
+
 			// If no results were sent (empty slice), send a completion marker
 			// This ensures the search is marked as completed even with no results
 			if len(results) == 0 {
@@ -213,25 +213,6 @@ func SearchRegistriesParallel(pkg string, managers []pm.ID) ([]Result, error) {
 	return SearchEverywhereParallel(pkg, opts)
 }
 
-// searchWithRetry wraps a search function with retry logic.
-func searchWithRetry(fn SearchFunc, pkg string, maxRetries int) (*Result, error) {
-	var lastErr error
-
-	for i := 0; i <= maxRetries; i++ {
-		result, err := fn(pkg)
-		if err == nil {
-			return result, nil
-		}
-
-		lastErr = err
-		if i < maxRetries {
-			time.Sleep(time.Duration(i+1) * 100 * time.Millisecond)
-		}
-	}
-
-	return nil, lastErr
-}
-
 // Wrapper functions that use proper search APIs instead of existence checks
 func searchNpmMultiple(query string) ([]Result, error) {
 	return SearchNpmPackages(query, 20) // Limit to 20 results
@@ -287,7 +268,7 @@ func BatchSearch(packages []string, opts Options) map[string][]Result {
 	}
 
 	wg.Wait()
-	
+
 	// Return a copy to prevent race conditions when caller accesses the map
 	mu.Lock()
 	resultCopy := make(map[string][]Result, len(results))
@@ -298,7 +279,6 @@ func BatchSearch(packages []string, opts Options) map[string][]Result {
 		resultCopy[k] = vCopy
 	}
 	mu.Unlock()
-	
+
 	return resultCopy
 }
-

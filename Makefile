@@ -6,8 +6,7 @@ BINARY_NAME=xpm
 # Version can be set via: make build VERSION=1.0.0
 # Defaults to git tag, or 0.0.1 if no tags exist
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "0.0.1")
-BUILD_TIME=$(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
-LDFLAGS=-ldflags "-X github.com/crenspire/xpm/internal/cli.Version=$(VERSION) -X main.BuildTime=$(BUILD_TIME)"
+LDFLAGS=-trimpath -ldflags "-s -w -X github.com/crenspire/xpm/internal/cli.Version=$(VERSION)"
 
 # Go variables
 GO=go
@@ -71,6 +70,11 @@ test-cover:
 bench:
 	@echo "Running benchmarks..."
 	$(GOTEST) -bench=. -benchmem ./...
+
+# Check CLI latency/size against roadmap budgets (needs hyperfine + jq + network)
+.PHONY: perf
+perf:
+	./scripts/perf.sh
 
 # Run linters
 .PHONY: lint

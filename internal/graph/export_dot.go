@@ -85,4 +85,3 @@ func ColorByEcosystem(ecosystem string) string {
 	}
 	return "#666666"
 }
-

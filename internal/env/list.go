@@ -84,12 +84,12 @@ func listVersionsForRuntime(runtimePath, runtime string, manager *Manager) ([]Ve
 		}
 
 		version := entry.Name()
-		
+
 		// Filter out special aliases and invalid version strings
 		if version == "latest" || version == "lts" || version == "" {
 			continue
 		}
-		
+
 		// Validate version format if installer is available
 		if installer != nil {
 			if err := installer.ValidateVersion(version); err != nil {
@@ -104,7 +104,7 @@ func listVersionsForRuntime(runtimePath, runtime string, manager *Manager) ([]Ve
 		}
 
 		versionPath := filepath.Join(runtimePath, version)
-		
+
 		// Verify the installation actually exists and has binaries
 		if !isValidInstallation(versionPath, runtime, installer) {
 			continue
@@ -138,7 +138,7 @@ func isValidInstallation(versionPath, runtime string, installer RuntimeInstaller
 	if err != nil || len(entries) == 0 {
 		return false
 	}
-	
+
 	// If we have an installer, check for expected binaries
 	if installer != nil {
 		binaryPaths := installer.BinaryPaths("", versionPath) // version not needed for path checking
@@ -152,7 +152,7 @@ func isValidInstallation(versionPath, runtime string, installer RuntimeInstaller
 		// Return true anyway to show it (user can clean it up)
 		return true
 	}
-	
+
 	return true
 }
 
@@ -163,14 +163,14 @@ func getVersionAlias(versionPath string) string {
 	if err != nil {
 		return ""
 	}
-	
+
 	var meta struct {
 		Alias string `json:"alias"`
 	}
 	if err := json.Unmarshal(data, &meta); err != nil {
 		return ""
 	}
-	
+
 	return meta.Alias
 }
 
@@ -182,12 +182,12 @@ func saveVersionAlias(versionPath, alias string) error {
 	}{
 		Alias: alias,
 	}
-	
+
 	data, err := json.MarshalIndent(meta, "", "  ")
 	if err != nil {
 		return err
 	}
-	
+
 	return os.WriteFile(metaPath, data, 0644)
 }
 
@@ -216,19 +216,19 @@ func FormatInstalled(installed map[string][]VersionInfo) string {
 			if v.Active {
 				marker = "  → "
 			}
-			
+
 			// Active versions: green + bold
 			if v.Active {
 				output.WriteString(fmt.Sprintf("%s%s%s%s%s", colorBold, colorGreen, marker, v.Version, colorReset))
 			} else {
 				output.WriteString(fmt.Sprintf("%s%s", marker, v.Version))
 			}
-			
+
 			// Show alias if available
 			if v.Alias != "" {
 				output.WriteString(fmt.Sprintf(" (%s)", v.Alias))
 			}
-			
+
 			// Show active status
 			if v.Active {
 				output.WriteString(fmt.Sprintf(" %s%s(active)%s", colorBold, colorGreen, colorReset))
@@ -239,4 +239,3 @@ func FormatInstalled(installed map[string][]VersionInfo) string {
 
 	return output.String()
 }
-

@@ -415,7 +415,7 @@ func auditPip() SecurityResult {
 		Name    string `json:"name"`
 		Version string `json:"version"`
 		Vulns   []struct {
-			ID          string `json:"id"`
+			ID          string   `json:"id"`
 			FixVersions []string `json:"fix_versions"`
 		} `json:"vulns"`
 	}
@@ -649,4 +649,3 @@ func HasSecurityIssues(results []SecurityResult) bool {
 	}
 	return false
 }
-

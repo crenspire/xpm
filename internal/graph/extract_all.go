@@ -83,8 +83,8 @@ func DetectEcosystems(dir string) map[string]bool {
 
 	// Check for lockfiles and dependency files
 	files := []struct {
-		file       string
-		ecosystem  string
+		file      string
+		ecosystem string
 	}{
 		{"package-lock.json", "node"},
 		{"yarn.lock", "node"},
@@ -158,4 +158,3 @@ func contains(slice []string, item string) bool {
 	}
 	return false
 }
-

@@ -53,8 +53,8 @@ func (e *PythonExtractor) extractPoetryLock(dir string, graph *DepGraph) error {
 
 	var lockfile struct {
 		Package []struct {
-			Name         string   `toml:"name"`
-			Version      string   `toml:"version"`
+			Name         string                 `toml:"name"`
+			Version      string                 `toml:"version"`
 			Dependencies map[string]interface{} `toml:"dependencies"`
 		} `toml:"package"`
 	}
@@ -176,4 +176,3 @@ func (e *PythonExtractor) parseDependencySpec(spec string) (name, version string
 	// Just package name
 	return strings.TrimSpace(spec), ""
 }
-

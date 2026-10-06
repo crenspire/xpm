@@ -69,9 +69,9 @@ func detectComposerRepositories(root, composerPath string) []Project {
 
 	var config struct {
 		Repositories []struct {
-			Type string                 `json:"type"`
-			URL  string                 `json:"url"`
-			Path string                 `json:"path"`
+			Type    string                 `json:"type"`
+			URL     string                 `json:"url"`
+			Path    string                 `json:"path"`
 			Options map[string]interface{} `json:"options"`
 		} `json:"repositories"`
 	}
@@ -164,4 +164,3 @@ func isComposerProjectInList(projects []Project, path string) bool {
 	}
 	return false
 }
-

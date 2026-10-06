@@ -3,8 +3,6 @@ package runtimes
 import (
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -25,32 +23,39 @@ func (g *GoInstaller) Name() string {
 	return "go"
 }
 
-// ListRemote fetches available Go versions.
+// ListRemote fetches available stable Go versions (newest first).
 func (g *GoInstaller) ListRemote() ([]string, error) {
-	resp, err := http.Get("https://go.dev/dl/?mode=json")
+	data, err := fetchSmall(goDLURL + "/?mode=json&include=all")
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	return stableGoVersions(data)
+}
 
+// stableGoVersions parses the go.dev release feed and returns the stable
+// versions (without the "go" prefix) in feed order, de-duplicated. Betas and
+// release candidates are skipped.
+func stableGoVersions(releasesJSON []byte) ([]string, error) {
 	var releases []struct {
 		Version string `json:"version"`
+		Stable  bool   `json:"stable"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&releases); err != nil {
+	if err := json.Unmarshal(releasesJSON, &releases); err != nil {
 		return nil, err
 	}
 
 	var versions []string
 	seen := make(map[string]bool)
 	for _, release := range releases {
-		// Remove 'go' prefix
+		if !release.Stable {
+			continue
+		}
 		version := strings.TrimPrefix(release.Version, "go")
 		if !seen[version] {
 			versions = append(versions, version)
 			seen[version] = true
 		}
 	}
-
 	return versions, nil
 }
 
@@ -107,36 +112,19 @@ func (g *GoInstaller) Install(version string, dest string) error {
 	}
 
 	filename := fmt.Sprintf("go%s.%s-%s.tar.gz", version, goos, arch)
-	url := fmt.Sprintf("https://go.dev/dl/%s", filename)
-
-	fmt.Printf("Downloading from %s...\n", url)
-
-	// Download
-	resp, err := http.Get(url)
-	if err != nil {
-		return fmt.Errorf("failed to download: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("download failed with status %d", resp.StatusCode)
-	}
-
-	// Create temp file
-	tmpFile, err := os.CreateTemp("", "go-*.tmp")
+	want, err := goReleaseChecksum(filename)
 	if err != nil {
 		return err
 	}
-	defer os.Remove(tmpFile.Name())
-
-	if _, err := io.Copy(tmpFile, resp.Body); err != nil {
-		tmpFile.Close()
+	fmt.Printf("Downloading %s/%s...\n", goDLURL, filename)
+	archive, err := downloadVerified(goDLURL+"/"+filename, want)
+	if err != nil {
 		return err
 	}
-	tmpFile.Close()
+	defer os.Remove(archive)
 
 	// Extract
-	if err := extractTarGz(tmpFile.Name(), dest); err != nil {
+	if err := extractTarGz(archive, dest); err != nil {
 		return err
 	}
 
@@ -165,3 +153,23 @@ func (g *GoInstaller) BinaryPaths(version, dest string) []string {
 	return []string{"bin/go"}
 }
 
+// goReleaseChecksum looks the archive up in the small current-releases feed
+// first and only falls back to the full (include=all) feed when absent.
+// It fails closed: no checksum means an error.
+func goReleaseChecksum(filename string) (string, error) {
+	var lastErr error
+	for _, u := range []string{goDLURL + "/?mode=json", goDLURL + "/?mode=json&include=all"} {
+		meta, err := fetchSmall(u)
+		if err != nil {
+			lastErr = fmt.Errorf("fetch Go release list: %w", err)
+			continue
+		}
+		want, err := goChecksum(meta, filename)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		return want, nil
+	}
+	return "", lastErr
+}

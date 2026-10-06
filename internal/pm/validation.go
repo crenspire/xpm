@@ -19,6 +19,7 @@ var (
 
 	// composerPackagePattern matches valid Composer package names.
 	// Composer uses vendor/package format.
+	//lint:ignore U1000 used by P3
 	composerPackagePattern = regexp.MustCompile(`^[a-z0-9]([_.-]?[a-z0-9]+)*/[a-z0-9]([_.-]?[a-z0-9]+)*$`)
 
 	// cargoPackagePattern matches valid crate names.
@@ -27,9 +28,6 @@ var (
 
 	// goModulePattern matches valid Go module paths.
 	goModulePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._/-]*$`)
-
-	// mavenCoordinatePattern matches Maven coordinates (groupId:artifactId or just artifactId).
-	mavenCoordinatePattern = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9._-]*(:[a-zA-Z][a-zA-Z0-9._-]*)?$`)
 )
 
 // PackageNameLimits defines length limits for package names.
@@ -44,6 +42,11 @@ func ValidatePackageName(pkg string, manager ID) error {
 	// Check for empty name
 	if pkg == "" {
 		return NewValidationError("package name", "", "cannot be empty")
+	}
+
+	// A leading dash would be parsed as an option by npm/composer/pip/cargo.
+	if strings.HasPrefix(pkg, "-") {
+		return NewValidationError("package name", pkg, "cannot start with '-'")
 	}
 
 	// Check length
@@ -101,6 +104,11 @@ func ValidatePackageName(pkg string, manager ID) error {
 func ValidateGenericPackageName(pkg string) error {
 	if pkg == "" {
 		return NewValidationError("package name", "", "cannot be empty")
+	}
+
+	// A leading dash would be parsed as an option by npm/composer/pip/cargo.
+	if strings.HasPrefix(pkg, "-") {
+		return NewValidationError("package name", pkg, "cannot start with '-'")
 	}
 
 	if len(pkg) > MaxPackageNameLength {
@@ -205,6 +213,11 @@ func ValidateVersion(version string) error {
 		return NewValidationError("version", "", "cannot be empty")
 	}
 
+	// A leading dash would be parsed as an option by package managers.
+	if strings.HasPrefix(version, "-") {
+		return NewValidationError("version", version, "cannot start with '-'")
+	}
+
 	// Check length (very long versions are suspicious)
 	const maxVersionLength = 100
 	if len(version) > maxVersionLength {
@@ -230,4 +243,3 @@ func ValidateVersion(version string) error {
 
 	return nil
 }
-

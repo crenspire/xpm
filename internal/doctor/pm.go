@@ -221,4 +221,3 @@ func IsPMInstalled(results []PMInfo, name string) bool {
 	}
 	return false
 }
-

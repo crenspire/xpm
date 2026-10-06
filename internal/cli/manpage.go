@@ -12,7 +12,7 @@ import (
 // GenerateManPage generates a man page for a specific command.
 func GenerateManPage(command string) (string, error) {
 	normalized := normalizeCommand(command)
-	
+
 	manPageTemplate := `.\" Man page for xpm {{.Command}}
 .TH XPM {{.Command}} "1" "{{.Date}}" "xpm {{.Version}}" "User Commands"
 .SH NAME
@@ -41,7 +41,7 @@ Copyright (C) 2024 Crenspire
 	}
 
 	data := getManPageData(normalized)
-	
+
 	var buf strings.Builder
 	if err := tmpl.Execute(&buf, data); err != nil {
 		return "", err
@@ -52,15 +52,15 @@ Copyright (C) 2024 Crenspire
 
 // manPageData holds data for generating a man page.
 type manPageData struct {
-	Command        string
-	Description    string
-	Synopsis       string
+	Command         string
+	Description     string
+	Synopsis        string
 	FullDescription string
-	Options        string
-	Examples       string
-	SeeAlso        string
-	Date           string
-	Version        string
+	Options         string
+	Examples        string
+	SeeAlso         string
+	Date            string
+	Version         string
 }
 
 // getManPageData returns man page data for a command.
@@ -457,4 +457,3 @@ func GenerateAllManPages(outputDir string) error {
 
 	return nil
 }
-

@@ -2,90 +2,71 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, develop]
   pull_request:
-    branches: [main, master]
+    branches: [main, develop]
+
+permissions:
+  contents: read
 
 jobs:
   test:
     name: Test
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        go-version: ['1.21', '1.22']
-
+        go-version: ['1.22', 'stable']
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
         with:
           go-version: ${{ matrix.go-version }}
-
-      - name: Cache Go modules
-        uses: actions/cache@v4
+          cache: true
+      - run: go mod verify
+      - run: go test -race -coverprofile=coverage.out ./...
+      - if: matrix.os == 'ubuntu-latest' && matrix.go-version == 'stable'
+        uses: codecov/codecov-action@v4
         with:
-          path: |
-            ~/go/pkg/mod
-            ~/.cache/go-build
-          key: ${{ runner.os }}-go-${{ matrix.go-version }}-${{ hashFiles('**/go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-go-${{ matrix.go-version }}-
-
-      - name: Download dependencies
-        run: go mod download
-
-      - name: Verify dependencies
-        run: go mod verify
-
-      - name: Run tests
-        run: go test -v -race -coverprofile=coverage.out ./...
-
-      - name: Upload coverage
-        if: matrix.os == 'ubuntu-latest' && matrix.go-version == '1.22'
-        uses: codecov/codecov-action@v3
-        with:
-          file: coverage.out
+          files: coverage.out
           fail_ci_if_error: false
 
   lint:
     name: Lint
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/checkout@v4
         with:
-          go-version: '1.22'
-
-      - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v4
+          fetch-depth: 0 # needed for new-from-rev
+      - uses: actions/setup-go@v5
         with:
-          version: latest
-          args: --timeout=5m
+          go-version: stable
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.5.0
 
   build:
     name: Build
     runs-on: ubuntu-latest
     needs: [test, lint]
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version: stable
+      - run: make build
+      - run: ./xpm version
 
-      - name: Build
-        run: make build
-
-      - name: Verify binary
-        run: ./upm version
-
+  perf:
+    name: Perf budgets (informational)
+    runs-on: ubuntu-latest
+    needs: [build]
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - run: sudo apt-get update && sudo apt-get install -y hyperfine jq
+      - run: ./scripts/perf.sh

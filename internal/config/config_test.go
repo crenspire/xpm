@@ -111,40 +111,63 @@ func TestConfigPath(t *testing.T) {
 	// It might be empty if HOME is not set
 	if path != "" {
 		// Verify it ends with the expected filename
-		if filepath.Base(path) != "upmrc.json" {
-			t.Errorf("configPath() should end with upmrc.json, got %s", path)
+		if filepath.Base(path) != "xpmrc.json" {
+			t.Errorf("configPath() should end with xpmrc.json, got %s", path)
 		}
 	}
 }
 
-// TestConfigMergeWithDefaults verifies partial configs merge with defaults.
-func TestConfigMergeWithDefaults(t *testing.T) {
-	// Create a partial config
-	partialJSON := `{"prefer": ["npm"], "autoInstallPM": false}`
-
-	var c Config
-	if err := json.Unmarshal([]byte(partialJSON), &c); err != nil {
-		t.Fatalf("Failed to unmarshal partial config: %v", err)
+// writeConfig writes content to a temp xpmrc.json and returns its path.
+func writeConfig(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "xpmrc.json")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
 	}
+	return path
+}
 
-	// Merge with defaults
-	def := defaultConfig()
-	if c.Search == nil {
-		c.Search = def.Search
+func TestLoadFromPartialConfigKeepsDefaults(t *testing.T) {
+	c := loadFrom(writeConfig(t, `{"prefer":["yarn"],"search":{"maven":false}}`))
+
+	if len(c.Prefer) != 1 || c.Prefer[0] != "yarn" {
+		t.Errorf("Prefer = %v, want [yarn]", c.Prefer)
 	}
-
-	// Verify partial values are kept
-	if len(c.Prefer) != 1 || c.Prefer[0] != "npm" {
-		t.Errorf("Prefer should be [npm], got %v", c.Prefer)
+	if c.Search["maven"] {
+		t.Error("Search[maven] should be false (set in file)")
 	}
-
-	if c.AutoInstallPM != false {
-		t.Error("AutoInstallPM should be false after unmarshal")
+	if !c.Search["npm"] || !c.Search["pip"] {
+		t.Errorf("unset search keys must keep default true, got %v", c.Search)
 	}
+	if !c.Interactive || !c.AutoInstallPM || !c.SearchUI.Enabled || !c.Env.Enabled || !c.Cache.Enabled {
+		t.Errorf("unset booleans must keep defaults, got %+v", c)
+	}
+	if c.Graph.Depth != 5 || c.Timeout.Default != 4 {
+		t.Errorf("unset numbers must keep defaults, got depth=%d timeout=%d", c.Graph.Depth, c.Timeout.Default)
+	}
+}
 
-	// Verify defaults are merged for missing Search
-	if c.Search["npm"] != true {
-		t.Error("Search[npm] should default to true")
+func TestLoadFromExplicitFalseOverridesDefault(t *testing.T) {
+	c := loadFrom(writeConfig(t, `{"interactive":false}`))
+	if c.Interactive {
+		t.Error("explicit interactive:false must win over default")
+	}
+	if !c.AutoInstallPM {
+		t.Error("autoInstallPM must keep its default")
+	}
+}
+
+func TestLoadFromInvalidJSONReturnsDefaults(t *testing.T) {
+	c := loadFrom(writeConfig(t, `not valid json{{{`))
+	if !c.Interactive || !c.Search["npm"] {
+		t.Errorf("invalid JSON must yield defaults, got %+v", c)
+	}
+}
+
+func TestLoadFromMissingFileReturnsDefaults(t *testing.T) {
+	c := loadFrom(filepath.Join(t.TempDir(), "does-not-exist.json"))
+	if !c.Interactive {
+		t.Error("missing file must yield defaults")
 	}
 }
 
@@ -215,4 +238,3 @@ func TestEmptyConfig(t *testing.T) {
 		t.Errorf("empty config Search should be nil/empty, got %v", c.Search)
 	}
 }
-

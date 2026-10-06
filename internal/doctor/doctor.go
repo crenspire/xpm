@@ -248,4 +248,3 @@ func QuickCheck() bool {
 	report := Run(cfg)
 	return HasIssues(report)
 }
-

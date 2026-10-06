@@ -52,8 +52,8 @@ func (e *NodeExtractor) extractPackageLock(dir string, graph *DepGraph) error {
 	}
 
 	var lockfile struct {
-		Name         string `json:"name"`
-		Version      string `json:"version"`
+		Name         string                 `json:"name"`
+		Version      string                 `json:"version"`
 		Packages     map[string]interface{} `json:"packages"`
 		Dependencies map[string]interface{} `json:"dependencies"`
 	}
@@ -307,4 +307,3 @@ func (e *NodeExtractor) extractPnpmLock(dir string, graph *DepGraph) error {
 
 	return nil
 }
-

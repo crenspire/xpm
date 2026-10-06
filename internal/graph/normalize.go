@@ -154,4 +154,3 @@ func SortEdges(edges []*DepEdge) {
 		return edges[i].To < edges[j].To
 	})
 }
-

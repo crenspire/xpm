@@ -106,4 +106,3 @@ func cmdGraph(args []string) int {
 
 	return 0
 }
-

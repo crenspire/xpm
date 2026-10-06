@@ -46,4 +46,3 @@ func FormatRemote(runtime string, versions []string) string {
 
 	return output.String()
 }
-

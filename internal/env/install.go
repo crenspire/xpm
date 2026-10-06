@@ -15,6 +15,12 @@ func InstallRuntime(manager *Manager, runtime, version string) error {
 
 // InstallRuntimeWithAlias installs a specific version of a runtime and stores the alias used.
 func InstallRuntimeWithAlias(manager *Manager, runtime, version, alias string) error {
+	if err := ValidateRuntimeName(runtime); err != nil {
+		return err
+	}
+	if err := ValidateVersionSpec(version); err != nil {
+		return err
+	}
 	installer, err := GetInstaller(runtime)
 	if err != nil {
 		return err
@@ -29,14 +35,14 @@ func InstallRuntimeWithAlias(manager *Manager, runtime, version, alias string) e
 	// This ensures we install to the correct version directory
 	resolvedVersion := version
 	detectedAlias := alias
-	
+
 	// If no alias was provided but version is an alias, detect it
 	if alias == "" {
 		if version == "latest" || version == "lts" {
 			detectedAlias = version
 		}
 	}
-	
+
 	// Resolve the version (handles aliases and partial versions)
 	// We need to call a method that resolves without installing
 	// For now, we'll let Install handle resolution, but we need to track the resolved version
@@ -79,7 +85,10 @@ func InstallRuntimeWithAlias(manager *Manager, runtime, version, alias string) e
 	}
 
 	// Use resolved version for destination
-	dest := filepath.Join(manager.GetRuntimesPath(), runtime, resolvedVersion)
+	dest, err := manager.versionDir(runtime, resolvedVersion)
+	if err != nil {
+		return err
+	}
 	if _, err := os.Stat(dest); err == nil {
 		// Verify installation
 		binaryPaths := installer.BinaryPaths(resolvedVersion, dest)
@@ -118,7 +127,7 @@ func InstallRuntimeWithAlias(manager *Manager, runtime, version, alias string) e
 		}
 		return fmt.Errorf("installation failed: %w", err)
 	}
-	
+
 	// Save alias metadata if detected (after successful installation)
 	if detectedAlias != "" {
 		if err := saveVersionAlias(dest, detectedAlias); err != nil {
@@ -173,4 +182,3 @@ func verifyInstallation(dest string, binaryPaths []string) error {
 	}
 	return nil
 }
-

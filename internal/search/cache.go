@@ -169,7 +169,7 @@ func (c *Cache) Size() int {
 func SetCacheConfig(cfg CacheConfig) {
 	cacheMu.Lock()
 	defer cacheMu.Unlock()
-	
+
 	cacheConfig = cfg
 	if cfg.Enabled {
 		globalCache = NewCache(cfg.TTL, cfg.MaxSize)
@@ -189,7 +189,7 @@ func ClearCache() {
 	cacheMu.RLock()
 	cache := globalCache
 	cacheMu.RUnlock()
-	
+
 	if cache != nil {
 		cache.Clear()
 	}
@@ -197,12 +197,12 @@ func ClearCache() {
 
 // CacheStats returns statistics about the cache.
 type CacheStats struct {
-	Size       int
-	MaxSize    int
-	TTL        time.Duration
-	Enabled    bool
-	HitCount   int64
-	MissCount  int64
+	Size      int
+	MaxSize   int
+	TTL       time.Duration
+	Enabled   bool
+	HitCount  int64
+	MissCount int64
 }
 
 // stats tracks cache hits and misses.
@@ -232,15 +232,15 @@ func GetCacheStats() CacheStats {
 	cacheMu.RLock()
 	cache := globalCache
 	cacheMu.RUnlock()
-	
+
 	stats.mu.Lock()
 	defer stats.mu.Unlock()
-	
+
 	size := 0
 	if cache != nil {
 		size = cache.Size()
 	}
-	
+
 	return CacheStats{
 		Size:      size,
 		MaxSize:   cacheConfig.MaxSize,
@@ -257,11 +257,11 @@ func getCached(pkg string, manager pm.ID) *Result {
 	cacheMu.RLock()
 	cache := globalCache
 	cacheMu.RUnlock()
-	
+
 	if cache == nil {
 		return nil
 	}
-	
+
 	result := cache.Get(pkg, manager)
 	if result != nil {
 		recordHit()
@@ -277,11 +277,10 @@ func setCached(pkg string, manager pm.ID, result *Result) {
 	cacheMu.RLock()
 	cache := globalCache
 	cacheMu.RUnlock()
-	
+
 	if cache == nil {
 		return
 	}
-	
+
 	cache.Set(pkg, manager, result)
 }
-

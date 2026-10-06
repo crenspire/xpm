@@ -215,10 +215,10 @@ func detectPnpmWorkspace(root string) *Workspace {
 func detectNodePM(projectPath string) (pm.ID, string) {
 	// Check for lockfiles in order of preference
 	lockfiles := map[string]pm.ID{
-		"pnpm-lock.yaml": pm.Pnpm,
-		"yarn.lock":      pm.Yarn,
+		"pnpm-lock.yaml":    pm.Pnpm,
+		"yarn.lock":         pm.Yarn,
 		"package-lock.json": pm.Npm,
-		"bun.lockb":      pm.Bun,
+		"bun.lockb":         pm.Bun,
 	}
 
 	for lockfile, pmID := range lockfiles {
@@ -240,4 +240,3 @@ func detectNodePM(projectPath string) (pm.ID, string) {
 	// Default to npm if no lockfile found
 	return pm.Npm, ""
 }
-

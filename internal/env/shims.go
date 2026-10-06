@@ -112,13 +112,17 @@ import (
 func main() {
 	runtime := "{{.Runtime}}"
 	binary := "{{.Binary}}"
-	envPath := "{{.EnvPath}}"
+	envPath := {{printf "%q" .EnvPath}}
 
 	// Get active version
 	version := getActiveVersion(runtime, envPath)
 	if version == "" {
 		fmt.Fprintf(os.Stderr, "xpm: no active version found for %s\n", runtime)
 		fmt.Fprintf(os.Stderr, "Run: xpm env use %s@<version>\n", runtime)
+		os.Exit(1)
+	}
+	if !safeVersion(version) {
+		fmt.Fprintf(os.Stderr, "xpm: refusing unsafe version %q for %s (check .xpm-env)\n", version, runtime)
 		os.Exit(1)
 	}
 
@@ -279,6 +283,21 @@ func findLocalVersion(dir, runtime string) string {
 	}
 	return ""
 }
+
+// safeVersion mirrors env.ValidateVersionSpec; shims are standalone binaries.
+func safeVersion(v string) bool {
+	if v == "" || len(v) > 64 || strings.Contains(v, "..") || v[0] == '.' || v[0] == '-' {
+		return false
+	}
+	for _, r := range v {
+		ok := r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' ||
+			r == '.' || r == '_' || r == '+' || r == '-'
+		if !ok {
+			return false
+		}
+	}
+	return true
+}
 `
 
 	t := template.Must(template.New("shim").Parse(tmpl))
@@ -376,4 +395,3 @@ func CheckPATH(manager *Manager) bool {
 	path := os.Getenv("PATH")
 	return strings.Contains(path, shimsPath)
 }
-

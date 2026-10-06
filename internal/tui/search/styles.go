@@ -42,7 +42,7 @@ var (
 
 	// descriptionStyle styles description text.
 	descriptionStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#CCCCCC"))
+				Foreground(lipgloss.Color("#CCCCCC"))
 
 	// footerStyle styles the footer/help text.
 	footerStyle = lipgloss.NewStyle().
@@ -92,4 +92,3 @@ func getEcosystemStyle(ecosystem string) lipgloss.Style {
 		Foreground(ecosystemColor(ecosystem)).
 		Bold(true)
 }
-

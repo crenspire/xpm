@@ -121,4 +121,3 @@ func PrintTreeForPackage(graph *DepGraph, packageName string, w io.Writer, showV
 		}
 	}
 }
-

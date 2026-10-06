@@ -140,4 +140,3 @@ func (s VerificationStatus) String() string {
 		return "unknown"
 	}
 }
-

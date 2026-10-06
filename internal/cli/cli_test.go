@@ -318,4 +318,3 @@ func TestVerboseFlag(t *testing.T) {
 		})
 	}
 }
-

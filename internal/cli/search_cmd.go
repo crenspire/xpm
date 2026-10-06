@@ -155,6 +155,12 @@ func installFromSearchResult(result search.Result, pmID pm.ID) int {
 		}
 	}
 
+	// Names here come from registry responses, not the user: validate them too.
+	if err := pm.ValidatePackageName(result.Name, pmID); err != nil {
+		fmt.Fprintf(os.Stderr, "Refusing to install %q: %v\n", result.Name, err)
+		return 1
+	}
+
 	// Install the package
 	if err := adapter.InstallPackage(result.Name, false, nil, result.Extra); err != nil {
 		fmt.Fprintf(os.Stderr, "Package install failed: %v\n", err)
@@ -164,4 +170,3 @@ func installFromSearchResult(result search.Result, pmID pm.ID) int {
 	fmt.Println("\nDone ✅")
 	return 0
 }
-

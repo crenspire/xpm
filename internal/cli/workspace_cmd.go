@@ -34,6 +34,9 @@ func cmdWorkspaces(args []string) int {
 }
 
 // cmdInstallWorkspace installs dependencies in all workspace projects.
+//
+//nolint:unused // wired in P6 (--workspace)
+//lint:ignore U1000 wired in P6 (--workspace)
 func cmdInstallWorkspace(global bool) int {
 	if global {
 		fmt.Fprintln(os.Stderr, "warning: --global flag is ignored for workspace installs")

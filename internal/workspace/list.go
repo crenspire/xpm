@@ -59,4 +59,3 @@ func GroupByEcosystem(workspaces []Workspace) map[string][]Workspace {
 
 	return grouped
 }
-

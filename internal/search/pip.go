@@ -15,16 +15,16 @@ const PyPIURL = "https://pypi.org/pypi"
 // pypiPackageResponse represents the PyPI API response.
 type pypiPackageResponse struct {
 	Info struct {
-		Name            string `json:"name"`
-		Summary         string `json:"summary"`
-		Version         string `json:"version"`
-		License         string `json:"license"`
-		Author          string `json:"author"`
-		AuthorEmail     string `json:"author_email"`
-		HomePage        string `json:"home_page"`
-		ProjectURL      string `json:"project_url"`
-		RequiresPython  string `json:"requires_python"`
-		PackageURL      string `json:"package_url"`
+		Name           string `json:"name"`
+		Summary        string `json:"summary"`
+		Version        string `json:"version"`
+		License        string `json:"license"`
+		Author         string `json:"author"`
+		AuthorEmail    string `json:"author_email"`
+		HomePage       string `json:"home_page"`
+		ProjectURL     string `json:"project_url"`
+		RequiresPython string `json:"requires_python"`
+		PackageURL     string `json:"package_url"`
 	} `json:"info"`
 }
 
@@ -86,4 +86,3 @@ func searchPip(pkg string) (*Result, error) {
 func SearchPyPIPackages(query string) (*Result, error) {
 	return searchPip(query)
 }
-

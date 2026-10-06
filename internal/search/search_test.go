@@ -3,6 +3,7 @@ package search
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/crenspire/xpm/internal/pm"
@@ -11,10 +12,10 @@ import (
 // TestEnabled verifies the Enabled function correctly checks option flags.
 func TestEnabled(t *testing.T) {
 	tests := []struct {
-		name    string
-		opts    Options
-		id      pm.ID
-		want    bool
+		name string
+		opts Options
+		id   pm.ID
+		want bool
 	}{
 		{
 			name: "nil enable map returns true",
@@ -360,6 +361,22 @@ func TestURLInjectionPrevention(t *testing.T) {
 			pkg:     "lodash",
 			wantErr: false,
 		},
+		{
+			name:    "npm scoped name",
+			pkg:     "@types/node",
+			wantErr: false,
+		},
+		{
+			name:    "composer vendor/name",
+			pkg:     "monolog/monolog",
+			wantErr: false,
+		},
+		{
+			name:     "embedded whitespace",
+			pkg:      "foo bar",
+			wantErr:  true,
+			contains: "invalid package name",
+		},
 	}
 
 	for _, tc := range tests {
@@ -368,7 +385,7 @@ func TestURLInjectionPrevention(t *testing.T) {
 			if tc.wantErr {
 				if err == nil {
 					t.Errorf("validatePackageNameForURL() expected error for %q, got nil", tc.pkg)
-				} else if tc.contains != "" && !contains(err.Error(), tc.contains) {
+				} else if tc.contains != "" && !strings.Contains(err.Error(), tc.contains) {
 					t.Errorf("validatePackageNameForURL() error = %v, want error containing %q", err, tc.contains)
 				}
 			} else {
@@ -379,5 +396,3 @@ func TestURLInjectionPrevention(t *testing.T) {
 		})
 	}
 }
-
-

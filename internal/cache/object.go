@@ -266,4 +266,3 @@ func GetExtension(ecosystem Ecosystem) string {
 		return ""
 	}
 }
-

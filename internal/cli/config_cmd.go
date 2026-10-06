@@ -343,4 +343,3 @@ func saveConfig(c config.Config) error {
 
 	return nil
 }
-

@@ -9,10 +9,10 @@ import (
 // TestParsePackageVersionEdgeCases tests edge cases in parsePackageVersion.
 func TestParsePackageVersionEdgeCases(t *testing.T) {
 	tests := []struct {
-		name         string
-		input        string
-		wantName     string
-		wantVersion  string
+		name        string
+		input       string
+		wantName    string
+		wantVersion string
 	}{
 		{
 			name:        "empty string",
@@ -120,4 +120,3 @@ func TestCommandInjectionPrevention(t *testing.T) {
 		})
 	}
 }
-

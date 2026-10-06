@@ -8,12 +8,12 @@ import (
 
 // DriftInfo represents dependency drift between a dependency file and its lockfile.
 type DriftInfo struct {
-	DepFile       string
-	LockFile      string
-	DepModTime    time.Time
-	LockModTime   time.Time
-	Status        DriftStatus
-	Ecosystem     string
+	DepFile     string
+	LockFile    string
+	DepModTime  time.Time
+	LockModTime time.Time
+	Status      DriftStatus
+	Ecosystem   string
 }
 
 // DriftStatus categorizes drift status.
@@ -270,4 +270,3 @@ func HasDriftIssues(results []DriftInfo) bool {
 	}
 	return false
 }
-

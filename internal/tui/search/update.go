@@ -386,4 +386,3 @@ func handleRegistryKeyMsg(m model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 }
-

@@ -3,12 +3,14 @@ package env
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 )
 
 // RemoveVersion removes an installed version.
 func RemoveVersion(manager *Manager, runtime, version string) error {
-	versionPath := filepath.Join(manager.GetRuntimesPath(), runtime, version)
+	versionPath, err := manager.versionDir(runtime, version)
+	if err != nil {
+		return err
+	}
 
 	// Check if version exists
 	if _, err := os.Stat(versionPath); err != nil {
@@ -30,4 +32,3 @@ func RemoveVersion(manager *Manager, runtime, version string) error {
 
 	return nil
 }
-
