@@ -4,13 +4,99 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"compress/gzip"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
-// extractTarGz extracts a .tar.gz file.
+// safeJoin joins an archive entry name onto root, rejecting names that would
+// land outside root: absolute paths, volume names, or ".." escapes.
+func safeJoin(root, name string) (string, error) {
+	if name == "" {
+		return "", fmt.Errorf("archive entry has an empty name")
+	}
+	clean := filepath.Clean(filepath.FromSlash(name))
+	sep := string(filepath.Separator)
+	if filepath.IsAbs(clean) || filepath.VolumeName(clean) != "" || strings.HasPrefix(clean, sep) ||
+		clean == ".." || strings.HasPrefix(clean, ".."+sep) {
+		return "", fmt.Errorf("archive entry %q escapes the destination", name)
+	}
+	rootClean := filepath.Clean(root)
+	target := filepath.Join(rootClean, clean)
+	if target != rootClean && !strings.HasPrefix(target, rootClean+sep) {
+		return "", fmt.Errorf("archive entry %q escapes the destination", name)
+	}
+	return target, nil
+}
+
+// ensureRealParentWithin resolves symlinks in target's parent directory and
+// fails if the real location is outside root. It stops archives from writing
+// through a symlink (planted earlier or pre-existing) that points elsewhere.
+func ensureRealParentWithin(root, target string) error {
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return err
+	}
+	realParent, err := filepath.EvalSymlinks(filepath.Dir(target))
+	if err != nil {
+		return err
+	}
+	sep := string(filepath.Separator)
+	if realParent != realRoot && !strings.HasPrefix(realParent, realRoot+sep) {
+		return fmt.Errorf("refusing to write %s: its directory resolves outside the destination", target)
+	}
+	return nil
+}
+
+// writeEntry creates target (inside root) with r's contents. Permissions are
+// limited to 0755 and the owner always gets rw.
+func writeEntry(root, target string, mode os.FileMode, r io.Reader) error {
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return err
+	}
+	if err := ensureRealParentWithin(root, target); err != nil {
+		return err
+	}
+	_ = os.Remove(target) // never write through a pre-existing symlink at target
+	f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_EXCL, (mode.Perm()&0o755)|0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(f, r); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// makeSymlink creates target -> linkname only if linkname is relative and
+// resolves (lexically) inside root.
+func makeSymlink(root, target, linkname string) error {
+	if linkname == "" || filepath.IsAbs(linkname) || filepath.VolumeName(linkname) != "" {
+		return fmt.Errorf("symlink %s -> %q: only relative targets are allowed", target, linkname)
+	}
+	rootClean := filepath.Clean(root)
+	resolved := filepath.Join(filepath.Dir(target), filepath.FromSlash(linkname))
+	sep := string(filepath.Separator)
+	if resolved != rootClean && !strings.HasPrefix(resolved, rootClean+sep) {
+		return fmt.Errorf("symlink %s -> %q escapes the destination", target, linkname)
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return err
+	}
+	if err := ensureRealParentWithin(root, target); err != nil {
+		return err
+	}
+	_ = os.Remove(target)
+	return os.Symlink(linkname, target)
+}
+
+// extractTarGz extracts a .tar.gz into dest. Every entry is confined to dest;
+// relative symlinks and hardlinks inside dest are preserved (Node's bin/npm,
+// bin/npx and bin/corepack are symlinks).
 func extractTarGz(src, dest string) error {
 	file, err := os.Open(src)
 	if err != nil {
@@ -27,35 +113,50 @@ func extractTarGz(src, dest string) error {
 	tr := tar.NewReader(gzr)
 	for {
 		header, err := tr.Next()
-		if err == io.EOF {
-			break
+		if errors.Is(err, io.EOF) {
+			return nil
 		}
 		if err != nil {
 			return err
 		}
-
-		target := filepath.Join(dest, header.Name)
+		target, err := safeJoin(dest, header.Name)
+		if err != nil {
+			return err
+		}
 		switch header.Typeflag {
 		case tar.TypeDir:
-			os.MkdirAll(target, os.FileMode(header.Mode))
+			if err := os.MkdirAll(target, 0o755); err != nil {
+				return err
+			}
 		case tar.TypeReg:
-			os.MkdirAll(filepath.Dir(target), 0755)
-			outFile, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(header.Mode))
+			if err := writeEntry(dest, target, os.FileMode(header.Mode), tr); err != nil {
+				return err
+			}
+		case tar.TypeSymlink:
+			if err := makeSymlink(dest, target, header.Linkname); err != nil {
+				return err
+			}
+		case tar.TypeLink:
+			linkSrc, err := safeJoin(dest, header.Linkname)
 			if err != nil {
 				return err
 			}
-			if _, err := io.Copy(outFile, tr); err != nil {
-				outFile.Close()
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return err
 			}
-			outFile.Close()
+			if err := ensureRealParentWithin(dest, target); err != nil {
+				return err
+			}
+			_ = os.Remove(target)
+			if err := os.Link(linkSrc, target); err != nil {
+				return err
+			}
 		}
+		// Other types (devices, FIFOs, PAX metadata) are intentionally skipped.
 	}
-
-	return nil
 }
 
-// extractZip extracts a .zip file.
+// extractZip extracts a .zip into dest with the same confinement rules.
 func extractZip(src, dest string) error {
 	r, err := zip.OpenReader(src)
 	if err != nil {
@@ -64,34 +165,41 @@ func extractZip(src, dest string) error {
 	defer r.Close()
 
 	for _, f := range r.File {
-		path := filepath.Join(dest, f.Name)
-
-		if f.FileInfo().IsDir() {
-			os.MkdirAll(path, f.Mode())
-			continue
-		}
-
-		os.MkdirAll(filepath.Dir(path), 0755)
-		outFile, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
+		target, err := safeJoin(dest, f.Name)
 		if err != nil {
 			return err
 		}
-
-		rc, err := f.Open()
-		if err != nil {
-			outFile.Close()
-			return err
-		}
-
-		_, err = io.Copy(outFile, rc)
-		outFile.Close()
-		rc.Close()
-
-		if err != nil {
-			return err
+		mode := f.Mode()
+		switch {
+		case mode.IsDir():
+			if err := os.MkdirAll(target, 0o755); err != nil {
+				return err
+			}
+		case mode&os.ModeSymlink != 0:
+			rc, err := f.Open()
+			if err != nil {
+				return err
+			}
+			link, err := io.ReadAll(io.LimitReader(rc, 4096))
+			rc.Close()
+			if err != nil {
+				return err
+			}
+			if err := makeSymlink(dest, target, string(link)); err != nil {
+				return err
+			}
+		default:
+			rc, err := f.Open()
+			if err != nil {
+				return err
+			}
+			err = writeEntry(dest, target, mode, rc)
+			rc.Close()
+			if err != nil {
+				return err
+			}
 		}
 	}
-
 	return nil
 }
 
