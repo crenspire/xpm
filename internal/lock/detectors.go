@@ -1,9 +1,5 @@
 package lock
 
-import (
-	"path/filepath"
-)
-
 // LockfileSpec defines a lockfile to detect.
 type LockfileSpec struct {
 	// File is the lockfile name.
@@ -50,7 +46,7 @@ type DetectedLockfile struct {
 	// Spec is the lockfile specification.
 	Spec LockfileSpec
 
-	// Path is the full path to the lockfile.
+	// Path is the full path to the lockfile, symlinks resolved.
 	Path string
 
 	// RelPath is the slash-separated path relative to the scanned root; it is
@@ -70,7 +66,7 @@ func DetectAll(dir string) []DetectedLockfile {
 		}
 		detected = append(detected, DetectedLockfile{
 			Spec:    spec,
-			Path:    filepath.Join(dir, spec.File),
+			Path:    full,
 			RelPath: spec.File,
 		})
 	}

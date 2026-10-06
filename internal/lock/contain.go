@@ -3,6 +3,7 @@ package lock
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -45,17 +46,23 @@ func checkLocal(rel string) error {
 	return nil
 }
 
-// containedPath joins root and the slash-separated rel after checkLocal, and,
-// when the target exists, verifies that resolving symlinks keeps it inside
-// root. A target that does not exist is returned without error (callers
-// report it as missing); nothing outside root is ever returned.
+// containedPath joins root and the slash-separated rel after checkLocal and,
+// when the target exists, resolves symlinks and verifies that the result is
+// inside root. It returns the resolved path, so the file checked is the file
+// later opened. A target that does not exist (or a dangling symlink) is
+// returned unresolved and without error (callers report it as missing); any
+// other failure to inspect or resolve it is an error. Nothing outside root
+// is ever returned.
 func containedPath(root, rel string) (string, error) {
 	if err := checkLocal(rel); err != nil {
 		return "", err
 	}
 	full := filepath.Join(root, filepath.FromSlash(path.Clean(rel)))
 	if _, err := os.Lstat(full); err != nil {
-		return full, nil // missing: the caller reports it
+		if errors.Is(err, fs.ErrNotExist) {
+			return full, nil // missing: the caller reports it
+		}
+		return "", fmt.Errorf("inspect %q: %w", rel, err)
 	}
 	realRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
@@ -63,14 +70,17 @@ func containedPath(root, rel string) (string, error) {
 	}
 	realFull, err := filepath.EvalSymlinks(full)
 	if err != nil {
-		// Dangling symlink: treat it as missing; it is never opened.
-		return full, nil
+		if errors.Is(err, fs.ErrNotExist) {
+			// Dangling symlink: treat it as missing; it is never opened.
+			return full, nil
+		}
+		return "", fmt.Errorf("resolve %q: %w", rel, err)
 	}
 	inside, err := filepath.Rel(realRoot, realFull)
 	if err != nil || !filepath.IsLocal(inside) {
 		return "", fmt.Errorf("%q resolves to %s: %w", rel, realFull, errOutsideRoot)
 	}
-	return full, nil
+	return realFull, nil
 }
 
 // fileExists reports whether path exists and is not a directory.
