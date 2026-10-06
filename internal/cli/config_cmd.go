@@ -354,6 +354,17 @@ func saveConfig(c config.Config) error {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
 
+	// Write through a symlinked config (dotfile managers) and keep the
+	// existing file's mode; 0644 only applies to a new file.
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		path = real
+		dir = filepath.Dir(path)
+	}
+	mode := os.FileMode(0o644)
+	if fi, err := os.Stat(path); err == nil {
+		mode = fi.Mode().Perm()
+	}
+
 	// Write to a temp file in the same directory, then rename, so a crash
 	// never leaves a truncated config behind.
 	tmp, err := os.CreateTemp(dir, ".xpmrc-*.json")
@@ -367,7 +378,7 @@ func saveConfig(c config.Config) error {
 		_ = os.Remove(tmpName)
 		return fmt.Errorf("failed to write config: %w", err)
 	}
-	if err := os.Chmod(tmpName, 0o644); err != nil {
+	if err := os.Chmod(tmpName, mode); err != nil {
 		_ = os.Remove(tmpName)
 		return fmt.Errorf("failed to write config: %w", err)
 	}

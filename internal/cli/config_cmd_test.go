@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -120,5 +121,61 @@ func TestSaveConfigLeavesNoTempFiles(t *testing.T) {
 	}
 	if got := config.Load().Prefer; !reflect.DeepEqual(got, []string{"pnpm"}) {
 		t.Fatalf("Prefer = %v, want [pnpm]", got)
+	}
+}
+
+func TestSaveConfigWritesThroughSymlink(t *testing.T) {
+	isolatedHome(t)
+	path := config.Path()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "dotfiles-xpmrc.json")
+	if err := os.WriteFile(target, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, path); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	cfg := config.Load()
+	cfg.Prefer = []string{"cargo"}
+	if err := saveConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("config symlink was replaced by a regular file")
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "cargo") {
+		t.Fatalf("target not updated: %s", data)
+	}
+}
+
+func TestSaveConfigKeepsFileMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix file modes do not apply on Windows")
+	}
+	isolatedHome(t)
+	writeConfig(t, "{}")
+	path := config.Path()
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveConfig(config.Load()); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fi.Mode().Perm(); got != 0o600 {
+		t.Fatalf("mode = %o, want 600", got)
 	}
 }
