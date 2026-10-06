@@ -12,10 +12,15 @@ import (
 	"github.com/crenspire/xpm/internal/search"
 )
 
-// Seams for tests: ensurePM is ensureManager, installPkg is installOne.
+// Seams for tests: ensurePM is ensureManager, installPkg is installOne,
+// selectCandidate shows the install menu and returns the chosen index.
 var (
-	ensurePM   = ensureManager
-	installPkg = installOne
+	ensurePM        = ensureManager
+	installPkg      = installOne
+	selectCandidate = func(label string, items []string) (int, error) {
+		idx, _, err := (&promptui.Select{Label: label, Items: items}).Run()
+		return idx, err
+	}
 )
 
 func cmdInstall(args []string) int {
@@ -93,49 +98,38 @@ func installOne(spec string, global bool) int {
 	cwd, _ := os.Getwd()
 	cands := buildCandidates(rep.Results, pm.ProjectManagers(cwd))
 	sortCandidates(cands, cfg.Prefer)
-	chosen, ok := chooseCandidate(cands, pkg, rep.UnavailableIDs())
+	chosen, ok := chooseCandidate(cands, pkg, projectEcosystems(cwd), rep.UnavailableIDs())
 	if !ok {
 		return 1
 	}
 	return installCandidate(chosen, pkg, requestedVersion, global)
 }
 
-// chooseCandidate picks the candidate for query. When some candidates are
-// exact, closest matches (a registry's unrelated first hit) do not count:
-// a single exact candidate is picked automatically if every registry
-// answered, and the menu lists exact candidates first. Without a terminal
-// decideNonInteractive decides or refuses.
-func chooseCandidate(cands []candidate, query string, unavailable []pm.ID) (candidate, bool) {
-	exact, _ := splitExact(query, cands)
-	primary := cands
-	if len(exact) > 0 {
-		primary = exact
-	}
-	if len(primary) == 1 && len(unavailable) == 0 {
-		if c := primary[0]; c.Via != "" {
-			fmt.Printf("Detected %s - using %s\n\n", c.Via, c.Result.Manager)
-		}
-		return primary[0], true
-	}
-	if !cfg.Interactive {
-		c, err := decideNonInteractive(query, cands, cfg.Prefer, unavailable)
+// chooseCandidate picks the candidate for query with decideInstall: it
+// installs, shows the menu, or prints why it will not choose.
+func chooseCandidate(cands []candidate, query string, projectEcos []string, unavailable []pm.ID) (candidate, bool) {
+	d := decideInstall(installInputs{
+		Query: query, Cands: cands, ProjectEcos: projectEcos, Prefer: cfg.Prefer,
+		Unavailable: unavailable, Interactive: cfg.Interactive,
+	})
+	switch d.Action {
+	case actionRefuse:
+		fmt.Fprintln(os.Stderr, "error:", d.Err)
+		return candidate{}, false
+	case actionMenu:
+		idx, err := selectCandidate("Select package manager to install from", d.Labels)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
+			fmt.Println("Cancelled.")
 			return candidate{}, false
 		}
-		fmt.Println("Non-interactive mode: picking", candidateLabel(c))
-		return c, true
+		chosen := d.Menu[idx]
+		chosen.Picked = true
+		return chosen, true
 	}
-	items, labels := menuCandidates(query, cands)
-	prompt := promptui.Select{Label: "Select package manager to install from", Items: labels}
-	idx, _, err := prompt.Run()
-	if err != nil {
-		fmt.Println("Cancelled.")
-		return candidate{}, false
+	if d.Note != "" {
+		fmt.Printf("%s\n\n", d.Note)
 	}
-	chosen := items[idx]
-	chosen.Picked = true
-	return chosen, true
+	return d.Pick, true
 }
 
 // installCandidate installs (or prints the snippet for) one candidate.

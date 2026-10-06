@@ -48,10 +48,10 @@ func TestChooseCandidateNonInteractiveWithUnavailableRegistry(t *testing.T) {
 	withConfig(t, config.Config{Interactive: false})
 	// Same-ecosystem candidates would normally be auto-picked.
 	cands := []candidate{{Result: npmAxios}}
-	if _, ok := chooseCandidate(cands, "axios", []pm.ID{pm.Maven}); ok {
+	if _, ok := chooseCandidate(cands, "axios", nil, []pm.ID{pm.Maven}); ok {
 		t.Fatal("must refuse to pick while maven was down")
 	}
-	if c, ok := chooseCandidate(cands, "axios", nil); !ok || c.Result.Manager != pm.Npm {
+	if c, ok := chooseCandidate(cands, "axios", nil, nil); !ok || c.Result.Manager != pm.Npm {
 		t.Fatalf("all answered: got (%+v, %v)", c, ok)
 	}
 }

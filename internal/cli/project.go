@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -27,29 +28,33 @@ type projectTarget struct {
 }
 
 // detectProjectTargets lists the project types in the current directory.
-// Python projects resolve to one tool: Pipfile -> pipenv, poetry.lock ->
-// poetry, otherwise pip (requirements.txt and/or pyproject.toml).
-func detectProjectTargets() []projectTarget {
+func detectProjectTargets() []projectTarget { return detectProjectTargetsIn(".") }
+
+// detectProjectTargetsIn lists the project types in dir. Python projects
+// resolve to one tool: Pipfile -> pipenv, poetry.lock -> poetry, otherwise
+// pip (requirements.txt and/or pyproject.toml).
+func detectProjectTargetsIn(dir string) []projectTarget {
 	var targets []projectTarget
+	has := func(name string) bool { return fileExists(filepath.Join(dir, name)) }
 	add := func(file bool, label, kind string, pms ...pm.ID) {
 		if file {
 			targets = append(targets, projectTarget{Label: label, Kind: kind, PMs: pms})
 		}
 	}
-	add(fileExists("package.json"), "Node (package.json)", "node", pm.Npm, pm.Yarn, pm.Pnpm, pm.Bun)
-	add(fileExists("composer.json"), "PHP (composer.json)", "composer", pm.Composer)
-	add(fileExists("Cargo.toml"), "Rust (Cargo.toml)", "cargo", pm.Cargo)
-	add(fileExists("go.mod"), "Go (go.mod)", "gomod", pm.GoMod)
-	add(fileExists("pom.xml"), "Java (pom.xml)", "maven", pm.Maven)
-	add(fileExists("build.gradle") || fileExists("build.gradle.kts"), "Java (Gradle build.gradle)", "gradle", pm.Gradle)
+	add(has("package.json"), "Node (package.json)", "node", pm.Npm, pm.Yarn, pm.Pnpm, pm.Bun)
+	add(has("composer.json"), "PHP (composer.json)", "composer", pm.Composer)
+	add(has("Cargo.toml"), "Rust (Cargo.toml)", "cargo", pm.Cargo)
+	add(has("go.mod"), "Go (go.mod)", "gomod", pm.GoMod)
+	add(has("pom.xml"), "Java (pom.xml)", "maven", pm.Maven)
+	add(has("build.gradle") || has("build.gradle.kts"), "Java (Gradle build.gradle)", "gradle", pm.Gradle)
 	switch {
-	case fileExists("Pipfile") || fileExists("Pipfile.lock"):
+	case has("Pipfile") || has("Pipfile.lock"):
 		add(true, "Python (Pipfile)", "pipenv", pm.Pipenv)
-	case fileExists("poetry.lock"):
+	case has("poetry.lock"):
 		add(true, "Python (poetry.lock)", "poetry", pm.Poetry)
 	default:
-		add(fileExists("requirements.txt"), "Python (requirements.txt)", "pip-req", pm.Pip)
-		add(fileExists("pyproject.toml"), "Python (pyproject.toml)", "pip-pyproject", pm.Pip)
+		add(has("requirements.txt"), "Python (requirements.txt)", "pip-req", pm.Pip)
+		add(has("pyproject.toml"), "Python (pyproject.toml)", "pip-pyproject", pm.Pip)
 	}
 	return targets
 }

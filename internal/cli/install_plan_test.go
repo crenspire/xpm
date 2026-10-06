@@ -185,7 +185,9 @@ func TestNeedsRenameConfirmation(t *testing.T) {
 		{"exact", "axios", candidate{Result: npmAxios}, false},
 		{"case-insensitive", "Axios", candidate{Result: npmAxios}, false},
 		{"fuzzy npm", "axioss", candidate{Result: npmAxios}, true},
-		{"composer short name", "monolog", candidate{Result: search.Result{Manager: pm.Composer, Name: "monolog/monolog"}}, true},
+		{"composer <q>/<q> is the package itself", "monolog", candidate{Result: search.Result{Manager: pm.Composer, Name: "monolog/monolog"}}, false},
+		{"composer <q>/<q> other case", "PHPUnit", candidate{Result: search.Result{Manager: pm.Composer, Name: "phpunit/phpunit"}}, false},
+		{"composer other vendor", "monolog", candidate{Result: search.Result{Manager: pm.Composer, Name: "acme/monolog"}}, true},
 		{"composer full name", "monolog/monolog", candidate{Result: search.Result{Manager: pm.Composer, Name: "monolog/monolog"}}, false},
 		{"pypi underscore vs dash", "flask_sqlalchemy", candidate{Result: search.Result{Manager: pm.Pip, Name: "Flask-SQLAlchemy"}}, false},
 		{"pypi dot vs dash", "zope.interface", candidate{Result: search.Result{Manager: pm.Pip, Name: "zope-interface"}}, false},
@@ -195,37 +197,6 @@ func TestNeedsRenameConfirmation(t *testing.T) {
 	for _, tc := range cases {
 		if got := needsRenameConfirmation(tc.query, tc.c); got != tc.want {
 			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
-		}
-	}
-}
-
-func TestNonInteractivePick(t *testing.T) {
-	yarnProject := map[pm.Ecosystem][]pm.ProjectFile{pm.EcosystemNode: {{Name: "yarn.lock", Ecosystem: pm.EcosystemNode, Manager: pm.Yarn}}}
-	composer := search.Result{Manager: pm.Composer, Name: "requests/requests"}
-	cases := []struct {
-		name   string
-		cands  []candidate
-		prefer []string
-		want   string
-	}{
-		{"several ecosystems, no prefer", buildCandidates([]search.Result{npmAxios, pipAxios, composer}, yarnProject), nil, ""},
-		{"one ecosystem", buildCandidates([]search.Result{npmAxios}, map[pm.Ecosystem][]pm.ProjectFile{pm.EcosystemNode: {
-			{Name: "package-lock.json", Ecosystem: pm.EcosystemNode, Manager: pm.Npm},
-			{Name: "yarn.lock", Ecosystem: pm.EcosystemNode, Manager: pm.Yarn}}}), nil, "npm"},
-		{"prefer pip", buildCandidates([]search.Result{npmAxios, pipAxios}, nil), []string{"pip"}, "pip"},
-		{"prefer names neither", buildCandidates([]search.Result{npmAxios, pipAxios}, nil), []string{"cargo"}, ""},
-	}
-	for _, tc := range cases {
-		sortCandidates(tc.cands, tc.prefer)
-		got, ok := nonInteractivePick(tc.cands, tc.prefer)
-		if tc.want == "" {
-			if ok {
-				t.Errorf("%s: picked %s, want no pick", tc.name, got.Result.Manager)
-			}
-			continue
-		}
-		if !ok || string(got.Result.Manager) != tc.want {
-			t.Errorf("%s: got %v %v, want %s", tc.name, got.Result.Manager, ok, tc.want)
 		}
 	}
 }
@@ -301,6 +272,26 @@ var (
 	pyReqs     = map[pm.Ecosystem][]pm.ProjectFile{pm.EcosystemPython: {{Name: "requirements.txt", Ecosystem: pm.EcosystemPython, Manager: pm.Pip}}}
 )
 
+var (
+	npmKeyring      = search.Result{Manager: pm.Npm, Name: "keyring"}
+	pipKeyring      = search.Result{Manager: pm.Pip, Name: "keyring"}
+	npmPhpunit      = search.Result{Manager: pm.Npm, Name: "phpunit", Extra: map[string]string{"version": "0.0.1-security"}}
+	composerPhpunit = search.Result{Manager: pm.Composer, Name: "phpunit/phpunit"}
+	npmExpress      = search.Result{Manager: pm.Npm, Name: "express"}
+	cargoExpress    = search.Result{Manager: pm.Cargo, Name: "express"}
+	royaleExpress   = search.Result{Manager: pm.Maven, Name: "org.apache.royale.framework:Express",
+		Extra: map[string]string{"group": "org.apache.royale.framework", "artifact": "Express"}}
+	gradleBuild = map[pm.Ecosystem][]pm.ProjectFile{pm.EcosystemJava: {{Name: "build.gradle", Ecosystem: pm.EcosystemJava, Manager: pm.Gradle}}}
+	nodeTwoLock = map[pm.Ecosystem][]pm.ProjectFile{pm.EcosystemNode: {
+		{Name: "package-lock.json", Ecosystem: pm.EcosystemNode, Manager: pm.Npm},
+		{Name: "yarn.lock", Ecosystem: pm.EcosystemNode, Manager: pm.Yarn},
+	}}
+	nodeAndPython = map[pm.Ecosystem][]pm.ProjectFile{
+		pm.EcosystemNode:   nodeLock[pm.EcosystemNode],
+		pm.EcosystemPython: pyReqs[pm.EcosystemPython],
+	}
+)
+
 func TestIsExact(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -315,7 +306,12 @@ func TestIsExact(t *testing.T) {
 		{"composer unrelated", "axios", candidate{Result: saber}, false},
 		{"composer full name", "swlib/saber", candidate{Result: saber}, true},
 		{"maven artifactId equals query", "guava", candidate{Result: guava}, true},
-		{"maven artifactId other case", "Guava", candidate{Result: guava}, true},
+		{"maven artifactId other case", "Guava", candidate{Result: guava}, false},
+		{"maven artifactId case differs the other way", "express", candidate{Result: royaleExpress}, false},
+		{"maven artifactId same case", "Express", candidate{Result: royaleExpress}, true},
+		{"composer <q>/<q>", "phpunit", candidate{Result: composerPhpunit}, true},
+		{"composer <q>/<q> other case", "PHPUnit", candidate{Result: composerPhpunit}, true},
+		{"composer other vendor", "phpunit", candidate{Result: search.Result{Manager: pm.Composer, Name: "acme/phpunit"}}, false},
 		{"maven artifactId differs", "axios", candidate{Result: axiosRetry}, false},
 		{"maven full coordinate", "com.google.guava:guava", candidate{Result: guava}, true},
 		{"gradle uses the artifactId too", "guava", candidate{Result: search.Result{Manager: pm.Gradle, Name: "com.google.guava:guava"}}, true},
@@ -332,61 +328,17 @@ func TestIsExact(t *testing.T) {
 	}
 }
 
-func TestDecideNonInteractive(t *testing.T) {
-	pipKeyring := search.Result{Manager: pm.Pip, Name: "keyring"}
-	npmKeyring := search.Result{Manager: pm.Npm, Name: "keyring"}
-	cases := []struct {
-		name        string
-		query       string
-		results     []search.Result
-		project     map[pm.Ecosystem][]pm.ProjectFile
-		prefer      []string
-		unavailable []pm.ID
-		want        string // manager:via, or "" for a refusal
-		errHas      string
+func TestCandidateChoiceNamesTheEcosystem(t *testing.T) {
+	for _, tc := range []struct {
+		c    candidate
+		want string
 	}{
-		{"node project, fuzzy composer and maven dropped", "axios", []search.Result{npmAxios, saber, axiosRetry}, nodeLock, nil, nil, "npm:package-lock.json", ""},
-		{"node project beats an artifactId-equal maven hit", "axios", []search.Result{npmAxios, saber, nestAxios}, nodeLock, nil, nil, "npm:package-lock.json", ""},
-		{"empty dir, mvnpm repackage is not exact", "axios", []search.Result{npmAxios, saber, nestAxios}, nil, nil, nil, "npm:", ""},
-		{"node project, maven down outside the ecosystem", "axios", []search.Result{npmAxios, saber}, nodeLock, nil, []pm.ID{pm.Maven}, "npm:package-lock.json", ""},
-		{"empty dir, one exact among fuzzy", "axios", []search.Result{npmAxios, saber, axiosRetry}, nil, nil, nil, "npm:", ""},
-		{"empty dir, one exact but a registry was down", "axios", []search.Result{npmAxios, saber}, nil, nil, []pm.ID{pm.Maven}, "", "did not answer"},
-		{"python project, exact on pip and npm", "keyring", []search.Result{npmKeyring, pipKeyring, saber}, pyReqs, nil, nil, "pip:requirements.txt", ""},
-		{"empty dir, exact on npm and pip", "keyring", []search.Result{npmKeyring, pipKeyring, saber}, nil, nil, nil, "", "npm (Node), pip (Python)"},
-		{"empty dir, exact on npm and pip, prefer pip", "keyring", []search.Result{npmKeyring, pipKeyring, saber}, nil, []string{"pip"}, nil, "pip:", ""},
-		{"refusal lists only exact candidates", "keyring", []search.Result{npmKeyring, pipKeyring, saber}, nil, nil, nil, "", "keyring exists in several ecosystems: npm (Node), pip (Python)."},
-		{"only fuzzy hits: unchanged, several ecosystems refuse", "axioss", []search.Result{saber, axiosRetry}, nil, nil, nil, "", "composer, maven (Java)"},
-		{"only fuzzy hits: a registry down refuses", "axioss", []search.Result{saber}, nil, nil, []pm.ID{pm.Pip}, "", "did not answer"},
-	}
-	for _, tc := range cases {
-		cands := buildCandidates(tc.results, tc.project)
-		sortCandidates(cands, tc.prefer)
-		got, err := decideNonInteractive(tc.query, cands, tc.prefer, tc.unavailable)
-		if tc.want == "" {
-			if err == nil {
-				t.Errorf("%s: picked %s, want a refusal", tc.name, got.Result.Manager)
-			} else if !strings.Contains(err.Error(), tc.errHas) {
-				t.Errorf("%s: error %q lacks %q", tc.name, err, tc.errHas)
-			}
-			continue
-		}
-		if err != nil || string(got.Result.Manager)+":"+got.Via != tc.want {
-			t.Errorf("%s: got %s:%s, %v; want %s", tc.name, got.Result.Manager, got.Via, err, tc.want)
-		}
-	}
-}
-
-func TestNonInteractivePickKeepsSingleToolEcosystemsApart(t *testing.T) {
-	cands := []candidate{
-		{Result: search.Result{Manager: pm.Composer, Name: "a/b"}},
-		{Result: search.Result{Manager: pm.Cargo, Name: "b"}},
-	}
-	if c, ok := nonInteractivePick(cands, nil); ok {
-		t.Fatalf("composer and cargo are different ecosystems; picked %s", c.Result.Manager)
-	}
-	for _, c := range cands {
-		if got := candidateChoice(c); strings.Contains(got, "()") {
-			t.Errorf("candidateChoice = %q, want no empty parentheses", got)
+		{candidate{Result: search.Result{Manager: pm.Composer, Name: "a/b"}}, "composer (PHP)"},
+		{candidate{Result: search.Result{Manager: pm.Cargo, Name: "b"}}, "cargo (Rust)"},
+		{candidate{Result: search.Result{Manager: pm.Yarn, Name: "b"}, Via: "yarn.lock"}, "yarn (Node, via yarn.lock)"},
+	} {
+		if got := candidateChoice(tc.c); got != tc.want {
+			t.Errorf("candidateChoice = %q, want %q", got, tc.want)
 		}
 	}
 }
@@ -403,17 +355,6 @@ func TestMenuChoiceOfAClosestMatchIsNotConfirmedTwice(t *testing.T) {
 	captureStdout(t, func() { code = installCandidate(c, "axios", "", false) })
 	if code != 0 || asked != 0 || len(*ran) != 1 || (*ran)[0] != "composer require swlib/saber" {
 		t.Fatalf("code=%d asked=%d ran=%q; a menu pick that showed the full name must not be confirmed again", code, asked, *ran)
-	}
-}
-
-func TestMenuListsExactCandidatesFirst(t *testing.T) {
-	cands := buildCandidates([]search.Result{saber, npmAxios, axiosRetry}, nil)
-	items, labels := menuCandidates("axios", cands)
-	if managers(items) != "npm:,composer:,maven:" {
-		t.Fatalf("menu order = %s, want the exact npm hit first", managers(items))
-	}
-	if strings.Contains(labels[0], "closest match") || !strings.Contains(labels[1], "(closest match)") || !strings.Contains(labels[2], "(closest match)") {
-		t.Fatalf("labels = %q", labels)
 	}
 }
 

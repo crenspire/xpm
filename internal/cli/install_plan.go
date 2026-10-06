@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -106,11 +107,15 @@ func goModuleCandidate(path string) candidate {
 // needsRenameConfirmation reports whether installing c would run a tool on a
 // name the user did not type (a fuzzy registry hit such as `axioss` ->
 // `axios`). Maven and Gradle only print a snippet, so they never need it.
+// A Packagist package named <q>/<q> (monolog -> monolog/monolog) is the
+// package the user typed.
 func needsRenameConfirmation(query string, c candidate) bool {
-	if c.Result.Manager == pm.Maven || c.Result.Manager == pm.Gradle {
+	switch {
+	case c.Result.Manager == pm.Maven || c.Result.Manager == pm.Gradle:
 		return false
-	}
-	if pm.EcosystemForManager(c.Result.Manager) == pm.EcosystemPython {
+	case c.Result.Manager == pm.Composer:
+		return !strings.EqualFold(query, c.Result.Name) && !strings.EqualFold(query+"/"+query, c.Result.Name)
+	case pm.EcosystemForManager(c.Result.Manager) == pm.EcosystemPython:
 		return pep503Name(query) != pep503Name(c.Result.Name)
 	}
 	return !strings.EqualFold(query, c.Result.Name)
@@ -128,8 +133,10 @@ func pep503Name(name string) string {
 // registry's closest match (Packagist and Maven searches return their first
 // hit, often unrelated: axios -> swlib/saber). A Maven or Gradle hit is
 // exact when its full coordinate is the query, or when its artifactId is
-// the query and it is not an npm/web-asset repackage (org.mvnpm*,
-// org.webjars*), which reuse npm names.
+// the query with the same case (Maven Central has `...royale.framework:
+// Express`, which is not npm's express) and it is not an npm/web-asset
+// repackage (org.mvnpm*, org.webjars*), which reuse npm names. A Packagist
+// hit is exact when its name, or <q>/<q>, is the query in any case.
 func isExact(query string, c candidate) bool {
 	if c.Result.Manager == pm.Maven || c.Result.Manager == pm.Gradle {
 		name := c.Result.Name
@@ -140,8 +147,7 @@ func isExact(query string, c candidate) bool {
 		if strings.HasPrefix(group, "org.mvnpm") || strings.HasPrefix(group, "org.webjars") {
 			return false
 		}
-		artifact := name[strings.LastIndex(name, ":")+1:]
-		return strings.EqualFold(artifact, query)
+		return name[strings.LastIndex(name, ":")+1:] == query
 	}
 	return !needsRenameConfirmation(query, c)
 }
@@ -158,104 +164,223 @@ func splitExact(query string, cands []candidate) (exact, fuzzy []candidate) {
 	return exact, fuzzy
 }
 
-// menuCandidates orders the interactive menu: exact candidates first, then
-// closest matches, labelled as such. It returns the items and their labels.
-func menuCandidates(query string, cands []candidate) ([]candidate, []string) {
-	exact, fuzzy := splitExact(query, cands)
-	items := make([]candidate, 0, len(cands))
-	items = append(append(items, exact...), fuzzy...)
-	labels := make([]string, len(items))
-	for i, c := range items {
-		labels[i] = candidateLabel(c)
-		if i >= len(exact) {
-			labels[i] += " (closest match)"
-		}
-	}
-	return items, labels
-}
-
 // ecosystemKey groups tools that install the same packages: npm, yarn,
-// pnpm and bun share "node"; a tool with no ecosystem (composer, cargo,
-// gomod) is its own group.
+// pnpm and bun share "node"; composer is "php", cargo "rust", go modules
+// "go". The keys are also what projectEcosystems returns.
 func ecosystemKey(id pm.ID) string {
 	if eco := pm.EcosystemForManager(id); eco != "" {
 		return string(eco)
 	}
+	switch id {
+	case pm.Composer:
+		return "php"
+	case pm.Cargo:
+		return "rust"
+	case pm.GoMod:
+		return "go"
+	}
 	return "manager:" + string(id)
 }
 
-// projectEcosystemCandidates returns the candidates of the one ecosystem
-// that has a project file (lock or build file), or nil when none or
-// several have one.
-func projectEcosystemCandidates(cands []candidate) []candidate {
-	key := ""
-	for _, c := range cands {
-		if c.Via == "" {
-			continue
-		}
-		k := ecosystemKey(c.Result.Manager)
-		if key != "" && k != key {
-			return nil
-		}
-		key = k
+// ecosystemTitle is how an ecosystem key reads in messages ("PHP").
+func ecosystemTitle(key string) string {
+	switch key {
+	case "node":
+		return "Node"
+	case "python":
+		return "Python"
+	case "java":
+		return "Java"
+	case "php":
+		return "PHP"
+	case "rust":
+		return "Rust"
+	case "go":
+		return "Go"
 	}
-	if key == "" {
-		return nil
-	}
-	var out []candidate
-	for _, c := range cands {
-		if c.Via != "" && ecosystemKey(c.Result.Manager) == key {
-			out = append(out, c)
-		}
-	}
-	return out
+	return strings.TrimPrefix(key, "manager:")
 }
 
-// decideNonInteractive picks a candidate without asking, or explains why it
-// will not. Closest matches are ignored when there is an exact candidate.
-// Among exact candidates, the one ecosystem with a project file wins even
-// if a registry of another ecosystem did not answer; otherwise a missing
-// registry, or several ecosystems that prefer does not settle, refuse.
-// With only closest matches, all of them are considered.
-func decideNonInteractive(query string, cands []candidate, prefer []string, unavailable []pm.ID) (candidate, error) {
-	pool, _ := splitExact(query, cands)
+// projectEcosystems returns the ecosystems (ecosystemKey values) that dir
+// is a project for, in a fixed order: any project file counts
+// (package.json or a Node lockfile, requirements.txt/pyproject.toml/
+// Pipfile/poetry.lock, composer.json, Cargo.toml, go.mod, pom.xml,
+// build.gradle(.kts)). It returns nil outside a project.
+func projectEcosystems(dir string) []string {
+	var keys []string
+	add := func(k string) {
+		if !slices.Contains(keys, k) {
+			keys = append(keys, k)
+		}
+	}
+	for _, t := range detectProjectTargetsIn(dir) {
+		add(ecosystemKey(t.PMs[0]))
+	}
+	for _, f := range pm.ProjectManagers(dir) {
+		add(ecosystemKey(f[0].Manager))
+	}
+	return keys
+}
+
+// installAction is what decideInstall settles on.
+type installAction int
+
+const (
+	actionPick   installAction = iota // install Pick
+	actionMenu                        // let the user choose from Menu
+	actionRefuse                      // no terminal and no safe choice: Err
+)
+
+// installInputs is everything decideInstall looks at.
+type installInputs struct {
+	Query       string
+	Cands       []candidate // from buildCandidates, ordered by sortCandidates
+	ProjectEcos []string    // projectEcosystems of the current directory
+	Prefer      []string
+	Unavailable []pm.ID // registries that did not answer
+	Interactive bool    // a menu can be shown
+}
+
+// installDecision is decideInstall's answer. Note (with actionPick) is a
+// line to print before installing, or "".
+type installDecision struct {
+	Action installAction
+	Pick   candidate
+	Note   string
+	Menu   []candidate
+	Labels []string
+	Err    error
+}
+
+// decideInstall chooses the candidate for `xpm install <query>`, for
+// terminal and non-terminal runs alike ("project first"):
+//
+//   - Inside a project, an exact hit in the project's ecosystem is installed
+//     with the project's tool, even when other ecosystems have namesakes or
+//     their registries did not answer. Exact hits in two of the project's
+//     ecosystems, no exact hit in them, or the project's own registry not
+//     answering mean a menu, or a refusal without a terminal.
+//   - Outside a project, exact hits from one ecosystem (or, without any
+//     exact hit, the one registry that answered with a closest match) are
+//     installed; "prefer" settles exact hits from several ecosystems when
+//     it puts one strictly first; anything else is a menu or a refusal. A
+//     registry that did not answer forbids any guess without a terminal.
+//
+// A closest match picked here is still confirmed (or refused) by
+// installCandidate.
+func decideInstall(in installInputs) installDecision {
+	if len(in.ProjectEcos) > 0 {
+		return decideInProject(in)
+	}
+	return decideOutsideProject(in)
+}
+
+func decideInProject(in installInputs) installDecision {
+	inProject := func(c candidate) bool { return slices.Contains(in.ProjectEcos, ecosystemKey(c.Result.Manager)) }
+	var down []pm.ID
+	for _, id := range in.Unavailable {
+		if slices.Contains(in.ProjectEcos, ecosystemKey(id)) {
+			down = append(down, id)
+		}
+	}
+	if len(down) > 0 {
+		return menuOrRefuse(in, refuseGuessWhenUnavailable(down))
+	}
+	exact, _ := splitExact(in.Query, in.Cands)
+	var own []candidate
+	for _, c := range exact {
+		if inProject(c) {
+			own = append(own, c)
+		}
+	}
+	switch ecos := ecosystemsOf(own); len(ecos) {
+	case 0:
+		return menuOrRefuse(in, fmt.Errorf("no exact match for %q in this %s registry; found: %s. Run xpm inside the project the package belongs to, or install it by its exact name (vendor/package for Composer, group:artifact for Maven and Gradle, a module path such as github.com/spf13/cobra for Go)",
+			in.Query, projectPhrase(in.ProjectEcos), choiceList(in.Query, orderMenu(in))))
+	case 1:
+		pick := own[0] // ordered by prefer
+		if in.Interactive && len(managersOf(own)) > 1 {
+			// Several lockfiles in one ecosystem: prefer decides, or the user.
+			c, ok := strictlyPreferred(own, in.Prefer)
+			if !ok {
+				return menu(in)
+			}
+			pick = c
+		}
+		key := ecosystemKey(pick.Result.Manager)
+		return installDecision{Action: actionPick, Pick: pick,
+			Note: fmt.Sprintf("Using %s for this %s project%s.", pick.Result.Manager, ecosystemTitle(key), alsoFound(exact, key, "("))}
+	default:
+		return menuOrRefuse(in, fmt.Errorf("%s exists in several of this project's ecosystems: %s. Run xpm in a terminal to choose",
+			own[0].Result.Name, choiceList(in.Query, own)))
+	}
+}
+
+func decideOutsideProject(in installInputs) installDecision {
+	if len(in.Unavailable) > 0 {
+		return menuOrRefuse(in, refuseGuessWhenUnavailable(in.Unavailable))
+	}
+	exact, _ := splitExact(in.Query, in.Cands)
+	pool := exact
 	if len(pool) == 0 {
-		pool = cands
-	} else if inProject := projectEcosystemCandidates(pool); inProject != nil {
-		return inProject[0], nil // one ecosystem, already ordered by prefer
+		pool = in.Cands
 	}
-	if err := refuseGuessWhenUnavailable(unavailable); err != nil {
-		return candidate{}, err
+	if len(ecosystemsOf(pool)) == 1 {
+		return installDecision{Action: actionPick, Pick: pool[0]}
 	}
-	if c, ok := nonInteractivePick(pool, prefer); ok {
-		return c, nil
+	if len(exact) == 0 {
+		return menuOrRefuse(in, fmt.Errorf("no package is named exactly %q; closest matches: %s. Re-run with the exact name",
+			in.Query, choiceList(in.Query, pool)))
 	}
-	choices := make([]string, len(pool))
-	for i, c := range pool {
-		choices[i] = candidateChoice(c)
+	if c, ok := strictlyPreferred(exact, in.Prefer); ok {
+		return installDecision{Action: actionPick, Pick: c,
+			Note: fmt.Sprintf("Using %s (\"prefer\" in config%s).", c.Result.Manager, alsoFound(exact, ecosystemKey(c.Result.Manager), "; "))}
 	}
-	return candidate{}, fmt.Errorf("%s exists in several ecosystems: %s. Re-run interactively or set \"prefer\" in config",
-		pool[0].Result.Name, strings.Join(choices, ", "))
+	return menuOrRefuse(in, fmt.Errorf("%s exists in several ecosystems: %s. Set \"prefer\" in config (e.g. xpm config set prefer %s) or run inside a project",
+		exact[0].Result.Name, choiceList(in.Query, exact), exact[0].Result.Manager))
 }
 
-// nonInteractivePick chooses a candidate without asking. It picks only when
-// all candidates share one ecosystem (the list is already ordered by prefer),
-// or when the prefer list puts exactly one candidate strictly first.
-func nonInteractivePick(cands []candidate, prefer []string) (candidate, bool) {
-	if len(cands) == 0 {
-		return candidate{}, false
+// menuOrRefuse shows the menu on a terminal and refuses with err otherwise.
+func menuOrRefuse(in installInputs, err error) installDecision {
+	if in.Interactive {
+		return menu(in)
 	}
-	same := true
-	key := ecosystemKey(cands[0].Result.Manager)
-	for _, c := range cands[1:] {
-		if ecosystemKey(c.Result.Manager) != key {
-			same = false
-			break
+	return installDecision{Action: actionRefuse, Err: err}
+}
+
+func menu(in installInputs) installDecision {
+	items := orderMenu(in)
+	labels := make([]string, len(items))
+	for i, c := range items {
+		labels[i] = candidateLabel(c)
+		if !isExact(in.Query, c) {
+			labels[i] += " (closest match)"
 		}
 	}
-	if same {
-		return cands[0], true
+	return installDecision{Action: actionMenu, Menu: items, Labels: labels}
+}
+
+// orderMenu lists the candidates of the project's ecosystems first (exact,
+// then closest matches), then exact candidates elsewhere, then closest
+// matches elsewhere, keeping prefer order within each group.
+func orderMenu(in installInputs) []candidate {
+	var groups [4][]candidate
+	for _, c := range in.Cands {
+		g := 2
+		if slices.Contains(in.ProjectEcos, ecosystemKey(c.Result.Manager)) {
+			g = 0
+		}
+		if !isExact(in.Query, c) {
+			g++
+		}
+		groups[g] = append(groups[g], c)
 	}
+	return slices.Concat(groups[0], groups[1], groups[2], groups[3])
+}
+
+// strictlyPreferred returns the candidate whose tool the prefer list puts
+// strictly before every other candidate's tool.
+func strictlyPreferred(cands []candidate, prefer []string) (candidate, bool) {
 	order := preferOrderMap(prefer)
 	best, ties := -1, 0
 	for i, c := range cands {
@@ -266,36 +391,86 @@ func nonInteractivePick(cands []candidate, prefer []string) (candidate, bool) {
 			ties++
 		}
 	}
-	if ties == 1 {
-		return cands[best], true
+	if ties != 1 {
+		return candidate{}, false
 	}
-	return candidate{}, false
+	return cands[best], true
+}
+
+// ecosystemsOf returns the distinct ecosystem keys of cands, in order.
+func ecosystemsOf(cands []candidate) []string {
+	var keys []string
+	for _, c := range cands {
+		if k := ecosystemKey(c.Result.Manager); !slices.Contains(keys, k) {
+			keys = append(keys, k)
+		}
+	}
+	return keys
+}
+
+// managersOf returns the distinct tools of cands, in order.
+func managersOf(cands []candidate) []pm.ID {
+	var ids []pm.ID
+	for _, c := range cands {
+		if !slices.Contains(ids, c.Result.Manager) {
+			ids = append(ids, c.Result.Manager)
+		}
+	}
+	return ids
+}
+
+// alsoFound is ", also found: Node, Rust" style text naming the ecosystems
+// other than key that have an exact candidate, opened with sep ("(" or
+// "; ") and closed with ")" when sep is "("; "" when there are none.
+func alsoFound(exact []candidate, key, sep string) string {
+	var titles []string
+	for _, k := range ecosystemsOf(exact) {
+		if k != key {
+			titles = append(titles, ecosystemTitle(k))
+		}
+	}
+	if len(titles) == 0 {
+		return ""
+	}
+	text := "also found: " + strings.Join(titles, ", ")
+	if sep == "(" {
+		return " (" + text + ")"
+	}
+	return sep + text
+}
+
+// projectPhrase names the project's ecosystems: "PHP project's" or
+// "project's (Go, Node)".
+func projectPhrase(ecos []string) string {
+	if len(ecos) == 1 {
+		return ecosystemTitle(ecos[0]) + " project's"
+	}
+	titles := make([]string, len(ecos))
+	for i, k := range ecos {
+		titles[i] = ecosystemTitle(k)
+	}
+	return "project's (" + strings.Join(titles, ", ") + ")"
+}
+
+// choiceList lists candidates for a refusal; a closest match shows the
+// name it would install.
+func choiceList(query string, cands []candidate) string {
+	choices := make([]string, len(cands))
+	for i, c := range cands {
+		choices[i] = candidateChoice(c)
+		if !isExact(query, c) {
+			choices[i] += ": " + c.Result.Name + " (closest match)"
+		}
+	}
+	return strings.Join(choices, ", ")
 }
 
 // candidateChoice is a candidate as listed when xpm refuses to choose:
-// "npm (Node, via package-lock.json)", or just "composer".
+// "npm (Node, via package-lock.json)", or "composer (PHP)".
 func candidateChoice(c candidate) string {
-	var details []string
-	if title := ecosystemTitle(pm.EcosystemForManager(c.Result.Manager)); title != "" {
-		details = append(details, title)
-	}
+	details := []string{ecosystemTitle(ecosystemKey(c.Result.Manager))}
 	if c.Via != "" {
 		details = append(details, "via "+c.Via)
 	}
-	if len(details) == 0 {
-		return string(c.Result.Manager)
-	}
 	return fmt.Sprintf("%s (%s)", c.Result.Manager, strings.Join(details, ", "))
-}
-
-func ecosystemTitle(e pm.Ecosystem) string {
-	switch e {
-	case pm.EcosystemNode:
-		return "Node"
-	case pm.EcosystemPython:
-		return "Python"
-	case pm.EcosystemJava:
-		return "Java"
-	}
-	return string(e)
 }
