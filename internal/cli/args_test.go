@@ -13,22 +13,31 @@ func TestParseInstallArgs(t *testing.T) {
 		global  bool
 		pkgs    []string
 		wantErr bool
+		ws      bool
 	}{
-		{[]string{"axios"}, false, []string{"axios"}, false},
-		{[]string{"axios", "-g"}, true, []string{"axios"}, false},
-		{[]string{"-g", "typescript"}, true, []string{"typescript"}, false},
-		{[]string{"a", "--global", "b", "c"}, true, []string{"a", "b", "c"}, false},
-		{[]string{"axios", "--save-dev"}, false, nil, true},
-		{[]string{"--", "-weird"}, false, []string{"-weird"}, false},
-		{nil, false, nil, false},
+		{[]string{"axios"}, false, []string{"axios"}, false, false},
+		{[]string{"axios", "-g"}, true, []string{"axios"}, false, false},
+		{[]string{"-g", "typescript"}, true, []string{"typescript"}, false, false},
+		{[]string{"a", "--global", "b", "c"}, true, []string{"a", "b", "c"}, false, false},
+		{[]string{"axios", "--save-dev"}, false, nil, true, false},
+		{[]string{"--", "-weird"}, false, []string{"-weird"}, false, false},
+		{nil, false, nil, false, false},
+		{[]string{"-w"}, false, nil, false, true},
+		{[]string{"--workspace"}, false, nil, false, true},
+		{[]string{"-workspace"}, false, nil, false, true},
+		{[]string{"-w", "-g"}, true, nil, false, true},
+		{[]string{"--workspace=x"}, false, nil, true, false},
+		{[]string{"-w=x"}, false, nil, true, false},
+		{[]string{"axios", "-w"}, false, []string{"axios"}, false, true},
+		{[]string{"-w", "--", "-w"}, false, []string{"-w"}, false, true},
 	} {
 		got, err := parseInstallArgs(c.args)
 		if (err != nil) != c.wantErr {
 			t.Errorf("%v: err = %v, wantErr %v", c.args, err, c.wantErr)
 			continue
 		}
-		if !c.wantErr && (got.Global != c.global || !reflect.DeepEqual(got.Packages, c.pkgs)) {
-			t.Errorf("%v: got %+v, want global=%v pkgs=%v", c.args, got, c.global, c.pkgs)
+		if !c.wantErr && (got.Global != c.global || got.Workspace != c.ws || !reflect.DeepEqual(got.Packages, c.pkgs)) {
+			t.Errorf("%v: got %+v, want global=%v ws=%v pkgs=%v", c.args, got, c.global, c.ws, c.pkgs)
 		}
 	}
 }

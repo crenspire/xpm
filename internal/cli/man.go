@@ -189,7 +189,7 @@ func showCommandUsage(command string) {
 // Individual help functions for each command
 
 func showInstallHelp() {
-	fmt.Printf("%s\n", colorCommand("xpm install [-g|--global] [package[@version] ...] [--]"))
+	fmt.Printf("%s\n", colorCommand("xpm install [-g|--global] [-w|--workspace] [package[@version] ...] [--]"))
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("DESCRIPTION:"))
 	fmt.Println("  Install one or several packages, or, without packages, this project's dependencies.")
@@ -210,6 +210,7 @@ func showInstallHelp() {
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("OPTIONS:"))
 	fmt.Printf("  %s       Install globally (if the tool supports it); may come before or after the packages\n", colorOption("-g, --global"))
+	fmt.Printf("  %s     Install dependencies in every workspace project (honours workspace.include/exclude and workspace.parallel); cannot be combined with packages or -g\n", colorOption("-w, --workspace"))
 	fmt.Printf("  %s                 Ends flag parsing; names starting with - are still rejected\n", colorOption("--"))
 	fmt.Println("  Any other flag, including --global=false, is rejected.")
 	fmt.Println()
@@ -486,6 +487,7 @@ func showWorkspacesHelp() {
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("RELATED COMMANDS:"))
 	fmt.Printf("  %s     Run task across workspaces\n", colorCommand("xpm run --workspace <task>"))
+	fmt.Printf("  %s     Install dependencies in every workspace project\n", colorCommand("xpm install --workspace"))
 }
 
 func showEnvHelp() {

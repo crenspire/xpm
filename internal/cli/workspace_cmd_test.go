@@ -219,3 +219,40 @@ func TestCmdRunChildReceivesTaskAndExtraArgs(t *testing.T) {
 		t.Fatalf("exit = %d, output = %q, want it to contain <x>", code, out)
 	}
 }
+
+func TestInstallWorkspaceFlagRunsWorkspaceInstall(t *testing.T) {
+	root := workspaceTree(t)
+	withConfig(t, config.Config{})
+	calls := withWorkspaceRunner(t, root, "")
+	var code int
+	captureStdout(t, func() { code = cmdInstall([]string{"--workspace"}) })
+	if code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+	if want := []wsCall{{".", "npm install"}}; !reflect.DeepEqual(*calls, want) {
+		t.Fatalf("calls = %v, want %v", *calls, want)
+	}
+}
+
+func TestInstallWorkspaceWithPackagesIsError(t *testing.T) {
+	root := workspaceTree(t)
+	withConfig(t, config.Config{})
+	calls := withWorkspaceRunner(t, root, "")
+	var code int
+	errOut := captureStderr(t, func() { code = cmdInstall([]string{"axios", "-w"}) })
+	want := "error: --workspace installs project dependencies; it cannot be combined with package names"
+	if code != 1 || len(*calls) != 0 || !strings.Contains(errOut, want) {
+		t.Fatalf("exit = %d, calls = %v, stderr = %q", code, *calls, errOut)
+	}
+}
+
+func TestInstallWorkspaceGlobalIsError(t *testing.T) {
+	root := workspaceTree(t)
+	withConfig(t, config.Config{})
+	calls := withWorkspaceRunner(t, root, "")
+	var code int
+	errOut := captureStderr(t, func() { code = cmdInstall([]string{"-w", "-g"}) })
+	if code != 1 || len(*calls) != 0 || !strings.Contains(errOut, "--global cannot be combined with --workspace") {
+		t.Fatalf("exit = %d, calls = %v, stderr = %q", code, *calls, errOut)
+	}
+}

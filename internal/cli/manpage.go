@@ -88,7 +88,7 @@ func getManPageData(command string) manPageData {
 	case "install":
 		data.Description = "Install packages or project dependencies"
 		data.Synopsis = `.B xpm install
-[\fB-g\fR|\fB--global\fR] [\fIpackage\fR[@\fIversion\fR] ...] [\fB--\fR]`
+[\fB-g\fR|\fB--global\fR] [\fB-w\fR|\fB--workspace\fR] [\fIpackage\fR[@\fIversion\fR] ...] [\fB--\fR]`
 		data.FullDescription = `Install one or several packages, or, without packages, the dependencies of the detected project.
 Several packages are installed in order; xpm stops at the first failure.
 Without packages, the detected project's tool runs its install (with several projects, a terminal asks which one or all; a script runs all).
@@ -103,6 +103,9 @@ A Maven or Gradle hit only prints the dependency snippet to add.`
 		data.Options = `.TP
 \fB-g\fR, \fB--global\fR
 Install globally (if the tool supports it); may come before or after the packages.
+.TP
+\fB-w\fR, \fB--workspace\fR
+Install dependencies in every workspace project (honours workspace.include/exclude and workspace.parallel); cannot be combined with packages or \fB-g\fR.
 .TP
 \fB--\fR
 Ends flag parsing; names starting with - are still rejected by name validation.
@@ -299,11 +302,15 @@ Search for axios`
 		data.Description = "List detected workspaces/monorepos (experimental)"
 		data.Synopsis = `.B xpm workspaces`
 		data.FullDescription = `List detected workspaces/monorepos.
+Related: \fBxpm install --workspace\fR installs dependencies in every workspace project and \fBxpm run --workspace\fR runs a task in each.
 This command is experimental and is being reworked; its behaviour and output may change.`
 		data.Options = ""
 		data.Examples = `.B xpm workspaces
-List all detected workspaces`
-		data.SeeAlso = `\fBxpm\fR(1), \fBxpm run\fR(1)`
+List all detected workspaces
+.PP
+.B xpm install --workspace
+Install dependencies in every workspace project`
+		data.SeeAlso = `\fBxpm\fR(1), \fBxpm run\fR(1), \fBxpm install\fR(1)`
 
 	case "env":
 		data.Description = "Manage runtime versions (experimental)"

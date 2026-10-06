@@ -113,8 +113,8 @@ func TestInstallManDescribesCurrentFlags(t *testing.T) {
 				t.Errorf("%s: missing %q", label, want)
 			}
 		}
-		if strings.Contains(out, "--workspace") {
-			t.Errorf("%s: mentions --workspace", label)
+		if !strings.Contains(out, "--workspace") {
+			t.Errorf("%s: does not mention --workspace", label)
 		}
 	}
 }
@@ -151,14 +151,14 @@ func TestExperimentalManPagesSayExperimental(t *testing.T) {
 	}
 }
 
-func TestWorkspacesManHasNoInstallWorkspace(t *testing.T) {
+func TestWorkspacesManListsInstallWorkspace(t *testing.T) {
 	out := ansiRe.ReplaceAllString(captureStdout(t, showWorkspacesHelp), "")
-	if strings.Contains(out, "install --workspace") {
-		t.Errorf("workspaces help mentions the nonexistent install --workspace:\n%s", out)
+	if !strings.Contains(out, "xpm install --workspace") {
+		t.Errorf("workspaces help does not list install --workspace:\n%s", out)
 	}
 	page, _ := GenerateManPage("workspaces")
-	if strings.Contains(page, "install --workspace") {
-		t.Error("workspaces page mentions install --workspace")
+	if !strings.Contains(page, "install") || !strings.Contains(page, "--workspace") {
+		t.Error("workspaces page does not mention install --workspace")
 	}
 }
 

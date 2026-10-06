@@ -8,11 +8,12 @@ import (
 
 // installArgs is `xpm install`'s command line.
 type installArgs struct {
-	Global   bool
-	Packages []string
+	Global    bool
+	Workspace bool
+	Packages  []string
 }
 
-// parseInstallArgs accepts -g/--global anywhere (`xpm install axios -g`).
+// parseInstallArgs accepts -g/--global and -w/--workspace anywhere (`xpm install axios -g`).
 // "--" ends flag parsing; any other dash argument is an error rather than
 // being passed on as a package name.
 func parseInstallArgs(args []string) (installArgs, error) {
@@ -24,10 +25,12 @@ func parseInstallArgs(args []string) (installArgs, error) {
 			return out, nil
 		case a == "-g" || a == "--global" || a == "-global":
 			out.Global = true
+		case a == "-w" || a == "--workspace" || a == "-workspace":
+			out.Workspace = true
 		case strings.HasPrefix(a, "--global=") || strings.HasPrefix(a, "-global=") || strings.HasPrefix(a, "-g="):
 			return installArgs{}, fmt.Errorf("unknown flag %q (install accepts -g/--global; omit it for a local install)", a)
 		case strings.HasPrefix(a, "-"):
-			return installArgs{}, fmt.Errorf("unknown flag %q (install accepts -g/--global)", a)
+			return installArgs{}, fmt.Errorf("unknown flag %q (install accepts -g/--global and -w/--workspace)", a)
 		default:
 			out.Packages = append(out.Packages, a)
 		}
