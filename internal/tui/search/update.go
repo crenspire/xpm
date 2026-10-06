@@ -83,6 +83,9 @@ func handleKeyMsg(m model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyRunes:
 		m.query += string(msg.Runes)
 		return queryChanged(m)
+	case tea.KeySpace:
+		m.query += " "
+		return queryChanged(m)
 	case tea.KeyBackspace, tea.KeyDelete:
 		if m.query == "" {
 			return m, nil
@@ -108,6 +111,7 @@ func handleInstallKeyMsg(m model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		if len(m.installPMs) > 0 && m.installCursor < len(m.installPMs) {
 			// Return selected result and PM for installation
+			m.confirmed = true
 			return m, tea.Quit
 		}
 		return m, nil

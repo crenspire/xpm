@@ -35,11 +35,14 @@ func Run(initialQuery string, opts search.Options, ui UIOptions) (*SearchResult,
 	if !ok {
 		return nil, fmt.Errorf("invalid model type")
 	}
-	if final.installMode && final.selectedResult != nil && final.installCursor < len(final.installPMs) {
-		return &SearchResult{
-			Result: *final.selectedResult,
-			PM:     final.installPMs[final.installCursor],
-		}, nil
+	return final.chosen(), nil // nil when the user cancelled
+}
+
+// chosen is the package and manager the user confirmed with Enter on the
+// install picker, or nil when they quit or cancelled any other way.
+func (m model) chosen() *SearchResult {
+	if m.confirmed && m.installMode && m.selectedResult != nil && m.installCursor < len(m.installPMs) {
+		return &SearchResult{Result: *m.selectedResult, PM: m.installPMs[m.installCursor]}
 	}
-	return nil, nil // User cancelled
+	return nil
 }

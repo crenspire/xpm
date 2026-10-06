@@ -158,3 +158,61 @@ func TestUIOptionsAreUsed(t *testing.T) {
 		t.Fatalf("defaults: debounce=%v rows=%d", m.debounce, m.visibleRows())
 	}
 }
+
+func TestSpaceTypesInQueryMode(t *testing.T) {
+	m := queryModel(t)
+	m, _ = press(t, m, runes("react"))
+	seq := m.seq
+	var cmd tea.Cmd
+	m, cmd = press(t, m, tea.KeyMsg{Type: tea.KeySpace, Runes: []rune{' '}})
+	m, _ = press(t, m, runes("router"))
+	if m.query != "react router" || m.seq != seq+2 || cmd == nil {
+		t.Fatalf("query=%q seq=%d (was %d)", m.query, m.seq, seq)
+	}
+	if _, ok := cmd().(debounceMsg); !ok {
+		t.Fatal("space did not start a debounce")
+	}
+}
+
+func installModel(t *testing.T) model {
+	t.Helper()
+	m := queryModel(t)
+	m.results = []search.Result{{Manager: pm.Npm, Name: "react"}}
+	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if !m.installMode {
+		t.Fatal("Enter did not open the manager picker")
+	}
+	return m
+}
+
+func TestCancellingTheManagerPickerNeverInstalls(t *testing.T) {
+	for name, k := range map[string]tea.KeyMsg{
+		"q": runes("q"), "ctrl+c": {Type: tea.KeyCtrlC},
+	} {
+		m, cmd := press(t, installModel(t), k)
+		if !isQuit(cmd) || m.chosen() != nil {
+			t.Errorf("%s: quit=%v chosen=%v, want quit and no install", name, isQuit(cmd), m.chosen())
+		}
+	}
+}
+
+func TestEnterOnTheManagerPickerInstallsTheHighlightedManager(t *testing.T) {
+	m := installModel(t)
+	m, _ = press(t, m, runes("j"))
+	m, cmd := press(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	got := m.chosen()
+	if !isQuit(cmd) || got == nil || got.PM != pm.Yarn || got.Result.Name != "react" {
+		t.Fatalf("quit=%v chosen=%+v, want yarn for react", isQuit(cmd), got)
+	}
+}
+
+func TestInitDoesNotSearchBehindTheRegistryScreen(t *testing.T) {
+	m := NewModel("react", search.Options{}, UIOptions{})
+	if m.Init() != nil {
+		t.Fatal("Init started a search while the registry screen is showing")
+	}
+	m.registryMode = false
+	if m.Init() == nil {
+		t.Fatal("Init must debounce an initial query once past the registry screen")
+	}
+}

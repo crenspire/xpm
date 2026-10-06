@@ -44,6 +44,7 @@ type model struct {
 	debounce           time.Duration  // pause before a query is searched
 	pageSize           int            // max rows shown; 0 = fit the terminal
 	seq                int            // bumped on every query change; older results are dropped
+	confirmed          bool           // Enter was pressed on the install-manager picker
 }
 
 // NewModel creates a new TUI model with initial state.
@@ -71,7 +72,8 @@ func NewModel(initialQuery string, opts search.Options, ui UIOptions) model {
 
 // Init returns the initial command to run.
 func (m model) Init() tea.Cmd {
-	if m.query != "" {
+	// On the registry screen nothing is searched yet; Enter there starts it.
+	if m.query != "" && !m.registryMode {
 		return debounceCmd(m.seq, m.query, m.debounce)
 	}
 	return nil
