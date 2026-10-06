@@ -21,9 +21,11 @@ func TestOptionsFromConfig(t *testing.T) {
 	for id, want := range map[pm.ID]time.Duration{
 		pm.Cargo: time.Second, pm.Pip: 5 * time.Second, pm.Npm: 3 * time.Second, pm.Maven: 3 * time.Second,
 	} {
-		if got := o.timeoutFor(id); got != want {
-			t.Errorf("timeoutFor(%s) = %v, want %v", id, got, want)
-		}
+		t.Run(string(id), func(t *testing.T) {
+			if got := o.timeoutFor(id); got != want {
+				t.Errorf("timeoutFor(%s) = %v, want %v", id, got, want)
+			}
+		})
 	}
 }
 

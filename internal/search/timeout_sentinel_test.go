@@ -3,6 +3,7 @@ package search
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"sync/atomic"
 	"testing"
@@ -28,7 +29,7 @@ func singleFailure(t *testing.T, fn func(ctx context.Context) ([]Result, error))
 	return rep.Unavailable[0].Err
 }
 
-func TestFanOutCtxHonouringTimeoutIsSentinel(t *testing.T) {
+func TestFanOutCtxDeadlineReportedAsTimeout(t *testing.T) {
 	err := singleFailure(t, func(ctx context.Context) ([]Result, error) {
 		<-ctx.Done()
 		return nil, ctx.Err()
@@ -73,5 +74,35 @@ func TestSearchReportPipFreeTextIsNotUnavailable(t *testing.T) {
 	}
 	if n := atomic.LoadInt32(&reqs); n != 0 {
 		t.Fatalf("made %d requests, want 0", n)
+	}
+}
+
+func TestAsTimeout(t *testing.T) {
+	boom := errors.New("boom")
+	tests := []struct {
+		name        string
+		in          error
+		wantTimeout bool
+		wantSame    bool
+	}{
+		{"nil", nil, false, true},
+		{"deadline exceeded", context.DeadlineExceeded, true, false},
+		{"wrapped deadline exceeded", fmt.Errorf("x: %w", context.DeadlineExceeded), true, false},
+		{"net timeout", timeoutNetErr{}, true, false},
+		{"other error", boom, false, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := asTimeout(tc.in)
+			if is := errors.Is(got, ErrRegistryTimeout); is != tc.wantTimeout {
+				t.Fatalf("asTimeout(%v) timeout = %v, want %v", tc.in, is, tc.wantTimeout)
+			}
+			if tc.wantSame && !errors.Is(got, tc.in) && (got != nil || tc.in != nil) {
+				t.Fatalf("asTimeout(%v) = %v, want unchanged", tc.in, got)
+			}
+			if tc.wantTimeout && !errors.Is(got, tc.in) {
+				t.Fatalf("asTimeout(%v) = %v, lost the original error", tc.in, got)
+			}
+		})
 	}
 }
