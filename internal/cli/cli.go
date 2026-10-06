@@ -22,7 +22,6 @@ import (
 
 	"github.com/crenspire/xpm/internal/config"
 	"github.com/crenspire/xpm/internal/doctor"
-	"github.com/crenspire/xpm/internal/env"
 	"github.com/crenspire/xpm/internal/logx"
 	"github.com/crenspire/xpm/internal/pm"
 	"github.com/crenspire/xpm/internal/search"
@@ -152,14 +151,6 @@ func Run() int {
 
 	cfg = config.Load()
 	logx.Info("config loaded: %+v", cfg)
-
-	// Auto-activate versions from .xpm-env
-	if cfg.Env.Enabled {
-		manager, err := env.NewManager(cfg)
-		if err == nil {
-			env.ActivateFromLocalEnv(manager)
-		}
-	}
 
 	// Show banner and version if no args or version flag
 	if len(rawArgs) == 0 {
