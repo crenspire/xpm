@@ -170,7 +170,8 @@ func TestUseVersionWritesExactInstalledVersion(t *testing.T) {
 	if string(data) != "# keep me\ngo=1.22.0\n"+fakeRT+"=20.11.1\n" {
 		t.Fatalf(".xpm-env = %q", data)
 	}
-	if fi, _ := os.Stat(".xpm-env"); fi.Mode().Perm() != 0o600 {
+	// Windows does not represent Unix permission bits (files report 0666).
+	if fi, _ := os.Stat(".xpm-env"); runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
 		t.Fatalf("mode = %v, want 0600 kept", fi.Mode().Perm())
 	}
 
@@ -228,8 +229,13 @@ func TestRemoveVersionRefusesPinnedAndClearsGlobal(t *testing.T) {
 	for _, e := range entries {
 		names = append(names, e.Name())
 	}
-	if strings.Join(names, ",") != ".lock,2.0.0" {
-		t.Fatalf("left %v, want .lock and 2.0.0 (no .tmp-old-*)", names)
+	// lockFile is a no-op on non-Unix platforms, so no .lock file exists there.
+	wantNames := ".lock,2.0.0"
+	if runtime.GOOS == "windows" {
+		wantNames = "2.0.0"
+	}
+	if strings.Join(names, ",") != wantNames {
+		t.Fatalf("left %v, want %s (no .tmp-old-*)", names, wantNames)
 	}
 }
 
