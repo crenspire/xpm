@@ -9,7 +9,11 @@ var (
 	cratesAPIURL   = CratesIOURL
 	cratesIndexURL = CratesIndexURL
 	mavenSearchURL = MavenSearchURL
+	goProxyURL     = GoProxyURL
 )
+
+// GoProxyURL is the Go module proxy.
+const GoProxyURL = "https://proxy.golang.org"
 
 // CratesIndexURL is the crates.io sparse index (served from a CDN).
 const CratesIndexURL = "https://index.crates.io"
@@ -22,6 +26,7 @@ type Endpoints struct {
 	CratesAPI   string // default https://crates.io/api/v1
 	CratesIndex string // default https://index.crates.io
 	MavenSearch string // default https://central.sonatype.com/solrsearch/select
+	GoProxy     string // default https://proxy.golang.org
 }
 
 // SetEndpoints points registry lookups at other base URLs and returns a
@@ -29,7 +34,7 @@ type Endpoints struct {
 // packages (fake registries via httptest); it is not safe to call while
 // lookups are running.
 func SetEndpoints(e Endpoints) (restore func()) {
-	old := Endpoints{npmRegistryURL, pypiURL, packagistURL, cratesAPIURL, cratesIndexURL, mavenSearchURL}
+	old := Endpoints{npmRegistryURL, pypiURL, packagistURL, cratesAPIURL, cratesIndexURL, mavenSearchURL, goProxyURL}
 	set := func(dst *string, v string) {
 		if v != "" {
 			*dst = v
@@ -41,9 +46,11 @@ func SetEndpoints(e Endpoints) (restore func()) {
 	set(&cratesAPIURL, e.CratesAPI)
 	set(&cratesIndexURL, e.CratesIndex)
 	set(&mavenSearchURL, e.MavenSearch)
+	set(&goProxyURL, e.GoProxy)
 	return func() {
 		npmRegistryURL, pypiURL, packagistURL = old.Npm, old.PyPI, old.Packagist
 		cratesAPIURL, cratesIndexURL, mavenSearchURL = old.CratesAPI, old.CratesIndex, old.MavenSearch
+		goProxyURL = old.GoProxy
 	}
 }
 
