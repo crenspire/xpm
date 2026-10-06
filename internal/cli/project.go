@@ -1,9 +1,11 @@
 package cli
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/manifoldco/promptui"
@@ -267,7 +269,15 @@ func cleanDirs(c projectCmd) []string {
 
 // selectTarget picks the project to act on: the only one, a prompt, or
 // (non-interactive) the first.
-func selectTarget(targets []projectTarget, label string) (projectTarget, bool) {
+func selectTarget(targets []projectTarget, label, pkg string) (projectTarget, bool) {
+	if len(targets) > 1 && !cfg.Interactive && pkg != "" {
+		names := make([]string, len(targets))
+		for i, t := range targets {
+			names[i] = t.Label
+		}
+		fmt.Fprintf(os.Stderr, "error: several project types here: %s; run interactively or from the right directory\n", strings.Join(names, ", "))
+		return projectTarget{}, false
+	}
 	if len(targets) == 1 || !cfg.Interactive {
 		return targets[0], true
 	}
@@ -305,44 +315,85 @@ func projectCmdFor(t projectTarget) (projectCmd, error) {
 	case choice.Via != "" && choice.Via != "prefer":
 		fmt.Printf("Detected %s - using %s\n", choice.Via, id)
 	}
-	return projectCmd{Kind: t.Kind, PM: id, YarnBerry: id == pm.Yarn && fileExists(".yarnrc.yml")}, nil
+	return projectCmd{Kind: t.Kind, PM: id, YarnBerry: id == pm.Yarn && yarnIsBerry()}, nil
 }
 
-// runProject runs action for t with its native tool and returns the exit code.
+// yarnIsBerry reports yarn >= 2: a .yarnrc.yml, or package.json's
+// "packageManager" naming yarn@2 or later.
+func yarnIsBerry() bool {
+	if fileExists(".yarnrc.yml") {
+		return true
+	}
+	data, err := os.ReadFile("package.json")
+	if err != nil {
+		return false
+	}
+	var pkgJSON struct {
+		PackageManager string `json:"packageManager"`
+	}
+	if json.Unmarshal(data, &pkgJSON) != nil {
+		return false
+	}
+	ver, ok := strings.CutPrefix(pkgJSON.PackageManager, "yarn@")
+	if !ok {
+		return false
+	}
+	major, _, _ := strings.Cut(ver, ".")
+	n, err := strconv.Atoi(major)
+	return err == nil && n >= 2
+}
+
+// prepareProject validates and gets the tool ready for action. When done is
+// true there is nothing to run and code is the exit code (a manual-step
+// message, or a failure); otherwise bin and args are ready to run.
+func prepareProject(pc projectCmd, action, pkg string) (bin string, args []string, done bool, code int) {
+	meta, _ := pm.MetaFor(pc.PM)
+	args, err := pc.args(action, pkg)
+	var manual manualError
+	if errors.As(err, &manual) {
+		fmt.Println(manual.msg)
+		return "", nil, true, 0
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return "", nil, true, 1
+	}
+	if pkg != "" {
+		if err := pm.ValidatePackageName(pkg, pc.PM); err != nil {
+			fmt.Fprintf(os.Stderr, "Invalid package name: %v\n", err)
+			return "", nil, true, 1
+		}
+	}
+	if action == "install" || action == "ci" {
+		if err := ensurePM(pc.PM); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			return "", nil, true, 1
+		}
+	} else if !pmExists(meta.Binary) {
+		fmt.Printf("%s (%s) is not installed.\n", meta.Name, meta.Binary)
+		return "", nil, true, 1
+	}
+	return meta.Binary, args, false, 0
+}
+
+// runProjectCmd runs action with the already-resolved pc.
+func runProjectCmd(pc projectCmd, action, pkg string) int {
+	bin, args, done, code := prepareProject(pc, action, pkg)
+	if done {
+		return code
+	}
+	fmt.Printf("Running: %s %s\n\n", bin, strings.Join(args, " "))
+	return runTool(bin, args)
+}
+
+// runProject resolves t's tool once and runs action with it.
 func runProject(t projectTarget, action, pkg string) int {
 	pc, err := projectCmdFor(t)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
-	meta, _ := pm.MetaFor(pc.PM)
-	if pkg != "" {
-		if err := pm.ValidatePackageName(pkg, pc.PM); err != nil {
-			fmt.Fprintf(os.Stderr, "Invalid package name: %v\n", err)
-			return 1
-		}
-	}
-	args, err := pc.args(action, pkg)
-	var manual manualError
-	if errors.As(err, &manual) {
-		fmt.Println(manual.msg)
-		return 0
-	}
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		return 1
-	}
-	if action == "install" || action == "ci" {
-		if err := ensurePM(pc.PM); err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
-			return 1
-		}
-	} else if !pmExists(meta.Binary) {
-		fmt.Printf("%s (%s) is not installed.\n", meta.Name, meta.Binary)
-		return 1
-	}
-	fmt.Printf("Running: %s %s\n\n", meta.Binary, strings.Join(args, " "))
-	return runTool(meta.Binary, args)
+	return runProjectCmd(pc, action, pkg)
 }
 
 // noProjectFiles is printed when no project type is detected.
@@ -415,6 +466,14 @@ func cmdCleanInstall(args []string) int {
 	}
 	for i, t := range targets {
 		fmt.Printf("Detected: %s\n", t.Label)
+		// Make sure the tool is there before deleting anything.
+		bin, args, done, code := prepareProject(pcs[i], "ci", "")
+		if done {
+			if code != 0 {
+				return code
+			}
+			continue
+		}
 		for _, dir := range cleanDirs(pcs[i]) {
 			if !fileExists(dir) {
 				continue
@@ -427,7 +486,8 @@ func cmdCleanInstall(args []string) int {
 				}
 			}
 		}
-		if code := runProject(t, "ci", ""); code != 0 {
+		fmt.Printf("Running: %s %s\n\n", bin, strings.Join(args, " "))
+		if code := runTool(bin, args); code != 0 {
 			return code
 		}
 	}
@@ -445,7 +505,7 @@ func cmdList(args []string) int {
 		fmt.Println(noProjectFiles)
 		return 1
 	}
-	t, ok := selectTarget(targets, "Select project to list packages for")
+	t, ok := selectTarget(targets, "Select project to list packages for", "")
 	if !ok {
 		return 1
 	}
@@ -464,7 +524,7 @@ func cmdUpdate(args []string) int {
 		fmt.Println(noProjectFiles)
 		return 1
 	}
-	t, ok := selectTarget(targets, "Select project to update")
+	t, ok := selectTarget(targets, "Select project to update", pkg)
 	if !ok {
 		return 1
 	}
@@ -483,7 +543,7 @@ func cmdRemove(args []string) int {
 		fmt.Println(noProjectFiles)
 		return 1
 	}
-	t, ok := selectTarget(targets, "Select project to remove package from")
+	t, ok := selectTarget(targets, "Select project to remove package from", pkg)
 	if !ok {
 		return 1
 	}

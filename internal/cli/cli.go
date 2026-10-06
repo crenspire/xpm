@@ -353,7 +353,10 @@ func cmdDoctor(_ []string) int {
 	return 0
 }
 
-func askYesNo(label string) (bool, error) {
+// askYesNo is a seam for tests.
+var askYesNo = promptYesNo
+
+func promptYesNo(label string) (bool, error) {
 	if !cfg.Interactive {
 		logx.Info("non-interactive mode: auto-answer No for prompt %q", label)
 		return false, nil

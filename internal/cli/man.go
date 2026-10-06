@@ -197,7 +197,7 @@ func showInstallHelp() {
 	fmt.Printf("  %s\n", colorCommand("i, install"))
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("RELATED COMMANDS:"))
-	fmt.Printf("  %s                         Clean install (removes lockfiles first)\n", colorCommand("xpm ci"))
+	fmt.Printf("  %s                         Frozen install from lockfiles (deletes nothing unasked)\n", colorCommand("xpm ci"))
 	fmt.Printf("  %s                     Update installed packages\n", colorCommand("xpm update"))
 	fmt.Printf("  %s                     Remove a package\n", colorCommand("xpm remove"))
 }

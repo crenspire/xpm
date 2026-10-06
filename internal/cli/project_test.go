@@ -211,3 +211,107 @@ func TestCIValidatesArgumentsBeforeTouchingAnything(t *testing.T) {
 		t.Errorf("tools ran: %q", *ran)
 	}
 }
+
+func TestCIResolvesEachToolOnceAndCleansForTheSameTool(t *testing.T) {
+	withConfig(t, config.Config{Interactive: false})
+	dir := inProject(t, "package.json", "package-lock.json", "yarn.lock", "node_modules/")
+	ran := recordTools(t)
+	oldAsk := askYesNo
+	askYesNo = func(string) (bool, error) { return true, nil }
+	t.Cleanup(func() { askYesNo = oldAsk })
+	var code int
+	out := captureStdout(t, func() { code = cmdCleanInstall(nil) })
+	if code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	if n := strings.Count(out, "several lock files found"); n != 1 {
+		t.Errorf("tool resolved %d times, want 1:\n%s", n, out)
+	}
+	// Non-interactive picks the first option (npm): npm ci clears node_modules itself,
+	// so the cleanup offer must follow the same npm decision and not delete it.
+	if want := []string{"npm ci"}; !reflect.DeepEqual(*ran, want) {
+		t.Fatalf("ran %q, want %q", *ran, want)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "node_modules")); err != nil {
+		t.Errorf("node_modules deleted although the chosen tool is npm")
+	}
+}
+
+func TestCIChecksToolBeforeDeleting(t *testing.T) {
+	withConfig(t, config.Config{})
+	dir := inProject(t, "package.json", "pnpm-lock.yaml", "node_modules/")
+	recordTools(t)
+	ensurePM = func(pm.ID) error { return fmt.Errorf("pnpm missing") }
+	oldAsk := askYesNo
+	askYesNo = func(string) (bool, error) { return true, nil }
+	t.Cleanup(func() { askYesNo = oldAsk })
+	var code int
+	captureStdout(t, func() { code = cmdCleanInstall(nil) })
+	if code == 0 {
+		t.Error("want non-zero exit when the tool is missing")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "node_modules")); err != nil {
+		t.Error("node_modules deleted although the tool is missing")
+	}
+}
+
+func TestMixedProjectRefusesPackageCommandsNonInteractively(t *testing.T) {
+	withConfig(t, config.Config{Interactive: false})
+	inProject(t, "package.json", "requirements.txt")
+	ran := recordTools(t)
+	if code := cmdRemove([]string{"requests"}); code != 1 {
+		t.Errorf("remove code=%d", code)
+	}
+	if code := cmdUpdate([]string{"requests"}); code != 1 {
+		t.Errorf("update code=%d", code)
+	}
+	if len(*ran) != 0 {
+		t.Errorf("ran %v", *ran)
+	}
+}
+
+func TestGoRemoveExplainsBeforeNameValidation(t *testing.T) {
+	withConfig(t, config.Config{})
+	inProject(t, "go.mod")
+	ran := recordTools(t)
+	var code int
+	out := captureStdout(t, func() { code = cmdRemove([]string{"foo"}) })
+	if code != 0 || !strings.Contains(out, "go mod tidy") || len(*ran) != 0 {
+		t.Fatalf("code=%d ran=%v out=%q", code, *ran, out)
+	}
+}
+
+func TestYarnBerryFromPackageManagerField(t *testing.T) {
+	for pkgMgr, want := range map[string]bool{
+		"yarn@4.1.0": true, "yarn@2.4.3": true, "yarn@1.22.19": false, "pnpm@9.0.0": false, "": false,
+	} {
+		dir := t.TempDir()
+		body := `{"packageManager": "` + pkgMgr + `"}`
+		if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		chdir(t, dir)
+		if got := yarnIsBerry(); got != want {
+			t.Errorf("%q: got %v, want %v", pkgMgr, got, want)
+		}
+	}
+}
+
+func TestCICleanupFollowsTheResolvedTool(t *testing.T) {
+	withConfig(t, config.Config{Interactive: false, Prefer: []string{"yarn"}})
+	dir := inProject(t, "package.json", "package-lock.json", "yarn.lock", "node_modules/")
+	ran := recordTools(t)
+	oldAsk := askYesNo
+	askYesNo = func(string) (bool, error) { return true, nil }
+	t.Cleanup(func() { askYesNo = oldAsk })
+	out := captureStdout(t, func() { cmdCleanInstall(nil) })
+	if want := []string{"yarn install --frozen-lockfile"}; !reflect.DeepEqual(*ran, want) {
+		t.Fatalf("ran %q, want %q\n%s", *ran, want, out)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "node_modules")); err == nil {
+		t.Error("node_modules should be deleted for yarn after a yes")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "yarn.lock")); err != nil {
+		t.Error("lock file deleted")
+	}
+}
