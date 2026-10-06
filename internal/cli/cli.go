@@ -184,6 +184,8 @@ func Run() int {
 		return cmdAudit(rest)
 	case "g", "graph":
 		return cmdGraph(rest)
+	case "why":
+		return cmdWhy(rest)
 	case "s", "search":
 		return cmdSearch(rest)
 	case "workspaces":

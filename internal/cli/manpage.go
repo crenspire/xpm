@@ -32,6 +32,7 @@ xpm {{.Command}} \- {{.Description}}
 2 on a \fBgraph\fR or \fBcompletion\fR usage error (bad flag or argument).
 \fBoutdated\fR: 0 all current, 1 some outdated, 2 usage error or incomplete check.
 \fBaudit\fR: 0 no known vulnerabilities, 1 vulnerabilities found, 2 usage error or the check could not be completed.
+\fBwhy\fR: 0 package found and paths printed, 1 package not in the dependency graph, 2 usage error or unreadable project.
 \fBinstall\fR (without packages), \fBci\fR, \fBlist\fR, \fBupdate\fR, \fBremove\fR and \fBrun\fR pass through the underlying tool's exit code; \fBrun -w\fR exits 1 if any project fails.
 .SH ENVIRONMENT
 .TP
@@ -246,6 +247,31 @@ Audit the locked dependencies
 .B xpm audit --json --timeout 10s
 Audit with a 10 second limit and print JSON`
 		data.SeeAlso = `\fBxpm\fR(1), \fBxpm outdated\fR(1), \fBxpm doctor\fR(1)`
+
+	case "why":
+		data.Description = "Show why a package is in the dependency graph"
+		data.Synopsis = `.B xpm why
+\fIpackage\fR [\fB--json\fR] [\fB--limit\fR \fIN\fR] [\fB--workspace\fR|\fB-w\fR]`
+		data.FullDescription = `Show the dependency paths from the project's root packages to a package, across ecosystems, read from the lockfiles.
+Each version of the package that is in the graph gets one block, followed by one line per path, for example \fBmy-app > express@4.18.2 > body-parser@1.20.1 > lodash@4.17.21\fR.
+At most \fB--limit\fR paths are shown (default 10; 0 shows all); when more exist, a last line says so. Cycles are cut, so a path never repeats a package.
+With \fB--json\fR, stdout is one JSON document with \fBpackage\fR, \fBpaths\fR (lists of node IDs from a root to the package) and \fBtruncated\fR.
+Exit status: 0 if the package is in the graph, 1 if it is not, 2 on a usage error (a missing or extra package name, a bad flag, a negative limit) or an unreadable project.`
+		data.Options = `.TP
+\fB--json\fR
+Print the paths as JSON
+.TP
+\fB--limit\fR \fIN\fR
+Maximum number of paths to show (default 10; 0 = all)
+.TP
+\fB--workspace\fR, \fB-w\fR
+Combine all workspace projects`
+		data.Examples = `.B xpm why lodash
+Show why lodash is installed
+.PP
+.B xpm why lodash --limit 0 --json
+Print every path to lodash as JSON`
+		data.SeeAlso = `\fBxpm\fR(1), \fBxpm graph\fR(1), \fBxpm audit\fR(1)`
 
 	case "update":
 		data.Description = "Update packages"

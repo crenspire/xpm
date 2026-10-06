@@ -228,6 +228,7 @@ Without a terminal (stdin and stdout both must be terminals; pipes and CI are no
 | `0` | Success |
 | `1` | Error, cancelled install prompt, invalid arguments, **no matches**, or a refused non-interactive guess |
 | `2` | `graph` usage error (bad flag or argument) |
+| `outdated` / `audit` / `why` | `0` nothing to report (all current / no known vulnerabilities / package found); `1` something to report (outdated dependencies / vulnerabilities / package not in the dependency graph); `2` usage error or the check could not be completed |
 | other | `install` (no package argument), `ci`, `list` / `update` / `remove` / `run` pass through the underlying tool's exit code (`run --workspace` exits 1 if any project fails) |
 
 ### Changes in this release

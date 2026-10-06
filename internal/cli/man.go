@@ -80,6 +80,7 @@ var commandTable = []commandInfo{
 	{"config", nil, "View or edit configuration", false},
 	{"env", nil, "Manage runtime versions (node, go, ...)", true},
 	{"graph", []string{"g"}, "Dependency graph across ecosystems", true},
+	{"why", nil, "Show why a package is in the dependency graph", false},
 	{"lock", nil, "Generate or verify the unified lockfile (xpm-lock.yaml)", true},
 	{"workspaces", nil, "List detected workspaces/monorepos", true},
 	{"completion", nil, "Print a shell completion script (bash, zsh, fish)", false},
@@ -147,6 +148,8 @@ func showCommandHelp(command string) bool {
 		showLockHelp()
 	case "graph":
 		showGraphHelp()
+	case "why":
+		showWhyHelp()
 	case "search":
 		showSearchHelp()
 	case "workspaces":
@@ -675,6 +678,32 @@ func showCompletionHelp() {
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("EXIT STATUS:"))
 	fmt.Println("  0 on success; 2 on a usage error (missing, extra or unknown shell argument).")
+}
+
+func showWhyHelp() {
+	fmt.Printf("%s\n", colorCommand("xpm why <package> [options]"))
+	fmt.Println()
+	fmt.Printf("%s\n", colorSection("DESCRIPTION:"))
+	fmt.Println("  Show the dependency paths from the project's root packages to a package, read")
+	fmt.Println("  from the lockfiles. Each version of the package in the graph gets one block with")
+	fmt.Println("  one line per path. Cycles are cut, so a path never repeats a package.")
+	fmt.Println()
+	fmt.Printf("%s\n", colorSection("EXIT STATUS:"))
+	fmt.Println("  0 package found and paths printed, 1 package not in the dependency graph,")
+	fmt.Println("  2 usage error or unreadable project.")
+	fmt.Println()
+	fmt.Printf("%s\n", colorSection("OPTIONS:"))
+	fmt.Printf("  %s                         Print the paths as JSON (package, paths, truncated)\n", colorOption("--json"))
+	fmt.Printf("  %s <N>                   Maximum number of paths to show (default 10; 0 = all)\n", colorOption("--limit"))
+	fmt.Printf("  %s                    Combine all workspace projects (-w)\n", colorOption("--workspace"))
+	fmt.Println()
+	fmt.Printf("%s\n", colorSection("EXAMPLES:"))
+	fmt.Printf("  %s                 Show why lodash is in the graph\n", colorExample("xpm why lodash"))
+	fmt.Printf("  %s   Every path to lodash, as JSON\n", colorExample("xpm why lodash --limit 0 --json"))
+	fmt.Println()
+	fmt.Printf("%s\n", colorSection("RELATED COMMANDS:"))
+	fmt.Printf("  %s                      Show the dependency graph\n", colorCommand("xpm graph"))
+	fmt.Printf("  %s                      Check for known vulnerabilities\n", colorCommand("xpm audit"))
 }
 
 func showAuditHelp() {

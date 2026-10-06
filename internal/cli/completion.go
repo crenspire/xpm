@@ -13,6 +13,7 @@ var completionFlags = map[string][]string{
 	"run":      {"-w", "--workspace"},
 	"outdated": {"--json", "--all", "--workspace", "-w"},
 	"audit":    {"--json", "--timeout", "--workspace", "-w"},
+	"why":      {"--json", "--limit", "--workspace", "-w"},
 	"graph":    {"--json", "--svg", "--depth", "--exec", "--workspace", "-w"},
 	"lock":     {"--verify"},
 	"man":      {"--generate"},

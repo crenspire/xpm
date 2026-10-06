@@ -119,6 +119,7 @@ homebrew_casks:
       - manpages/xpm-config.1
       - manpages/xpm-env.1
       - manpages/xpm-graph.1
+      - manpages/xpm-why.1
       - manpages/xpm-lock.1
       - manpages/xpm-workspaces.1
       - manpages/xpm-completion.1
