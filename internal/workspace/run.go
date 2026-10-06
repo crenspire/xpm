@@ -22,7 +22,7 @@ type RunOptions struct {
 }
 
 // Run runs task in every project that defines it by re-executing xpm as
-// `<exe> run -- <task>` (followed by `-- <opts.Args...>` when there are any)
+// `<exe> run -- <task>`, followed by `-- <opts.Args...>` when there are any,
 // with the project as working directory. Projects without
 // the task are skipped with a note on stderr; it is an error when no project
 // has it. A directory listed by several ecosystems runs once. Failures are

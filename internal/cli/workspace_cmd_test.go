@@ -5,8 +5,10 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -199,6 +201,12 @@ func TestSplitRunArgs(t *testing.T) {
 // The re-executed child receives `run -- <task> -- <args>`; the flag parser
 // eats the first "--", so the script must see exactly the extra args.
 func TestCmdRunChildReceivesTaskAndExtraArgs(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("runs the script through sh")
+	}
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not found")
+	}
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "pyproject.toml"), []byte("[tool.xpm.scripts]\ntest = \"printf '<%s>'\"\n"), 0o644); err != nil {
 		t.Fatal(err)

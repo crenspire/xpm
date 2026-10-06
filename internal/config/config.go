@@ -71,8 +71,8 @@ type SearchUIConfig struct {
 type WorkspaceConfig struct {
 	// Include specifies glob patterns that a project's path, relative to its
 	// workspace root (slash-separated, "." for the root itself), must match
-	// to be kept by the workspace commands (workspaces, graph --workspace,
-	// run --workspace). Patterns use path.Match syntax per segment, plus "**"
+	// to be kept by the workspace commands (workspaces, install, run and graph
+	// with --workspace). Patterns use path.Match syntax per segment, plus "**"
 	// for any number of segments. If empty, every detected project is kept.
 	Include []string `json:"include"`
 

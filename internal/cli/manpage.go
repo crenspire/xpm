@@ -152,7 +152,8 @@ If no task is specified, lists all available scripts.
 pyproject.toml: [tool.xpm.scripts] ([tool.upm.scripts] when that table is absent or empty), else [tool.poetry.scripts], else [project.scripts].
 Cargo.toml: [package.metadata.xpm.scripts] ([package.metadata.upm.scripts] fallback).
 package.json scripts run with npm, yarn, pnpm or bun run; composer.json scripts with \fBcomposer run-script\fR; pyproject.toml and Cargo.toml scripts run with \fBsh -c\fR.
-Arguments after \fB--\fR are passed to the script as separate, unexpanded arguments, appended to the end of the script command as "$@" (a script that already uses "$@" receives them twice).
+Arguments after \fB--\fR are passed on: to npm and pnpm as \fBrun\fR \fItask\fR \fB--\fR \fIargs\fR, to yarn and bun as \fBrun\fR \fItask\fR \fIargs\fR, to composer as \fBrun-script\fR \fItask\fR \fB--\fR \fIargs\fR.
+For pyproject.toml and Cargo.toml scripts they are separate, unexpanded arguments appended to the script command as "$@" (a script that already uses "$@" receives them twice).
 With \fB-w\fR they go to the task in every project.
 The exit status is the script's.`
 		data.Options = `.TP
@@ -236,7 +237,7 @@ Verify lockfiles haven't changed since last generation.
 Each recorded lockfile is reported as unchanged, changed or missing.
 Supported lockfiles on disk that xpm-lock.yaml does not record are reported as added.
 Unreadable entries and recorded paths outside the project are errors.
-Exit status 1 unless every lockfile is unchanged.`
+Exit status 0 when every recorded lockfile is unchanged (or none is recorded); 1 otherwise, including when xpm-lock.yaml does not exist.`
 		data.Examples = `.B xpm lock
 Generate unified lockfile
 .PP

@@ -281,14 +281,18 @@ func TestGraphAndLockDocsCoverFlagsAndExitStatus(t *testing.T) {
 	lockHelp := ansiRe.ReplaceAllString(captureStdout(t, showLockHelp), "")
 
 	for label, out := range map[string]string{"graph help": graphHelp, "graph man": graphPage} {
-		for _, want := range []string{"--json", "--svg", "--exec", "--depth", "--workspace", "-w", "status 2"} {
+		wantW := "(-w)" // help: "--workspace ... (-w)"
+		if label == "graph man" {
+			wantW = "--workspace, -w"
+		}
+		for _, want := range []string{"--json", "--svg", "--exec", "--depth", "--workspace", wantW, "exits with status 2"} {
 			if !strings.Contains(strings.ToLower(out), want) {
 				t.Errorf("%s: missing %q", label, want)
 			}
 		}
 	}
 	for label, out := range map[string]string{"lock help": lockHelp, "lock man": lockPage} {
-		for _, want := range []string{"unchanged", "changed", "missing", "added"} {
+		for _, want := range []string{"unchanged, changed or missing", "as added", "(or none is recorded)", "does not exist"} {
 			if !strings.Contains(out, want) {
 				t.Errorf("%s: missing %q", label, want)
 			}
@@ -301,7 +305,7 @@ func TestGraphAndLockDocsCoverFlagsAndExitStatus(t *testing.T) {
 	}
 	i := strings.Index(top, ".SH EXIT STATUS")
 	j := strings.Index(top, ".SH ENVIRONMENT")
-	if i < 0 || j < i || !strings.Contains(top[i:j], "2") {
-		t.Errorf("EXIT STATUS section does not mention 2:\n%s", top)
+	if i < 0 || j < i || !strings.Contains(roffFontRe.ReplaceAllString(top[i:j], ""), "2 on a graph usage error") {
+		t.Errorf("EXIT STATUS section does not describe exit 2 for graph:\n%s", top)
 	}
 }
