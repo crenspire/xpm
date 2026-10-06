@@ -35,10 +35,11 @@ func CreateShims(manager *Manager) error {
 		}
 
 		// Get active version to determine binary paths
-		version, err := manager.GetActiveVersion(runtime)
+		active, err := manager.ActiveVersion(runtime)
 		if err != nil {
 			continue
 		}
+		version := active.Version
 
 		versionPath := filepath.Join(runtimesPath, runtime, version)
 		binaryPaths := installer.BinaryPaths(version, versionPath)

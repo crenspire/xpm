@@ -96,7 +96,7 @@ func InstallRuntimeWithAlias(manager *Manager, runtime, version, alias string) e
 			fmt.Printf("%s@%s is already installed at %s\n", runtime, resolvedVersion, dest)
 			// Still save alias if provided
 			if detectedAlias != "" {
-				saveVersionAlias(dest, detectedAlias)
+				_ = writeMeta(dest, versionMeta{Version: resolvedVersion, Alias: detectedAlias})
 			}
 			return nil
 		}
@@ -130,7 +130,7 @@ func InstallRuntimeWithAlias(manager *Manager, runtime, version, alias string) e
 
 	// Save alias metadata if detected (after successful installation)
 	if detectedAlias != "" {
-		if err := saveVersionAlias(dest, detectedAlias); err != nil {
+		if err := writeMeta(dest, versionMeta{Version: resolvedVersion, Alias: detectedAlias}); err != nil {
 			logx.Info("failed to save alias metadata: %v", err)
 		}
 	}
@@ -151,13 +151,6 @@ func InstallRuntimeWithAlias(manager *Manager, runtime, version, alias string) e
 	}
 
 	fmt.Printf("✓ Installed %s@%s at %s\n", runtime, version, dest)
-
-	// Automatically activate the installed version (local)
-	// Use the resolved version, not the original (which might be an alias)
-	if err := UseVersion(manager, runtime, resolvedVersion, false); err != nil {
-		logx.Info("failed to auto-activate %s@%s: %v", runtime, resolvedVersion, err)
-		// Don't fail installation if activation fails
-	}
 
 	// Update shims
 	if err := CreateShims(manager); err != nil {

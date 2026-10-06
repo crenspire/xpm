@@ -1,34 +1,36 @@
 package env
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strconv"
+	"time"
 )
 
-// RemoveVersion removes an installed version.
-func RemoveVersion(manager *Manager, runtime, version string) error {
-	versionPath, err := manager.versionDir(runtime, version)
+// RemoveVersion removes an installed version. It refuses the version that is
+// active here or set as the global default.
+func RemoveVersion(_ context.Context, m *Manager, runtime, version string) error {
+	dir, err := m.versionDir(runtime, version)
 	if err != nil {
 		return err
 	}
-
-	// Check if version exists
-	if _, err := os.Stat(versionPath); err != nil {
-		return fmt.Errorf("version %s@%s is not installed", runtime, version)
+	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+		return fmt.Errorf("%s@%s is not installed", runtime, version)
 	}
-
-	// Check if it's currently active
-	activeVersion, _ := manager.GetActiveVersion(runtime)
-	if version == activeVersion {
-		return fmt.Errorf("cannot remove active version %s@%s. Switch to another version first", runtime, version)
+	if a, err := m.ActiveVersion(runtime); err == nil && a.Version == version {
+		return fmt.Errorf("cannot remove %s@%s: it is active here (set in %s)\nSwitch first: xpm env use %s@<other-version>", runtime, version, a.Source, runtime)
 	}
-
-	// Remove directory
-	if err := os.RemoveAll(versionPath); err != nil {
-		return fmt.Errorf("failed to remove version: %w", err)
+	if g, err := m.GlobalVersion(runtime); err == nil && g != "" {
+		if exact, ok := m.resolveInstalled(runtime, g); ok && exact == version {
+			return fmt.Errorf("cannot remove %s@%s: it is the global default (set in %s)\nSwitch first: xpm env use --global %s@<other-version>", runtime, version, m.activePath, runtime)
+		}
 	}
-
-	fmt.Printf("Removed %s@%s\n", runtime, version)
-
-	return nil
+	// Rename first so the version disappears atomically, then delete.
+	trash := filepath.Join(filepath.Dir(dir), ".tmp-old-"+strconv.FormatInt(time.Now().UnixNano(), 36))
+	if err := os.Rename(dir, trash); err != nil {
+		return fmt.Errorf("remove %s@%s: %w", runtime, version, err)
+	}
+	return os.RemoveAll(trash)
 }

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -119,9 +120,14 @@ func cmdEnvUse(manager *env.Manager, args []string) int {
 		return 1
 	}
 
-	if err := env.UseVersion(manager, runtime, version, global); err != nil {
+	a, err := env.UseVersion(manager, runtime, version, global)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return 1
+	}
+	fmt.Printf("Using %s@%s (%s)\n", runtime, a.Version, a.Source)
+	if err := env.CreateShims(manager); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not update shims: %v\n", err)
 	}
 
 	return 0
@@ -163,9 +169,9 @@ func cmdEnvCurrent(manager *env.Manager) int {
 	found := false
 
 	for _, runtime := range runtimes {
-		version, err := manager.GetActiveVersion(runtime)
+		a, err := manager.ActiveVersion(runtime)
 		if err == nil {
-			fmt.Printf("%s: %s\n", runtime, version)
+			fmt.Printf("%s %s (%s)\n", runtime, a.Version, a.Source)
 			found = true
 		}
 	}
@@ -191,10 +197,11 @@ func cmdEnvRemove(manager *env.Manager, args []string) int {
 		return 1
 	}
 
-	if err := env.RemoveVersion(manager, runtime, version); err != nil {
+	if err := env.RemoveVersion(context.Background(), manager, runtime, version); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return 1
 	}
+	fmt.Printf("Removed %s@%s\n", runtime, version)
 
 	return 0
 }
