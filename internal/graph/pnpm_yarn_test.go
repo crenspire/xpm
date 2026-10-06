@@ -3,11 +3,12 @@ package graph
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
 func TestParsePnpmLockV9Snapshots(t *testing.T) {
-	g, err := parsePnpmLock(fixture(t, "pnpm/v9/pnpm-lock.yaml"), nil, "pnpm-app")
+	g, err := parsePnpmLock(fixture(t, "pnpm/v9/pnpm-lock.yaml"), nil, "pnpm-app", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -24,7 +25,7 @@ func TestParsePnpmLockV9Snapshots(t *testing.T) {
 }
 
 func TestParsePnpmLockV6(t *testing.T) {
-	g, err := parsePnpmLock(fixture(t, "pnpm/v6/pnpm-lock.yaml"), []byte(`{"name": "pnpm6-app", "version": "1.0.0"}`), "fallback")
+	g, err := parsePnpmLock(fixture(t, "pnpm/v6/pnpm-lock.yaml"), []byte(`{"name": "pnpm6-app", "version": "1.0.0"}`), "fallback", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,6 +48,7 @@ func TestPnpmSplitKey(t *testing.T) {
 		{"@testing-library/react@16.0.0(@types/react@18.3.3)(react@18.3.1)", false, "@testing-library/react", "16.0.0"},
 		{"/@babel/core/7.24.7", true, "@babel/core", "7.24.7"},
 		{"/react-dom/18.2.0_react@18.2.0", true, "react-dom", "18.2.0"},
+		{"mylib@git+ssh://git@github.com/acme/mylib.git#0a1b", false, "mylib", "git+ssh://git@github.com/acme/mylib.git#0a1b"},
 	}
 	for _, c := range cases {
 		name, version, ok := pnpmSplitKey(c.key, c.v5)
@@ -79,7 +81,7 @@ packages:
     resolution: {integrity: sha512-/3IjMdb2L9QbBdWiW5e3P2/npwMBaU9mHCSCUzNln0ZCYbcfTsGbTJrU/kGemdH2IWmB2ioZ+zkxtmq6g09fGQ==}
     dev: false
 `)
-	g, err := parsePnpmLock(data, nil, "v5-app")
+	g, err := parsePnpmLock(data, nil, "v5-app", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +92,7 @@ packages:
 }
 
 func TestParsePnpmLockV9Workspace(t *testing.T) {
-	g, err := parsePnpmLock(fixture(t, "pnpm/v9-workspace/pnpm-lock.yaml"), fixture(t, "pnpm/v9-workspace/package.json"), "fallback")
+	g, err := parsePnpmLock(fixture(t, "pnpm/v9-workspace/pnpm-lock.yaml"), fixture(t, "pnpm/v9-workspace/package.json"), "fallback", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +114,7 @@ func TestParsePnpmLockMalformed(t *testing.T) {
 		"packages-list":   "lockfileVersion: '9.0'\npackages:\n  - react\n",
 	} {
 		t.Run(name, func(t *testing.T) {
-			if g, err := parsePnpmLock([]byte(data), nil, "fallback"); err == nil {
+			if g, err := parsePnpmLock([]byte(data), nil, "fallback", nil); err == nil {
 				t.Fatalf("want error, got %s", dumpGraph(g))
 			}
 		})
@@ -205,5 +207,61 @@ func TestNodeExtractorBunIsReportedNotParsed(t *testing.T) {
 	}
 	if _, err := (&NodeExtractor{}).Extract(dir, ExtractOptions{}); err == nil {
 		t.Fatal("want a 'not supported' error for bun.lock")
+	}
+}
+
+func TestNodeExtractorPnpmV6GitAndFileDeps(t *testing.T) {
+	// git and file: packages have keys that cannot be split into name and
+	// version; their name/version fields name them, and an entry with
+	// neither is skipped with a warning instead of failing the graph.
+	var warnings []string
+	g, err := (&NodeExtractor{}).Extract(copyFixtureDir(t, "pnpm/v6-git"), ExtractOptions{Warn: func(m string) { warnings = append(warnings, m) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantGraph(t, g, 4, 4, 1, []string{
+		"node:git-app@1.0.0 -> node:mylib@1.0.0",
+		"node:git-app@1.0.0 -> node:localtar@0.1.0",
+		"node:git-app@1.0.0 -> node:ms@2.1.3",
+		"node:mylib@1.0.0 -> node:ms@2.1.3",
+	}, []string{"node:git-app@1.0.0"})
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "github.com/acme/nameless/ffff0000") {
+		t.Errorf("warnings = %q, want one about the nameless git package", warnings)
+	}
+}
+
+func TestNodeExtractorPnpmV9GitURLIsNotAnAlias(t *testing.T) {
+	dir := t.TempDir()
+	lock := `lockfileVersion: '9.0'
+
+importers:
+
+  .:
+    dependencies:
+      mylib:
+        specifier: git+ssh://git@github.com/acme/mylib.git#0a1b2c3d
+        version: git+ssh://git@github.com/acme/mylib.git#0a1b2c3d
+
+packages:
+
+  mylib@git+ssh://git@github.com/acme/mylib.git#0a1b2c3d:
+    resolution: {commit: 0a1b2c3d, repo: git@github.com:acme/mylib.git, type: git}
+    version: 1.0.0
+
+snapshots:
+
+  mylib@git+ssh://git@github.com/acme/mylib.git#0a1b2c3d: {}
+`
+	if err := os.WriteFile(filepath.Join(dir, "pnpm-lock.yaml"), []byte(lock), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g, err := (&NodeExtractor{}).Extract(dir, ExtractOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	git := "node:mylib@git+ssh://git@github.com/acme/mylib.git#0a1b2c3d"
+	wantGraph(t, g, 2, 1, 1, []string{"node:" + filepath.Base(dir) + "@ -> " + git}, nil)
+	if n := g.Nodes[git]; n == nil || n.Name != "mylib" {
+		t.Errorf("git package node = %+v, want name mylib", n)
 	}
 }

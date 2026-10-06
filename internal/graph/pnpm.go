@@ -37,7 +37,12 @@ func (d *pnpmImporterDep) UnmarshalYAML(n *yaml.Node) error {
 	return nil
 }
 
+// pnpmPackage is a packages/snapshots entry. Name and Version are set (in
+// v5/v6 lockfiles) for git, tarball and file: packages, whose keys are not
+// "name@version".
 type pnpmPackage struct {
+	Name                 string            `yaml:"name"`
+	Version              string            `yaml:"version"`
 	Dependencies         map[string]string `yaml:"dependencies"`
 	OptionalDependencies map[string]string `yaml:"optionalDependencies"`
 	Resolution           struct {
@@ -70,8 +75,9 @@ func pnpmVersion(v string, v5 bool) string {
 
 // pnpmSplitKey turns a packages/snapshots key into name and version:
 // "/@scope/name@1.2.3(peer@1)" (v6), "name@1.2.3(peer@1)" (v9),
-// "/@scope/name/1.2.3_peer@1" (v5). The version follows the last "@" that is
-// not the leading scope "@" (v6+), or the last "/" (v5).
+// "/@scope/name/1.2.3_peer@1" (v5). The version follows the first "@" that
+// is not the leading scope "@" (v6+; a name has no other "@", while a git URL
+// version such as "git+ssh://git@host/x.git" may), or the last "/" (v5).
 func pnpmSplitKey(key string, v5 bool) (name, version string, ok bool) {
 	k := strings.TrimPrefix(key, "/")
 	if v5 {
@@ -80,8 +86,10 @@ func pnpmSplitKey(key string, v5 bool) (name, version string, ok bool) {
 		}
 	} else {
 		k = pnpmVersion(k, false)
-		if at := strings.LastIndexByte(k, '@'); at > 0 {
-			name, version = k[:at], k[at+1:]
+		if len(k) > 1 {
+			if at := strings.IndexByte(k[1:], '@'); at >= 0 {
+				name, version = k[:at+1], k[at+2:]
+			}
 		}
 	}
 	if name == "" || version == "" {
@@ -92,13 +100,18 @@ func pnpmSplitKey(key string, v5 bool) (name, version string, ok bool) {
 
 // pnpmTarget resolves a dependency entry (name: value) to a node ID. value is
 // a version ("18.2.0(react@18.2.0)"), an alias target ("string-width@4.2.3"
-// in v9, "/string-width@4.2.3" in v6, "/string-width/4.2.3" in v5) or a
-// workspace link ("link:../core"), which is not a package.
+// in v9, "/string-width@4.2.3" in v6, "/string-width/4.2.3" in v5), a
+// non-registry version (a git or tarball URL, "file:..."), which names the
+// package as is, or a workspace link ("link:../core"), which is not a
+// package. A value containing ":" is never an alias: "git@host:x.git" and
+// URLs carry an "@" of their own.
 func pnpmTarget(name, value string, v5 bool) (string, bool) {
-	if value == "" || strings.HasPrefix(value, "link:") || strings.HasPrefix(value, "file:") {
+	if value == "" || strings.HasPrefix(value, "link:") {
 		return "", false
 	}
-	alias := strings.HasPrefix(value, "/") || (!v5 && strings.LastIndexByte(pnpmVersion(value, false), '@') > 0)
+	bare := pnpmVersion(value, false)
+	alias := strings.HasPrefix(value, "/") ||
+		(!v5 && !strings.Contains(bare, ":") && strings.IndexByte(bare, '@') > 0)
 	if alias {
 		n, ver, ok := pnpmSplitKey(value, v5)
 		if !ok {
@@ -113,7 +126,13 @@ func pnpmTarget(name, value string, v5 bool) (string, bool) {
 // manifest (package.json) names the project, else fallback. The project is
 // the root and stands for importer "."; every other importer (workspace
 // package) becomes a node named by its path, linked from the project.
-func parsePnpmLock(data, manifest []byte, fallback string) (*DepGraph, error) {
+//
+// In v5/v6 lockfiles git, tarball and file: packages are keyed by their
+// source ("github.com/acme/lib/0a1b2c3d") and named by their name/version
+// fields; such an entry without those fields is skipped and reported to
+// warn (nil discards it), so one odd dependency does not lose the graph.
+// Dependency values equal to such a key resolve to its node.
+func parsePnpmLock(data, manifest []byte, fallback string, warn func(format string, a ...any)) (*DepGraph, error) {
 	var lock pnpmLockfile
 	if err := yaml.Unmarshal(data, &lock); err != nil {
 		return nil, fmt.Errorf("pnpm-lock.yaml: %w", err)
@@ -122,17 +141,34 @@ func parsePnpmLock(data, manifest []byte, fallback string) (*DepGraph, error) {
 		return nil, fmt.Errorf("pnpm-lock.yaml: missing lockfileVersion")
 	}
 	v5 := strings.HasPrefix(lock.LockfileVersion, "5")
+	legacy := v5 || strings.HasPrefix(lock.LockfileVersion, "6")
 	g := NewGraph()
 
+	// keyIDs maps each packages/snapshots key, with and without its leading
+	// "/", to its node.
+	keyIDs := map[string]string{}
 	addNodes := func(m map[string]pnpmPackage) error {
 		for _, key := range sortedKeys(m) {
+			p := m[key]
 			name, version, ok := pnpmSplitKey(key, v5)
-			if !ok {
-				return fmt.Errorf("pnpm-lock.yaml: cannot parse package key %q", key)
+			if legacy && p.Name != "" && p.Version != "" {
+				name, version, ok = p.Name, p.Version, true
 			}
-			if g.GetNode(NodeID("node", name, version)) == nil {
+			if !ok {
+				if !legacy {
+					return fmt.Errorf("pnpm-lock.yaml: cannot parse package key %q", key)
+				}
+				if warn != nil {
+					warn("pnpm-lock.yaml: skipping package %q: no name and version", key)
+				}
+				continue
+			}
+			id := NodeID("node", name, version)
+			keyIDs[key] = id
+			keyIDs[strings.TrimPrefix(key, "/")] = id
+			if g.GetNode(id) == nil {
 				n := NewDepNode("node", name, version)
-				if p := m[key]; p.Resolution.Integrity != "" {
+				if p.Resolution.Integrity != "" {
 					n.WithMetadata("integrity", p.Resolution.Integrity)
 				}
 				g.AddNode(n)
@@ -152,13 +188,24 @@ func parsePnpmLock(data, manifest []byte, fallback string) (*DepGraph, error) {
 	if len(withDeps) == 0 {
 		withDeps = lock.Packages
 	}
+	target := func(name, value string) (string, bool) {
+		if id, ok := keyIDs[value]; ok {
+			return id, true
+		}
+		if id, ok := pnpmTarget(name, value, v5); ok && g.GetNode(id) != nil {
+			return id, true
+		}
+		return "", false
+	}
 	for _, key := range sortedKeys(withDeps) {
-		name, version, _ := pnpmSplitKey(key, v5)
-		from := NodeID("node", name, version)
+		from, ok := keyIDs[key]
+		if !ok {
+			continue
+		}
 		p := withDeps[key]
 		for _, sec := range []map[string]string{p.Dependencies, p.OptionalDependencies} {
 			for _, kv := range sortedPairs(sec) {
-				if to, ok := pnpmTarget(kv[0], kv[1], v5); ok && g.GetNode(to) != nil {
+				if to, ok := target(kv[0], kv[1]); ok {
 					g.AddEdge(NewEdge(from, to))
 				}
 			}
@@ -199,7 +246,7 @@ func parsePnpmLock(data, manifest []byte, fallback string) (*DepGraph, error) {
 					}
 					continue
 				}
-				if id, ok := pnpmTarget(name, v, v5); ok && g.GetNode(id) != nil {
+				if id, ok := target(name, v); ok {
 					g.AddEdge(NewEdge(from, id))
 				}
 			}

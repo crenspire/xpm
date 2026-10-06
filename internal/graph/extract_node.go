@@ -22,7 +22,7 @@ func (e *NodeExtractor) Supports(file string) bool {
 
 // Extract parses the first lockfile found, in the order package-lock.json,
 // pnpm-lock.yaml, yarn.lock. Bun lockfiles are detected but not parsed.
-func (e *NodeExtractor) Extract(dir string, _ ExtractOptions) (*DepGraph, error) {
+func (e *NodeExtractor) Extract(dir string, opts ExtractOptions) (*DepGraph, error) {
 	manifest, err := readOptional(filepath.Join(dir, "package.json"))
 	if err != nil {
 		return nil, err
@@ -32,7 +32,9 @@ func (e *NodeExtractor) Extract(dir string, _ ExtractOptions) (*DepGraph, error)
 		parse func(data, manifest []byte, fallback string) (*DepGraph, error)
 	}{
 		{"package-lock.json", parseNpmLock},
-		{"pnpm-lock.yaml", parsePnpmLock},
+		{"pnpm-lock.yaml", func(data, manifest []byte, fallback string) (*DepGraph, error) {
+			return parsePnpmLock(data, manifest, fallback, opts.warn)
+		}},
 		{"yarn.lock", parseYarnLock},
 	}
 	for _, l := range locks {
