@@ -1,0 +1,12 @@
+{
+  "name": "legacy-app",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "debug": "^4.3.4",
+    "send": "0.18.0"
+  },
+  "devDependencies": {
+    "@types/debug": "^4.1.12"
+  }
+}

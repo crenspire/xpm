@@ -40,7 +40,7 @@ func ExtractAll(dir string) (*DepGraph, error) {
 		wg.Add(1)
 		go func(ext Extractor) {
 			defer wg.Done()
-			graph, err := ext.Extract(dir)
+			graph, err := ext.Extract(dir, ExtractOptions{})
 			results <- result{graph: graph, err: err, name: ext.Name()}
 		}(extractor)
 	}

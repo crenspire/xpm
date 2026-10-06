@@ -20,7 +20,7 @@ func (e *JavaExtractor) Supports(file string) bool {
 	return file == "pom.xml" || file == "build.gradle" || file == "build.gradle.kts"
 }
 
-func (e *JavaExtractor) Extract(dir string) (*DepGraph, error) {
+func (e *JavaExtractor) Extract(dir string, _ ExtractOptions) (*DepGraph, error) {
 	// Try Maven first
 	if graph, err := e.extractMaven(dir); err == nil && graph != nil {
 		return graph, nil

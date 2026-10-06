@@ -3,7 +3,7 @@ package graph
 // Extractor is the interface for ecosystem-specific dependency extractors.
 type Extractor interface {
 	// Extract extracts dependencies from the given directory.
-	Extract(dir string) (*DepGraph, error)
+	Extract(dir string, opts ExtractOptions) (*DepGraph, error)
 
 	// Supports checks if this extractor supports the given file.
 	Supports(file string) bool

@@ -19,7 +19,7 @@ func (e *GoExtractor) Supports(file string) bool {
 	return file == "go.mod" || file == "go.sum"
 }
 
-func (e *GoExtractor) Extract(dir string) (*DepGraph, error) {
+func (e *GoExtractor) Extract(dir string, _ ExtractOptions) (*DepGraph, error) {
 	// Try using go list -m all for complete dependency tree
 	if graph := e.extractGoList(dir); graph != nil {
 		return graph, nil

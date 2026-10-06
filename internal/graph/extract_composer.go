@@ -17,7 +17,7 @@ func (e *ComposerExtractor) Supports(file string) bool {
 	return file == "composer.lock"
 }
 
-func (e *ComposerExtractor) Extract(dir string) (*DepGraph, error) {
+func (e *ComposerExtractor) Extract(dir string, _ ExtractOptions) (*DepGraph, error) {
 	path := filepath.Join(dir, "composer.lock")
 	data, err := os.ReadFile(path)
 	if err != nil {

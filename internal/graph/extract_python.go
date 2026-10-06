@@ -23,7 +23,7 @@ func (e *PythonExtractor) Supports(file string) bool {
 		file == "pyproject.toml" || file == "poetry.lock"
 }
 
-func (e *PythonExtractor) Extract(dir string) (*DepGraph, error) {
+func (e *PythonExtractor) Extract(dir string, _ ExtractOptions) (*DepGraph, error) {
 	graph := NewGraph()
 
 	// Try poetry.lock first

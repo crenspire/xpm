@@ -2,7 +2,9 @@ package graph
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,13 +24,22 @@ func (e *NodeExtractor) Supports(file string) bool {
 		file == "pnpm-lock.yaml" || file == "bun.lockb"
 }
 
-func (e *NodeExtractor) Extract(dir string) (*DepGraph, error) {
-	graph := NewGraph()
-
-	// Try package-lock.json first
-	if err := e.extractPackageLock(dir, graph); err == nil {
-		return graph, nil
+// Extract parses package-lock.json when present. yarn.lock and
+// pnpm-lock.yaml still go through the legacy readers below until Task 4.
+func (e *NodeExtractor) Extract(dir string, _ ExtractOptions) (*DepGraph, error) {
+	data, err := os.ReadFile(filepath.Join(dir, "package-lock.json"))
+	if err == nil {
+		manifest, err := readOptional(filepath.Join(dir, "package.json"))
+		if err != nil {
+			return nil, err
+		}
+		return parseNpmLock(data, manifest, dirName(dir))
 	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		return nil, err
+	}
+
+	graph := NewGraph()
 
 	// Try yarn.lock
 	if err := e.extractYarnLock(dir, graph); err == nil {
@@ -42,136 +53,6 @@ func (e *NodeExtractor) Extract(dir string) (*DepGraph, error) {
 
 	// bun.lockb is binary, skip for now
 	return graph, fmt.Errorf("no supported Node.js lockfile found")
-}
-
-func (e *NodeExtractor) extractPackageLock(dir string, graph *DepGraph) error {
-	path := filepath.Join(dir, "package-lock.json")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-
-	var lockfile struct {
-		Name         string                 `json:"name"`
-		Version      string                 `json:"version"`
-		Packages     map[string]interface{} `json:"packages"`
-		Dependencies map[string]interface{} `json:"dependencies"`
-	}
-
-	if err := json.Unmarshal(data, &lockfile); err != nil {
-		return err
-	}
-
-	// Add root package
-	if lockfile.Name != "" {
-		rootNode := NewDepNode("node", lockfile.Name, lockfile.Version)
-		graph.AddNode(rootNode)
-		graph.AddRoot(rootNode.ID)
-	}
-
-	// Extract from packages (npm v7+ format)
-	if lockfile.Packages != nil {
-		for pkgPath, pkgData := range lockfile.Packages {
-			if pkgPath == "" {
-				continue // Skip root
-			}
-
-			pkgMap, ok := pkgData.(map[string]interface{})
-			if !ok {
-				continue
-			}
-
-			name, _ := pkgMap["name"].(string)
-			version, _ := pkgMap["version"].(string)
-			if name == "" || version == "" {
-				continue
-			}
-
-			node := NewDepNode("node", name, version)
-			if resolved, ok := pkgMap["resolved"].(string); ok {
-				node.WithMetadata("resolved", resolved)
-			}
-			if integrity, ok := pkgMap["integrity"].(string); ok {
-				node.WithMetadata("integrity", integrity)
-			}
-			graph.AddNode(node)
-
-			// Extract dependencies
-			if deps, ok := pkgMap["dependencies"].(map[string]interface{}); ok {
-				for depName := range deps {
-					// Validate depName to prevent path traversal
-					if depName == "" || strings.Contains(depName, "..") {
-						continue
-					}
-					// Validate pkgPath before using it
-					cleanPkgPath := filepath.Clean(pkgPath)
-					if strings.Contains(cleanPkgPath, "..") {
-						continue
-					}
-					// Find dependency node
-					depPath := filepath.Join(cleanPkgPath, "node_modules", depName)
-					// Validate the constructed path doesn't escape
-					if !strings.HasPrefix(depPath, cleanPkgPath) {
-						continue
-					}
-					if depNode := e.findNodeInPackages(lockfile.Packages, depPath); depNode != nil {
-						graph.AddEdge(NewEdge(node.ID, depNode.ID))
-					}
-				}
-			}
-		}
-	}
-
-	// Fallback to dependencies (npm v6 format)
-	if lockfile.Dependencies != nil {
-		e.extractDependenciesRecursive(lockfile.Dependencies, "", graph)
-	}
-
-	return nil
-}
-
-func (e *NodeExtractor) findNodeInPackages(packages map[string]interface{}, path string) *DepNode {
-	if pkgData, ok := packages[path]; ok {
-		pkgMap, ok := pkgData.(map[string]interface{})
-		if !ok {
-			return nil
-		}
-		name, _ := pkgMap["name"].(string)
-		version, _ := pkgMap["version"].(string)
-		if name != "" && version != "" {
-			return NewDepNode("node", name, version)
-		}
-	}
-	return nil
-}
-
-func (e *NodeExtractor) extractDependenciesRecursive(deps map[string]interface{}, parentID string, graph *DepGraph) {
-	for name, depData := range deps {
-		depMap, ok := depData.(map[string]interface{})
-		if !ok {
-			continue
-		}
-
-		version, _ := depMap["version"].(string)
-		if version == "" {
-			continue
-		}
-
-		node := NewDepNode("node", name, version)
-		if resolved, ok := depMap["resolved"].(string); ok {
-			node.WithMetadata("resolved", resolved)
-		}
-		graph.AddNode(node)
-
-		if parentID != "" {
-			graph.AddEdge(NewEdge(parentID, node.ID))
-		}
-
-		// Recursively extract nested dependencies
-		if nestedDeps, ok := depMap["dependencies"].(map[string]interface{}); ok {
-			e.extractDependenciesRecursive(nestedDeps, node.ID, graph)
-		}
-	}
 }
 
 func (e *NodeExtractor) extractYarnLock(dir string, graph *DepGraph) error {

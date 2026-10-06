@@ -19,7 +19,7 @@ func (e *CargoExtractor) Supports(file string) bool {
 	return file == "Cargo.lock"
 }
 
-func (e *CargoExtractor) Extract(dir string) (*DepGraph, error) {
+func (e *CargoExtractor) Extract(dir string, _ ExtractOptions) (*DepGraph, error) {
 	path := filepath.Join(dir, "Cargo.lock")
 	data, err := os.ReadFile(path)
 	if err != nil {
