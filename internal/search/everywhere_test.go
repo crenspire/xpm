@@ -1,6 +1,7 @@
 package search
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -25,8 +26,12 @@ func withDeadline(t *testing.T, d time.Duration) {
 }
 
 func fakeLookup(id pm.ID, delay time.Duration, err error) lookup {
-	return lookup{id: id, fn: func(pkg string) (*Result, error) {
-		time.Sleep(delay)
+	return lookup{id: id, fn: func(ctx context.Context, pkg string) (*Result, error) {
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -119,7 +124,7 @@ func TestSearchEverywhereAllFailedIsAnError(t *testing.T) {
 func TestSearchEverywhereSkipsDisabled(t *testing.T) {
 	called := false
 	withLookups(t, []lookup{
-		{id: pm.Npm, fn: func(string) (*Result, error) { called = true; return nil, nil }},
+		{id: pm.Npm, fn: func(context.Context, string) (*Result, error) { called = true; return nil, nil }},
 	})
 	got, err := SearchEverywhere("x", Options{Enable: map[pm.ID]bool{pm.Npm: false}})
 	if err != nil || len(got) != 0 || called {
@@ -134,7 +139,7 @@ func BenchmarkSearchEverywhereFanout(b *testing.B) {
 	exactLookups, lookupCacheDir = nil, ""
 	for _, id := range allIDs {
 		id := id
-		exactLookups = append(exactLookups, lookup{id: id, fn: func(p string) (*Result, error) {
+		exactLookups = append(exactLookups, lookup{id: id, fn: func(_ context.Context, p string) (*Result, error) {
 			return &Result{Manager: id, Name: p}, nil
 		}})
 	}

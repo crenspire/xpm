@@ -50,7 +50,7 @@ func SearchEverywhereParallelWithConfig(pkg string, opts Options, cfg ParallelSe
 	// Use proper search APIs that return multiple results instead of existence checks
 	searches := []struct {
 		manager pm.ID
-		fn      func(string) ([]Result, error)
+		fn      func(context.Context, string) ([]Result, error)
 	}{
 		{pm.Npm, searchNpmMultiple},
 		{pm.Pip, searchPipMultiple},
@@ -62,7 +62,7 @@ func SearchEverywhereParallelWithConfig(pkg string, opts Options, cfg ParallelSe
 	// Filter to only enabled searches
 	var enabledSearches []struct {
 		manager pm.ID
-		fn      func(string) ([]Result, error)
+		fn      func(context.Context, string) ([]Result, error)
 	}
 	for _, s := range searches {
 		if Enabled(opts, s.manager) {
@@ -83,7 +83,7 @@ func SearchEverywhereParallelWithConfig(pkg string, opts Options, cfg ParallelSe
 	// Launch goroutines for each search
 	for _, s := range enabledSearches {
 		wg.Add(1)
-		go func(manager pm.ID, fn func(string) ([]Result, error)) {
+		go func(manager pm.ID, fn func(context.Context, string) ([]Result, error)) {
 			defer wg.Done()
 
 			// Check context before starting
@@ -95,7 +95,7 @@ func SearchEverywhereParallelWithConfig(pkg string, opts Options, cfg ParallelSe
 			}
 
 			// Perform search (this may take time, but we check context after)
-			results, err := fn(pkg)
+			results, err := fn(ctx, pkg)
 
 			// Check context before sending results
 			select {
@@ -214,33 +214,29 @@ func SearchRegistriesParallel(pkg string, managers []pm.ID) ([]Result, error) {
 }
 
 // Wrapper functions that use proper search APIs instead of existence checks
-func searchNpmMultiple(query string) ([]Result, error) {
-	return SearchNpmPackages(query, 20) // Limit to 20 results
+func searchNpmMultiple(ctx context.Context, query string) ([]Result, error) {
+	return SearchNpmPackages(ctx, query, 20)
 }
 
-func searchPipMultiple(query string) ([]Result, error) {
-	// PyPI doesn't have a proper search API, so we try exact match
-	// and also try a few common variations
-	result, err := existsInPip(query)
-	if err != nil {
+// searchPipMultiple uses the exact lookup: PyPI has no search API.
+func searchPipMultiple(ctx context.Context, query string) ([]Result, error) {
+	result, err := existsInPip(ctx, query)
+	if err != nil || result == nil {
 		return nil, err
 	}
-	if result != nil {
-		return []Result{*result}, nil
-	}
-	return nil, nil
+	return []Result{*result}, nil
 }
 
-func searchComposerMultiple(query string) ([]Result, error) {
-	return SearchPackagistPackages(query, 20) // Limit to 20 results
+func searchComposerMultiple(ctx context.Context, query string) ([]Result, error) {
+	return SearchPackagistPackages(ctx, query, 20)
 }
 
-func searchCargoMultiple(query string) ([]Result, error) {
-	return SearchCratesIO(query, 20) // Limit to 20 results
+func searchCargoMultiple(ctx context.Context, query string) ([]Result, error) {
+	return SearchCratesIO(ctx, query, 20)
 }
 
-func searchMavenMultiple(query string) ([]Result, error) {
-	return SearchMavenCentral(query, 20) // Limit to 20 results
+func searchMavenMultiple(ctx context.Context, query string) ([]Result, error) {
+	return SearchMavenCentral(ctx, query, 20)
 }
 
 // BatchSearch searches for multiple packages in parallel.

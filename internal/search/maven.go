@@ -1,8 +1,9 @@
 package search
 
 import (
-	"encoding/json"
+	"context"
 	"fmt"
+	"net/http"
 	"net/url"
 
 	"github.com/crenspire/xpm/internal/logx"
@@ -27,32 +28,30 @@ type mavenSearchResponse struct {
 	} `json:"response"`
 }
 
-// SearchMavenCentral searches Maven Central for artifacts.
-func SearchMavenCentral(query string, limit int) ([]Result, error) {
-	url := fmt.Sprintf("%s?q=%s&rows=%d&wt=json", MavenSearchURL, url.QueryEscape(query), limit)
-	logx.Info("search maven: %s", url)
+// SearchMavenCentral searches Maven Central for up to limit artifacts.
+func SearchMavenCentral(ctx context.Context, query string, limit int) ([]Result, error) {
+	u := fmt.Sprintf("%s?q=%s&rows=%d&wt=json", mavenSearchURL, url.QueryEscape(query), limit)
+	logx.Info("search maven: %s", u)
 
-	resp, err := httpClient.Get(url)
+	resp, err := httpGet(ctx, u)
 	if err != nil {
 		return nil, fmt.Errorf("maven search failed: %w", err)
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("maven returned status %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		return nil, statusError("maven", resp)
 	}
 
 	var data mavenSearchResponse
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		return nil, fmt.Errorf("failed to decode maven response: %w", err)
+	if err := decodeJSON("maven", query, resp.Body, &data); err != nil {
+		return nil, err
 	}
 
 	var results []Result
 	for _, doc := range data.Response.Docs {
-		coordinate := fmt.Sprintf("%s:%s", doc.Group, doc.Artifact)
 		results = append(results, Result{
 			Manager: pm.Maven,
-			Name:    coordinate,
+			Name:    doc.Group + ":" + doc.Artifact,
 			Info:    "Maven artifact",
 			Extra: map[string]string{
 				"version":  doc.LatestVersion,
@@ -62,7 +61,6 @@ func SearchMavenCentral(query string, limit int) ([]Result, error) {
 			},
 		})
 	}
-
 	return results, nil
 }
 

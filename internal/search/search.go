@@ -15,6 +15,7 @@
 package search
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -49,9 +50,6 @@ type Options struct {
 
 // DefaultTimeout is the HTTP request timeout for registry queries.
 const DefaultTimeout = 4 * time.Second
-
-// npmRegistryURL is the npm registry base; tests point it at httptest.
-var npmRegistryURL = "https://registry.npmjs.org"
 
 // httpClient is the shared HTTP client for all registry queries.
 var httpClient = &http.Client{
@@ -100,17 +98,26 @@ func validatePackageNameForURL(pkg string) error {
 	return nil
 }
 
+// decodeJSON decodes at most maxMetadataBytes of body into v. Errors name
+// the registry and package so "unexpected EOF" is never the whole message.
+func decodeJSON(registry, pkg string, body io.Reader, v any) error {
+	if err := json.NewDecoder(io.LimitReader(body, maxMetadataBytes)).Decode(v); err != nil {
+		return fmt.Errorf("%s: decode %s: %w", registry, pkg, err)
+	}
+	return nil
+}
+
 // existsInNpm checks if a package exists in the npm registry.
 // It fetches /<pkg>/latest (~2-4 KB) instead of the full packument, which is
 // 15 MB+ for packages like typescript and regularly blew the 4s timeout.
 // Returns (nil, nil) if the package is not found.
-func existsInNpm(pkg string) (*Result, error) {
+func existsInNpm(ctx context.Context, pkg string) (*Result, error) {
 	if err := validatePackageNameForURL(pkg); err != nil {
 		return nil, fmt.Errorf("invalid package name: %w", err)
 	}
 	u := fmt.Sprintf("%s/%s/latest", npmRegistryURL, url.PathEscape(pkg))
 	logx.Info("query npm: %s", u)
-	resp, err := httpGet(u)
+	resp, err := httpGet(ctx, u)
 	if err != nil {
 		return nil, err
 	}
@@ -125,8 +132,8 @@ func existsInNpm(pkg string) (*Result, error) {
 		Version     string `json:"version"`
 		Description string `json:"description"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxMetadataBytes)).Decode(&data); err != nil {
-		return nil, fmt.Errorf("npm: decode %s: %w", pkg, err)
+	if err := decodeJSON("npm", pkg, resp.Body, &data); err != nil {
+		return nil, err
 	}
 	return &Result{
 		Manager: pm.Npm,
@@ -137,55 +144,61 @@ func existsInNpm(pkg string) (*Result, error) {
 }
 
 // existsInPip checks if a package exists in the Python Package Index (PyPI).
-// Returns nil if the package is not found.
-func existsInPip(pkg string) (*Result, error) {
+// Returns (nil, nil) if the package is not found.
+func existsInPip(ctx context.Context, pkg string) (*Result, error) {
 	if err := validatePackageNameForURL(pkg); err != nil {
 		return nil, fmt.Errorf("invalid package name: %w", err)
 	}
-	url := fmt.Sprintf("https://pypi.org/pypi/%s/json", url.PathEscape(pkg))
-	logx.Info("query pypi: %s", url)
-	resp, err := httpGet(url)
+	u := fmt.Sprintf("%s/%s/json", pypiURL, url.PathEscape(pkg))
+	logx.Info("query pypi: %s", u)
+	resp, err := httpGet(ctx, u)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		if resp.StatusCode == 404 {
-			return nil, nil // Package not found
-		}
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil
+	}
+	if resp.StatusCode != http.StatusOK {
 		return nil, statusError("pypi", resp)
 	}
 	var data struct {
 		Info struct {
+			Name    string `json:"name"`
 			Summary string `json:"summary"`
 			Version string `json:"version"`
 		} `json:"info"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxMetadataBytes)).Decode(&data); err != nil {
+	if err := decodeJSON("pypi", pkg, resp.Body, &data); err != nil {
 		return nil, err
+	}
+	name := data.Info.Name
+	if name == "" {
+		name = pkg
 	}
 	return &Result{
 		Manager: pm.Pip,
-		Name:    pkg,
+		Name:    name,
 		Info:    data.Info.Summary,
 		Extra:   map[string]string{"version": data.Info.Version},
 	}, nil
 }
 
-// existsInComposer searches for a package in Packagist (PHP/Composer registry).
-// Returns the first matching result or nil if no matches found.
-func existsInComposer(pkg string) (*Result, error) {
+// existsInComposer searches Packagist and returns the first hit, which may
+// be a fuzzy match ("monolog" -> "monolog/monolog"). Returns (nil, nil) if
+// there are no hits.
+func existsInComposer(ctx context.Context, pkg string) (*Result, error) {
 	if err := validatePackageNameForURL(pkg); err != nil {
 		return nil, fmt.Errorf("invalid package name: %w", err)
 	}
-	url := fmt.Sprintf("https://packagist.org/search.json?q=%s", url.QueryEscape(pkg))
-	logx.Info("query packagist: %s", url)
-	resp, err := httpGet(url)
+	u := fmt.Sprintf("%s/search.json?q=%s", packagistURL, url.QueryEscape(pkg))
+	logx.Info("query packagist: %s", u)
+	resp, err := httpGet(ctx, u)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		return nil, statusError("packagist", resp)
 	}
 	var data struct {
@@ -194,7 +207,7 @@ func existsInComposer(pkg string) (*Result, error) {
 			Description string `json:"description"`
 		} `json:"results"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxMetadataBytes)).Decode(&data); err != nil {
+	if err := decodeJSON("packagist", pkg, resp.Body, &data); err != nil {
 		return nil, err
 	}
 	if len(data.Results) == 0 {
@@ -210,22 +223,22 @@ func existsInComposer(pkg string) (*Result, error) {
 }
 
 // existsInCrates checks if a crate exists in crates.io (Rust registry).
-// Returns nil if the crate is not found.
-func existsInCrates(pkg string) (*Result, error) {
+// Returns (nil, nil) if the crate is not found.
+func existsInCrates(ctx context.Context, pkg string) (*Result, error) {
 	if err := validatePackageNameForURL(pkg); err != nil {
 		return nil, fmt.Errorf("invalid package name: %w", err)
 	}
-	url := fmt.Sprintf("%s/crates/%s?include=default_version", CratesIOURL, url.PathEscape(pkg))
-	logx.Info("query crates.io: %s", url)
-	resp, err := httpGet(url)
+	u := fmt.Sprintf("%s/crates/%s?include=default_version", cratesAPIURL, url.PathEscape(pkg))
+	logx.Info("query crates.io: %s", u)
+	resp, err := httpGet(ctx, u)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		if resp.StatusCode == 404 {
-			return nil, nil // Crate not found
-		}
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil
+	}
+	if resp.StatusCode != http.StatusOK {
 		return nil, statusError("crates.io", resp)
 	}
 	var data struct {
@@ -236,7 +249,7 @@ func existsInCrates(pkg string) (*Result, error) {
 			Name           string `json:"name"`
 		} `json:"crate"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxMetadataBytes)).Decode(&data); err != nil {
+	if err := decodeJSON("crates.io", pkg, resp.Body, &data); err != nil {
 		return nil, err
 	}
 	version := data.Crate.DefaultVersion // newest stable; max_version can be a prerelease
@@ -251,46 +264,36 @@ func existsInCrates(pkg string) (*Result, error) {
 	}, nil
 }
 
-// existsInMaven searches for an artifact in Maven Central.
-// Returns the first matching result or nil if no matches found.
-func existsInMaven(pkg string) (*Result, error) {
+// existsInMaven searches Maven Central and returns the first hit.
+// Returns (nil, nil) if there are no hits.
+func existsInMaven(ctx context.Context, pkg string) (*Result, error) {
 	if err := validatePackageNameForURL(pkg); err != nil {
 		return nil, fmt.Errorf("invalid package name: %w", err)
 	}
-	url := fmt.Sprintf("%s?q=%s&rows=5&wt=json", MavenSearchURL, url.QueryEscape(pkg))
-	logx.Info("query maven: %s", url)
-	resp, err := httpGet(url)
+	u := fmt.Sprintf("%s?q=%s&rows=5&wt=json", mavenSearchURL, url.QueryEscape(pkg))
+	logx.Info("query maven: %s", u)
+	resp, err := httpGet(ctx, u)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		return nil, statusError("maven", resp)
 	}
-	var data struct {
-		Response struct {
-			Docs []struct {
-				ID       string `json:"id"`
-				Latest   string `json:"latestVersion"`
-				Group    string `json:"g"`
-				Artifact string `json:"a"`
-			} `json:"docs"`
-		} `json:"response"`
-	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxMetadataBytes)).Decode(&data); err != nil {
+	var data mavenSearchResponse
+	if err := decodeJSON("maven", pkg, resp.Body, &data); err != nil {
 		return nil, err
 	}
 	if len(data.Response.Docs) == 0 {
 		return nil, nil
 	}
 	d := data.Response.Docs[0]
-	coord := fmt.Sprintf("%s:%s", d.Group, d.Artifact)
 	return &Result{
 		Manager: pm.Maven,
-		Name:    coord,
+		Name:    d.Group + ":" + d.Artifact,
 		Info:    "Maven artifact",
 		Extra: map[string]string{
-			"version":  d.Latest,
+			"version":  d.LatestVersion,
 			"id":       d.ID,
 			"group":    d.Group,
 			"artifact": d.Artifact,
@@ -298,10 +301,10 @@ func existsInMaven(pkg string) (*Result, error) {
 	}, nil
 }
 
-// lookup is one registry's exact-name check.
+// lookup is one registry's exact-name check. fn must honour ctx.
 type lookup struct {
 	id pm.ID
-	fn func(pkg string) (*Result, error)
+	fn func(ctx context.Context, pkg string) (*Result, error)
 }
 
 // exactLookups is the registry table used by SearchEverywhere, in result order.
@@ -332,6 +335,7 @@ var (
 // package name and returns within lookupDeadline. Results are returned in
 // table order. A failing or slow registry is logged and skipped; only if all
 // of them fail is an error (wrapping ErrAllRegistriesFailed) returned.
+// Requests still running at the deadline are cancelled.
 func SearchEverywhere(pkg string, opts Options) ([]Result, error) {
 	var enabled []lookup
 	for _, l := range exactLookups {
@@ -343,6 +347,9 @@ func SearchEverywhere(pkg string, opts Options) ([]Result, error) {
 		return nil, nil
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), lookupDeadline)
+	defer cancel()
+
 	type outcome struct {
 		i   int
 		res *Result
@@ -353,7 +360,7 @@ func SearchEverywhere(pkg string, opts Options) ([]Result, error) {
 	cacheDir := lookupCacheDir
 	for i, l := range enabled {
 		go func(i int, l lookup) {
-			res, err := cachedLookup(cacheDir, l, pkg)
+			res, err := cachedLookup(ctx, cacheDir, l, pkg)
 			ch <- outcome{i: i, res: res, err: err}
 		}(i, l)
 	}

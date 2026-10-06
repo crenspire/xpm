@@ -1,6 +1,7 @@
 package search
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -24,7 +25,7 @@ func TestExistsInNpmUsesLatestEndpoint(t *testing.T) {
 		fmt.Fprint(w, `{"name":"@types/node","version":"22.1.0","description":"TS defs"}`)
 	})
 
-	r, err := existsInNpm("@types/node")
+	r, err := existsInNpm(context.Background(), "@types/node")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +44,7 @@ func TestExistsInNpmNotFound(t *testing.T) {
 	withNpmServer(t, func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `"Not Found"`, http.StatusNotFound)
 	})
-	r, err := existsInNpm("nope")
+	r, err := existsInNpm(context.Background(), "nope")
 	if err != nil || r != nil {
 		t.Fatalf("404 must be (nil, nil), got (%+v, %v)", r, err)
 	}
@@ -54,7 +55,7 @@ func TestExistsInNpmServerErrorIsTruncated(t *testing.T) {
 		w.WriteHeader(http.StatusBadGateway)
 		fmt.Fprint(w, strings.Repeat("x", 10_000))
 	})
-	_, err := existsInNpm("lodash")
+	_, err := existsInNpm(context.Background(), "lodash")
 	if err == nil || len(err.Error()) > 700 {
 		t.Fatalf("want a short status error, got len=%d err=%v", len(fmt.Sprint(err)), err)
 	}
@@ -64,7 +65,7 @@ func TestExistsInNpmCapsBodySize(t *testing.T) {
 	withNpmServer(t, func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"version":"1.0.0","description":"`+strings.Repeat("a", 2<<20)+`"}`)
 	})
-	if _, err := existsInNpm("huge"); err == nil {
+	if _, err := existsInNpm(context.Background(), "huge"); err == nil {
 		t.Fatal("a body over maxMetadataBytes must fail to decode, got nil error")
 	}
 }

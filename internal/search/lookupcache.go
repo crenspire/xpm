@@ -1,6 +1,7 @@
 package search
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -47,9 +48,9 @@ func cachePath(dir string, id pm.ID, pkg string) string {
 // dir is passed in (not read from lookupCacheDir) because lookups that miss
 // the deadline keep running in the background after SearchEverywhere returns.
 // An empty dir disables caching.
-func cachedLookup(dir string, l lookup, pkg string) (*Result, error) {
+func cachedLookup(ctx context.Context, dir string, l lookup, pkg string) (*Result, error) {
 	if dir == "" {
-		return l.fn(pkg)
+		return l.fn(ctx, pkg)
 	}
 	path := cachePath(dir, l.id, pkg)
 	if data, err := os.ReadFile(path); err == nil {
@@ -65,7 +66,7 @@ func cachedLookup(dir string, l lookup, pkg string) (*Result, error) {
 		}
 	}
 
-	res, err := l.fn(pkg)
+	res, err := l.fn(ctx, pkg)
 	if err != nil {
 		return nil, err
 	}
