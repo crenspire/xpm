@@ -42,8 +42,3 @@ formatters:
       local-prefixes:
         - github.com/crenspire/xpm
 
-issues:
-  # Ratchet is anchored at the tree-wide gofmt commit (2259147) so only code changed
-  # after formatting must be clean. If this branch is squash-merged, update the SHA.
-  # Removed at the end of P6.
-  new-from-rev: "2259147ac551df545cfd26a21d78bb90edf97e7d"

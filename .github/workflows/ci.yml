@@ -45,7 +45,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # needed for new-from-rev
+          fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25' # must not be newer than the Go that built golangci-lint v2.5.0
