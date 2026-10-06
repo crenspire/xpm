@@ -123,9 +123,9 @@ func listVersionsForRuntime(runtimePath, runtime string, manager *Manager) ([]Ve
 		versions = append(versions, info)
 	}
 
-	// Sort versions (simple string sort for now)
-	sort.Slice(versions, func(i, j int) bool {
-		return versions[i].Version < versions[j].Version
+	// Newest first, by semantic version (1.10.0 above 1.9.0).
+	sort.SliceStable(versions, func(i, j int) bool {
+		return CompareVersions(versions[i].Version, versions[j].Version) > 0
 	})
 
 	return versions, nil
