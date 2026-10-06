@@ -187,6 +187,9 @@ func TestNeedsRenameConfirmation(t *testing.T) {
 		{"fuzzy npm", "axioss", candidate{Result: npmAxios}, true},
 		{"composer short name", "monolog", candidate{Result: search.Result{Manager: pm.Composer, Name: "monolog/monolog"}}, true},
 		{"composer full name", "monolog/monolog", candidate{Result: search.Result{Manager: pm.Composer, Name: "monolog/monolog"}}, false},
+		{"pypi underscore vs dash", "flask_sqlalchemy", candidate{Result: search.Result{Manager: pm.Pip, Name: "Flask-SQLAlchemy"}}, false},
+		{"pypi dot vs dash", "zope.interface", candidate{Result: search.Result{Manager: pm.Pip, Name: "zope-interface"}}, false},
+		{"pypi typo", "reqests", candidate{Result: search.Result{Manager: pm.Pip, Name: "requests"}}, true},
 		{"maven snippet only", "guava", candidate{Result: guava}, false},
 	}
 	for _, tc := range cases {

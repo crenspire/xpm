@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -106,7 +107,18 @@ func needsRenameConfirmation(query string, c candidate) bool {
 	if c.Result.Manager == pm.Maven || c.Result.Manager == pm.Gradle {
 		return false
 	}
+	if pm.EcosystemForManager(c.Result.Manager) == pm.EcosystemPython {
+		return pep503Name(query) != pep503Name(c.Result.Name)
+	}
 	return !strings.EqualFold(query, c.Result.Name)
+}
+
+var pep503Separators = regexp.MustCompile(`[-_.]+`)
+
+// pep503Name is the PyPI-normalised form of a project name, under which
+// `Flask_SQLAlchemy` and `flask-sqlalchemy` are the same package.
+func pep503Name(name string) string {
+	return pep503Separators.ReplaceAllString(strings.ToLower(name), "-")
 }
 
 // nonInteractivePick chooses a candidate without asking. It picks only when
