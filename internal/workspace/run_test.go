@@ -65,3 +65,35 @@ func TestRunAggregatesFailures(t *testing.T) {
 		t.Errorf("ran %d projects, want 2 (a failing does not stop b)", len(rec.cmds))
 	}
 }
+
+func TestRunForwardsExtraArgsAfterDashDash(t *testing.T) {
+	all := runFixture(t)
+	root := all[0].Root
+	rec := &recorder{}
+	err := Run(all, "test", RunOptions{Args: []string{"--watch", "a b"}, Executable: "/opt/xpm", Runner: rec.run, Stdout: io.Discard, Stderr: io.Discard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range rec.cmds {
+		want := []string{"run", "--", "test", "--", "--watch", "a b"}
+		if !reflect.DeepEqual(c.Args, want) {
+			t.Errorf("args = %q, want %q", c.Args, want)
+		}
+	}
+	if got := rec.lines(root); len(got) != 2 {
+		t.Fatalf("commands = %v, want 2", got)
+	}
+}
+
+func TestRunWithoutArgsAddsNoSeparator(t *testing.T) {
+	all := runFixture(t)
+	rec := &recorder{}
+	if err := Run(all, "test", RunOptions{Executable: "/opt/xpm", Runner: rec.run, Stdout: io.Discard, Stderr: io.Discard}); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range rec.cmds {
+		if want := []string{"run", "--", "test"}; !reflect.DeepEqual(c.Args, want) {
+			t.Errorf("args = %q, want %q", c.Args, want)
+		}
+	}
+}

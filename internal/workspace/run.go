@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 
 	"github.com/crenspire/xpm/internal/scripts"
 )
@@ -12,6 +13,7 @@ import (
 // RunOptions configures Run.
 type RunOptions struct {
 	Parallel   bool
+	Args       []string  // extra args passed to the task after "--"
 	Prefer     []string  // scripts.prefer: which config file wins a name clash
 	Executable string    // binary re-executed per project; "" = os.Executable()
 	Runner     Runner    // nil = ExecRunner
@@ -20,7 +22,8 @@ type RunOptions struct {
 }
 
 // Run runs task in every project that defines it by re-executing xpm as
-// `<exe> run <task>` with the project as working directory. Projects without
+// `<exe> run -- <task>`, followed by `-- <opts.Args...>` when there are any,
+// with the project as working directory. Projects without
 // the task are skipped with a note on stderr; it is an error when no project
 // has it. A directory listed by several ecosystems runs once. Failures are
 // returned joined, in project order.
@@ -35,6 +38,10 @@ func Run(workspaces []Workspace, task string, opts RunOptions) error {
 		if exe, err = os.Executable(); err != nil {
 			return fmt.Errorf("cannot locate the xpm binary: %w", err)
 		}
+	}
+	runArgs := []string{"run", "--", task}
+	if len(opts.Args) > 0 {
+		runArgs = append(append(runArgs, "--"), opts.Args...)
 	}
 	seen := map[string]bool{}
 	var steps []step
@@ -53,7 +60,7 @@ func Run(workspaces []Workspace, task string, opts RunOptions) error {
 				_, _ = fmt.Fprintf(stderr, "[%s] skipped: no task %q\n", p.Name, task)
 				continue
 			}
-			steps = append(steps, step{label: p.Name, cmd: Command{Dir: p.Path, Name: exe, Args: []string{"run", "--", task}}})
+			steps = append(steps, step{label: p.Name, cmd: Command{Dir: p.Path, Name: exe, Args: slices.Clone(runArgs)}})
 		}
 	}
 	if len(steps) == 0 {

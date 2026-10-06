@@ -5,8 +5,10 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -95,7 +97,7 @@ func TestCmdRunWorkspaceReexecsInEachProject(t *testing.T) {
 	withConfig(t, config.Config{})
 	calls := withWorkspaceRunner(t, root, "")
 	var code int
-	captureStdout(t, func() { code = cmdRunWorkspace("build") })
+	captureStdout(t, func() { code = cmdRunWorkspace("build", nil) })
 	if code != 0 {
 		t.Fatalf("exit = %d", code)
 	}
@@ -111,7 +113,7 @@ func TestCmdRunWorkspaceFailureExitsNonZero(t *testing.T) {
 	calls := withWorkspaceRunner(t, root, "a")
 	var code int
 	errOut := captureStderr(t, func() {
-		captureStdout(t, func() { code = cmdRunWorkspace("build") })
+		captureStdout(t, func() { code = cmdRunWorkspace("build", nil) })
 	})
 	if code != 1 {
 		t.Fatalf("exit = %d, want 1", code)
@@ -143,5 +145,77 @@ func TestCmdInstallWorkspaceRejectsGlobal(t *testing.T) {
 	errOut := captureStderr(t, func() { code = cmdInstallWorkspace(true) })
 	if code != 1 || len(*calls) != 0 || !strings.Contains(errOut, "--global cannot be combined with --workspace") {
 		t.Fatalf("exit = %d, calls = %v, stderr = %q", code, *calls, errOut)
+	}
+}
+
+func TestCmdRunWorkspaceForwardsArgsAfterDashDash(t *testing.T) {
+	workspaceTree(t)
+	withConfig(t, config.Config{})
+	var got []string
+	oldRunner, oldExe := workspaceRunner, workspaceExecutable
+	workspaceRunner = func(_ context.Context, c workspace.Command, _, _ io.Writer) error {
+		got = append(got, strings.Join(c.Args, "\x00"))
+		return nil
+	}
+	workspaceExecutable = "/opt/xpm"
+	t.Cleanup(func() { workspaceRunner, workspaceExecutable = oldRunner, oldExe })
+
+	var code int
+	captureStdout(t, func() { code = cmdRun([]string{"-w", "build", "--", "x", "y z"}) })
+	if code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+	one := "run\x00--\x00build\x00--\x00x\x00y z"
+	if want := []string{one, one}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("child args = %q, want %q", got, want)
+	}
+
+	got = nil
+	captureStdout(t, func() { code = cmdRun([]string{"-w", "build"}) })
+	none := "run\x00--\x00build"
+	if want := []string{none, none}; code != 0 || !reflect.DeepEqual(got, want) {
+		t.Fatalf("exit = %d, child args = %q, want %q", code, got, want)
+	}
+}
+
+func TestSplitRunArgs(t *testing.T) {
+	tests := []struct {
+		in    []string
+		task  string
+		extra []string
+	}{
+		{[]string{"t"}, "t", nil},
+		{[]string{"t", "--", "a"}, "t", []string{"a"}},
+		{[]string{"t", "--"}, "t", nil},
+		{[]string{"t", "--", "--", "a"}, "t", []string{"--", "a"}},
+		{[]string{"t", "a"}, "t", nil},
+	}
+	for _, tt := range tests {
+		task, extra := splitRunArgs(tt.in)
+		if task != tt.task || !reflect.DeepEqual(extra, tt.extra) {
+			t.Errorf("splitRunArgs(%q) = %q, %q; want %q, %q", tt.in, task, extra, tt.task, tt.extra)
+		}
+	}
+}
+
+// The re-executed child receives `run -- <task> -- <args>`; the flag parser
+// eats the first "--", so the script must see exactly the extra args.
+func TestCmdRunChildReceivesTaskAndExtraArgs(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("runs the script through sh")
+	}
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not found")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "pyproject.toml"), []byte("[tool.xpm.scripts]\ntest = \"printf '<%s>'\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	chdir(t, dir)
+	withConfig(t, config.Config{})
+	var code int
+	out := captureStdout(t, func() { code = cmdRun([]string{"--", "test", "--", "x"}) })
+	if code != 0 || !strings.Contains(out, "<x>") {
+		t.Fatalf("exit = %d, output = %q, want it to contain <x>", code, out)
 	}
 }

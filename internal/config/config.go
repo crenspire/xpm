@@ -43,21 +43,6 @@ type DoctorConfig struct {
 	SkipDrift bool `json:"skipDrift"`
 }
 
-// CacheConfig holds configuration for the global dependency cache.
-type CacheConfig struct {
-	// Enabled controls whether caching is enabled.
-	Enabled bool `json:"enabled"`
-
-	// Path is the cache directory path. Defaults to ~/.xpm/cache.
-	Path string `json:"path"`
-
-	// MaxAgeDays is the maximum age in days for cached artifacts during GC.
-	MaxAgeDays int `json:"maxAgeDays"`
-
-	// MaxVersions is the maximum number of versions to keep per package during GC.
-	MaxVersions int `json:"maxVersions"`
-}
-
 // GraphConfig holds configuration for the `xpm graph` command.
 type GraphConfig struct {
 	// ShowVersions controls whether versions are shown in tree output.
@@ -84,13 +69,16 @@ type SearchUIConfig struct {
 
 // WorkspaceConfig holds configuration for workspace/monorepo operations.
 type WorkspaceConfig struct {
-	// Include specifies glob patterns for workspace directories to include.
-	// If empty, all detected workspaces are included.
-	// Not yet honoured by any command (reserved for the workspaces rework).
+	// Include specifies glob patterns that a project's path, relative to its
+	// workspace root (slash-separated, "." for the root itself), must match
+	// to be kept by the workspace commands (workspaces, install, run and graph
+	// with --workspace). Patterns use path.Match syntax per segment, plus "**"
+	// for any number of segments. If empty, every detected project is kept.
 	Include []string `json:"include"`
 
-	// Exclude specifies glob patterns for workspace directories to exclude.
-	// Not yet honoured by any command (reserved for the workspaces rework).
+	// Exclude specifies glob patterns, matched like Include, for projects the
+	// workspace commands drop. Exclude wins over Include. A workspace left
+	// with no projects is dropped.
 	Exclude []string `json:"exclude"`
 
 	// Parallel controls whether operations run in parallel across workspaces.
@@ -145,9 +133,6 @@ type Config struct {
 	// Doctor holds configuration for the `xpm doctor` command.
 	Doctor DoctorConfig `json:"doctor"`
 
-	// Cache holds configuration for the global dependency cache.
-	Cache CacheConfig `json:"cache"`
-
 	// Graph holds configuration for the `xpm graph` command.
 	Graph GraphConfig `json:"graph"`
 
@@ -185,12 +170,6 @@ func defaultConfig() Config {
 			SkipEnv:       false,
 			SkipConflicts: false,
 			SkipDrift:     false,
-		},
-		Cache: CacheConfig{
-			Enabled:     true,
-			Path:        "~/.xpm/cache",
-			MaxAgeDays:  60,
-			MaxVersions: 5,
 		},
 		Graph: GraphConfig{
 			ShowVersions:  true,

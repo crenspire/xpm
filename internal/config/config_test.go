@@ -102,7 +102,7 @@ func TestLoadFromPartialConfigKeepsDefaults(t *testing.T) {
 	if !c.Search["npm"] || !c.Search["pip"] {
 		t.Errorf("unset search keys must keep default true, got %v", c.Search)
 	}
-	if !c.Interactive || !c.AutoInstallPM || !c.SearchUI.Enabled || !c.Env.Enabled || !c.Cache.Enabled {
+	if !c.Interactive || !c.AutoInstallPM || !c.SearchUI.Enabled || !c.Env.Enabled {
 		t.Errorf("unset booleans must keep defaults, got %+v", c)
 	}
 	if c.Graph.Depth != 5 || c.Timeout.Default != 0 {
@@ -223,7 +223,7 @@ func TestEmptyConfig(t *testing.T) {
 		t.Errorf("empty config Prefer should be nil/empty, got %v", c.Prefer)
 	}
 
-	if c.Search != nil && len(c.Search) != 0 {
+	if len(c.Search) != 0 {
 		t.Errorf("empty config Search should be nil/empty, got %v", c.Search)
 	}
 }
@@ -239,5 +239,18 @@ func TestOldKeysStillLoad(t *testing.T) {
 	}
 	if c.Workspace.Parallel {
 		t.Error("Workspace.Parallel should be false (set in file)")
+	}
+}
+
+// TestRemovedCacheKeyStillLoads proves config files written while the cache
+// command existed keep loading: unknown keys are ignored without a warning.
+func TestRemovedCacheKeyStillLoads(t *testing.T) {
+	warnings := captureWarnings(t)
+	c := loadFrom(writeConfig(t, `{"cache": {"enabled": true, "path": "~/.xpm/cache"}, "prefer": ["npm"]}`))
+	if warnings.Len() != 0 {
+		t.Errorf("unexpected warning: %q", warnings.String())
+	}
+	if len(c.Prefer) != 1 || c.Prefer[0] != "npm" {
+		t.Errorf("Prefer = %v, want [npm]", c.Prefer)
 	}
 }

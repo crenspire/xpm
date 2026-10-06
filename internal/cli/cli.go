@@ -11,12 +11,13 @@ import (
 	"os"
 	"strings"
 
+	"github.com/manifoldco/promptui"
+
 	"github.com/crenspire/xpm/internal/config"
 	"github.com/crenspire/xpm/internal/doctor"
 	"github.com/crenspire/xpm/internal/logx"
 	"github.com/crenspire/xpm/internal/pm"
 	"github.com/crenspire/xpm/internal/search"
-	"github.com/manifoldco/promptui"
 )
 
 // Version is the current version of xpm.
@@ -154,12 +155,6 @@ func Run() int {
 		return cmdInfo(rest)
 	case "lock":
 		return cmdLock(rest)
-	case "cc":
-		return cmdCache([]string{"clean"})
-	case "cg":
-		return cmdCache([]string{"gc"})
-	case "cache":
-		return cmdCache(rest)
 	case "g", "graph":
 		return cmdGraph(rest)
 	case "s", "search":

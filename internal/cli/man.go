@@ -80,7 +80,6 @@ var commandTable = []commandInfo{
 	{"graph", []string{"g"}, "Dependency graph across ecosystems", true},
 	{"lock", nil, "Generate or verify the unified lockfile (xpm-lock.yaml)", true},
 	{"workspaces", nil, "List detected workspaces/monorepos", true},
-	{"cache", []string{"cc", "cg"}, "Manage the dependency cache (cc = cache clean, cg = cache gc)", true},
 	{"version", []string{"-v", "-V", "--version"}, "Show version information", false},
 	{"help", []string{"-h", "--help"}, "Show this help message", false},
 	{"man", nil, "Show the detailed manual for a command", false},
@@ -139,8 +138,6 @@ func showCommandHelp(command string) bool {
 		showInfoHelp()
 	case "lock":
 		showLockHelp()
-	case "cache":
-		showCacheHelp()
 	case "graph":
 		showGraphHelp()
 	case "search":
@@ -264,6 +261,11 @@ func showRunHelp() {
 	fmt.Println("  [package.metadata.xpm.scripts] ([package.metadata.upm.scripts] fallback).")
 	fmt.Println("  package.json scripts run with npm, yarn, pnpm or bun run; composer.json scripts with")
 	fmt.Println("  composer run-script; pyproject.toml and Cargo.toml scripts run with sh -c.")
+	fmt.Println("  Arguments after -- are passed on: to npm/pnpm as run <task> -- <args>, to yarn/bun as")
+	fmt.Println("  run <task> <args>, to composer as run-script <task> -- <args>. For pyproject.toml and")
+	fmt.Println("  Cargo.toml scripts they are separate, unexpanded arguments appended to the script")
+	fmt.Println("  command as \"$@\" (a script that already uses \"$@\" receives them twice).")
+	fmt.Println("  With -w they go to the task in every project.")
 	fmt.Println("  The exit status is the script's.")
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("SYNTAX:"))
@@ -394,6 +396,11 @@ func showLockHelp() {
 	fmt.Printf("%s\n", colorSection("DESCRIPTION:"))
 	fmt.Println("  Generate or verify unified lockfile (xpm-lock.yaml) (experimental)")
 	fmt.Println("  This command is experimental and is being reworked; its behaviour and output may change.")
+	fmt.Println("  --verify reports each recorded lockfile as unchanged, changed or missing, and each")
+	fmt.Println("  supported lockfile on disk that xpm-lock.yaml does not record as added. Unreadable")
+	fmt.Println("  entries and recorded paths outside the project are errors. Exit status 0 when every")
+	fmt.Println("  recorded lockfile is unchanged and none was added (or there is nothing to verify); 1")
+	fmt.Println("  otherwise, including when xpm-lock.yaml does not exist.")
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("SYNTAX:"))
 	fmt.Printf("  %s                       Generate xpm-lock.yaml\n", colorCommand("xpm lock"))
@@ -407,50 +414,26 @@ func showLockHelp() {
 	fmt.Printf("  %s                    Install dependencies\n", colorCommand("xpm install"))
 }
 
-func showCacheHelp() {
-	fmt.Printf("%s\n", colorCommand("xpm cache <subcommand>"))
-	fmt.Println()
-	fmt.Printf("%s\n", colorSection("DESCRIPTION:"))
-	fmt.Println("  Manage dependency cache (experimental)")
-	fmt.Println("  This command is experimental and is being reworked; its behaviour and output may change.")
-	fmt.Println()
-	fmt.Printf("%s\n", colorSection("SUBCOMMANDS:"))
-	fmt.Printf("  %s                           Show cache structure and contents\n", colorCommand("tree"))
-	fmt.Printf("  %s                           Show total cache size and statistics\n", colorCommand("size"))
-	fmt.Printf("  %s                          Clear the entire cache\n", colorCommand("clean"))
-	fmt.Printf("  %s                             Run garbage collection (removes old/unused items)\n", colorCommand("gc"))
-	fmt.Printf("  %s                         Verify integrity of cached items\n", colorCommand("verify"))
-	fmt.Printf("  %s                         Attempt to repair corrupted cache entries\n", colorCommand("repair"))
-	fmt.Printf("  %s                           Show the cache directory path\n", colorCommand("path"))
-	fmt.Println()
-	fmt.Printf("%s\n", colorSection("EXAMPLES:"))
-	fmt.Printf("  %s                 Show cache tree\n", colorExample("xpm cache tree"))
-	fmt.Printf("  %s                Clear all cached artifacts\n", colorExample("xpm cache clean"))
-	fmt.Printf("  %s                   Clean up old cached items\n", colorExample("xpm cache gc"))
-	fmt.Println()
-	fmt.Printf("%s\n", colorSection("ALIASES:"))
-	fmt.Printf("  %s                             Alias for 'cache clean'\n", colorCommand("cc"))
-	fmt.Printf("  %s                             Alias for 'cache gc'\n", colorCommand("cg"))
-	fmt.Println()
-	fmt.Printf("%s\n", colorSection("RELATED COMMANDS:"))
-	fmt.Printf("  %s                    Install dependencies (uses cache)\n", colorCommand("xpm install"))
-}
-
 func showGraphHelp() {
 	fmt.Printf("%s\n", colorCommand("xpm graph [package] [options]"))
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("DESCRIPTION:"))
 	fmt.Println("  Show unified dependency graph across all ecosystems (experimental)")
 	fmt.Println("  This command is experimental and is being reworked; its behaviour and output may change.")
+	fmt.Println("  Without --exec, only the files on disk are read. Flags may come before or after the")
+	fmt.Println("  package name. A usage error (unknown flag, negative --depth, --json with --svg, more")
+	fmt.Println("  than one package) exits with status 2.")
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("SYNTAX:"))
 	fmt.Printf("  %s                      Show dependency graph for all projects\n", colorCommand("xpm graph"))
 	fmt.Printf("  %s             Show graph for specific package\n", colorCommand("xpm graph <package>"))
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("OPTIONS:"))
-	fmt.Printf("  %s                         Export graph as JSON\n", colorOption("--json"))
-	fmt.Printf("  %s                          Generate SVG visualization\n", colorOption("--svg"))
-	fmt.Printf("  %s                    Generate combined graph for all workspaces\n", colorOption("--workspace"))
+	fmt.Printf("  %s                         Export graph as JSON (cannot be combined with --svg)\n", colorOption("--json"))
+	fmt.Printf("  %s                          Generate SVG visualization (needs GraphViz)\n", colorOption("--svg"))
+	fmt.Printf("  %s                   Tree depth below the roots (default: graph.depth; 0 = unlimited)\n", colorOption("--depth N"))
+	fmt.Printf("  %s                         Run mvn/gradle/go to resolve full trees (default: files only)\n", colorOption("--exec"))
+	fmt.Printf("  %s                    Generate combined graph for all workspaces (-w)\n", colorOption("--workspace"))
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("EXAMPLES:"))
 	fmt.Printf("  %s                      Show full dependency graph\n", colorExample("xpm graph"))
