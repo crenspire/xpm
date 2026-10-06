@@ -38,7 +38,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # needed for new-from-merge-base
+          fetch-depth: 0 # needed for new-from-rev
       - uses: actions/setup-go@v5
         with:
           go-version: stable
