@@ -12,6 +12,7 @@ var completionFlags = map[string][]string{
 	"install":  {"-g", "--global", "-w", "--workspace", "--"},
 	"run":      {"-w", "--workspace"},
 	"outdated": {"--json", "--all", "--workspace", "-w"},
+	"audit":    {"--json", "--timeout", "--workspace", "-w"},
 	"graph":    {"--json", "--svg", "--depth", "--exec", "--workspace", "-w"},
 	"lock":     {"--verify"},
 	"man":      {"--generate"},

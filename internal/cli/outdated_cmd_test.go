@@ -155,7 +155,7 @@ func TestOutdatedUncheckedErrorsAreNotUnavailable(t *testing.T) {
 	if len(out.Dependencies) != 2 || len(out.Unchecked) != 1 || out.Unchecked[0].Name != "golang.org/x/text" || out.Unchecked[0].Reason == "" {
 		t.Errorf("json = %s", stdout)
 	}
-	if !strings.Contains(stderr, "note: 1 dependencies") {
+	if !strings.Contains(stderr, "note: 1 dependency was not checked") {
 		t.Errorf("stderr = %q", stderr)
 	}
 }
@@ -211,7 +211,7 @@ func TestOutdatedUnpinnedIsUnchecked(t *testing.T) {
 	if len(out.Unchecked) != 1 || out.Unchecked[0].Name != "requests" || out.Unchecked[0].Ecosystem != "python" {
 		t.Errorf("unchecked = %+v", out.Unchecked)
 	}
-	if !strings.Contains(stderr, "note: 1 dependencies have no locked version and were not checked (add a lockfile)") {
+	if !strings.Contains(stderr, "note: 1 dependency was not checked (no locked version, or no registry/OSV lookup for it; --json lists the reasons)") {
 		t.Errorf("stderr = %q", stderr)
 	}
 }

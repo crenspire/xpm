@@ -102,6 +102,7 @@ homebrew_casks:
       - manpages/xpm-info.1
       - manpages/xpm-list.1
       - manpages/xpm-outdated.1
+      - manpages/xpm-audit.1
       - manpages/xpm-update.1
       - manpages/xpm-remove.1
       - manpages/xpm-doctor.1

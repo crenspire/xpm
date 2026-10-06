@@ -73,6 +73,7 @@ var commandTable = []commandInfo{
 	{"info", nil, "Show detailed package information", false},
 	{"list", []string{"l"}, "List installed packages for the current project", false},
 	{"outdated", nil, "Show dependencies with newer versions, across ecosystems", false},
+	{"audit", nil, "Check locked dependencies for known vulnerabilities (OSV.dev)", false},
 	{"update", []string{"u"}, "Update packages in the current project", false},
 	{"remove", []string{"rm"}, "Remove a package from the current project", false},
 	{"doctor", []string{"d"}, "Environment & project diagnostics", false},
@@ -134,6 +135,8 @@ func showCommandHelp(command string) bool {
 		showListHelp()
 	case "outdated":
 		showOutdatedHelp()
+	case "audit":
+		showAuditHelp()
 	case "update":
 		showUpdateHelp()
 	case "remove":
@@ -672,4 +675,34 @@ func showCompletionHelp() {
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("EXIT STATUS:"))
 	fmt.Println("  0 on success; 2 on a usage error (missing, extra or unknown shell argument).")
+}
+
+func showAuditHelp() {
+	fmt.Printf("%s\n", colorCommand("xpm audit [options]"))
+	fmt.Println()
+	fmt.Printf("%s\n", colorSection("DESCRIPTION:"))
+	fmt.Println("  Check the locked dependencies against the OSV.dev vulnerability database, across")
+	fmt.Println("  ecosystems (npm, PyPI, Packagist, crates.io, Go, Maven). Only dependencies with a")
+	fmt.Println("  locked version are checked; the rest are counted in a note on stderr.")
+	fmt.Println("  PRIVACY: package names and versions from your lockfiles are sent to api.osv.dev,")
+	fmt.Println("  one batch request per 1000 packages plus one details request per distinct")
+	fmt.Println("  vulnerability found. Nothing else is sent.")
+	fmt.Println("  `xpm doctor` is separate: it keeps running the ecosystems' own audit tools")
+	fmt.Println("  (npm audit, pip-audit, ...), which xpm does not route through OSV.")
+	fmt.Println()
+	fmt.Printf("%s\n", colorSection("EXIT STATUS:"))
+	fmt.Println("  0 no known vulnerabilities, 1 vulnerabilities found, 2 usage error or the check could not be completed.")
+	fmt.Println()
+	fmt.Printf("%s\n", colorSection("OPTIONS:"))
+	fmt.Printf("  %s                         Print the result as JSON\n", colorOption("--json"))
+	fmt.Printf("  %s <duration>           Time limit for the OSV.dev queries (default 30s; a bare number is seconds)\n", colorOption("--timeout"))
+	fmt.Printf("  %s                    Combine all workspace projects (-w)\n", colorOption("--workspace"))
+	fmt.Println()
+	fmt.Printf("%s\n", colorSection("EXAMPLES:"))
+	fmt.Printf("  %s                       Audit the locked dependencies\n", colorExample("xpm audit"))
+	fmt.Printf("  %s     Audit with a 10 second limit, as JSON\n", colorExample("xpm audit --json --timeout 10s"))
+	fmt.Println()
+	fmt.Printf("%s\n", colorSection("RELATED COMMANDS:"))
+	fmt.Printf("  %s                    Show newer versions\n", colorCommand("xpm outdated"))
+	fmt.Printf("  %s                      Environment and project diagnostics\n", colorCommand("xpm doctor"))
 }

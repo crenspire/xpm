@@ -31,6 +31,7 @@ xpm {{.Command}} \- {{.Description}}
 0 on success; 1 on errors, invalid arguments, cancelled install prompts, no matches, or a refused non-interactive choice.
 2 on a \fBgraph\fR or \fBcompletion\fR usage error (bad flag or argument).
 \fBoutdated\fR: 0 all current, 1 some outdated, 2 usage error or incomplete check.
+\fBaudit\fR: 0 no known vulnerabilities, 1 vulnerabilities found, 2 usage error or the check could not be completed.
 \fBinstall\fR (without packages), \fBci\fR, \fBlist\fR, \fBupdate\fR, \fBremove\fR and \fBrun\fR pass through the underlying tool's exit code; \fBrun -w\fR exits 1 if any project fails.
 .SH ENVIRONMENT
 .TP
@@ -219,6 +220,32 @@ Show outdated direct dependencies
 .B xpm outdated --all --json
 Check every locked package and print JSON`
 		data.SeeAlso = `\fBxpm\fR(1), \fBxpm update\fR(1), \fBxpm list\fR(1)`
+
+	case "audit":
+		data.Description = "Check dependencies for known vulnerabilities"
+		data.Synopsis = `.B xpm audit
+[\fB--json\fR] [\fB--timeout\fR \fIduration\fR] [\fB--workspace\fR|\fB-w\fR]`
+		data.FullDescription = `Check the project's locked dependencies against the OSV.dev vulnerability database, across ecosystems (npm, PyPI, Packagist, crates.io, Go and Maven).
+Only dependencies with a locked version are checked; the rest are counted in a note on stderr, and listed with a reason under \fBunchecked\fR in the JSON output.
+Privacy: package names and versions from the lockfiles are sent to api.osv.dev, one batch request per 1000 packages plus one details request per distinct vulnerability found. Nothing else is sent.
+\fBxpm doctor\fR is separate: it keeps running the ecosystems' own audit tools (npm audit, pip-audit and so on), which do not go through OSV.
+Each vulnerable package is listed with its vulnerabilities, severity and fixed versions. With \fB--json\fR, stdout is one JSON document with \fBscanned\fR, \fBvulnerable\fR and \fBunchecked\fR.
+Takes no arguments; an unknown flag or an argument is a usage error (exit status 2).`
+		data.Options = `.TP
+\fB--json\fR
+Print the result as JSON
+.TP
+\fB--timeout\fR \fIduration\fR
+Time limit for the OSV.dev queries (default 30s; a bare number is seconds)
+.TP
+\fB--workspace\fR, \fB-w\fR
+Combine all workspace projects`
+		data.Examples = `.B xpm audit
+Audit the locked dependencies
+.PP
+.B xpm audit --json --timeout 10s
+Audit with a 10 second limit and print JSON`
+		data.SeeAlso = `\fBxpm\fR(1), \fBxpm outdated\fR(1), \fBxpm doctor\fR(1)`
 
 	case "update":
 		data.Description = "Update packages"

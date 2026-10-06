@@ -91,26 +91,10 @@ func cmdOutdated(args []string) int {
 		return 2
 	}
 
-	cwd, err := os.Getwd()
+	g, err := loadDepGraph(a.Workspace)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return 2
-	}
-	opts := graph.ExtractOptions{
-		Warn: func(msg string) { fmt.Fprintf(os.Stderr, "warning: %s\n", msg) },
-	}
-	var g *graph.DepGraph
-	if a.Workspace {
-		g, err = workspaceGraph(cwd, opts)
-	} else {
-		g, err = extractGraph(cwd, opts)
-	}
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		return 2
-	}
-	if g == nil {
-		g = graph.NewGraph()
 	}
 
 	list := deps.Direct(g)
@@ -128,6 +112,43 @@ func cmdOutdated(args []string) int {
 		}
 	}
 	return finishOutdated(rep, total, a.JSON)
+}
+
+// loadDepGraph extracts the dependency graph of the current directory (all
+// workspace projects when workspace is set), warning on stderr. It never
+// returns a nil graph without an error.
+func loadDepGraph(workspace bool) (*graph.DepGraph, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, err
+	}
+	opts := graph.ExtractOptions{
+		Warn: func(msg string) { fmt.Fprintf(os.Stderr, "warning: %s\n", msg) },
+	}
+	var g *graph.DepGraph
+	if workspace {
+		g, err = workspaceGraph(cwd, opts)
+	} else {
+		g, err = extractGraph(cwd, opts)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if g == nil {
+		g = graph.NewGraph()
+	}
+	return g, nil
+}
+
+// noteUnchecked prints the stderr note shared by outdated and audit for n
+// dependencies that were not looked up.
+func noteUnchecked(n int) {
+	switch {
+	case n == 1:
+		fmt.Fprintln(os.Stderr, "note: 1 dependency was not checked (no locked version, or no registry/OSV lookup for it; --json lists the reasons)")
+	case n > 1:
+		fmt.Fprintf(os.Stderr, "note: %d dependencies were not checked (no locked version, or no registry/OSV lookup for it; --json lists the reasons)\n", n)
+	}
 }
 
 // checkOutdated looks up the latest version of every checkable dependency in
@@ -245,7 +266,7 @@ func finishOutdated(rep outdatedReport, total int, asJSON bool) int {
 				if latest == "" {
 					latest = "-"
 				}
-				_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", r.Ecosystem, r.Name, r.Current, latest, r.Status)
+				_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", r.Ecosystem, search.SanitizeText(r.Name), search.SanitizeText(r.Current), latest, r.Status)
 			}
 			_ = tw.Flush()
 			summary := fmt.Sprintf("%d outdated, %d up to date", outdated, current)
@@ -255,9 +276,7 @@ func finishOutdated(rep outdatedReport, total int, asJSON bool) int {
 			fmt.Println(summary)
 		}
 	}
-	if n := len(rep.Unchecked); n > 0 {
-		fmt.Fprintf(os.Stderr, "note: %d dependencies have no locked version and were not checked (add a lockfile)\n", n)
-	}
+	noteUnchecked(len(rep.Unchecked))
 
 	unavailable := 0
 	for _, r := range rep.Dependencies {

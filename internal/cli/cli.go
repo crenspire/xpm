@@ -180,6 +180,8 @@ func Run() int {
 		return cmdLock(rest)
 	case "outdated":
 		return cmdOutdated(rest)
+	case "audit":
+		return cmdAudit(rest)
 	case "g", "graph":
 		return cmdGraph(rest)
 	case "s", "search":
