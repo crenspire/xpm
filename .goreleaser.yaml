@@ -11,7 +11,8 @@ before:
     - sh -c 'go run ./cmd/xpm completion bash > completions/xpm.bash'
     - sh -c 'go run ./cmd/xpm completion zsh > completions/_xpm'
     - sh -c 'go run ./cmd/xpm completion fish > completions/xpm.fish'
-    - go run ./cmd/xpm man --generate manpages
+    # Same -X as the build so the man pages' footer shows the release version.
+    - go run -ldflags "-X github.com/crenspire/xpm/internal/cli.Version={{ .Version }}" ./cmd/xpm man --generate manpages
 
 builds:
   - id: xpm
@@ -34,11 +35,20 @@ archives:
       - goos: windows
         formats: [zip]
     name_template: '{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
+    # Fixed mtimes keep the archives reproducible.
     files:
-      - README.md
-      - LICENSE
-      - completions/*
-      - manpages/*
+      - src: README.md
+        info:
+          mtime: '{{ .CommitDate }}'
+      - src: LICENSE
+        info:
+          mtime: '{{ .CommitDate }}'
+      - src: completions/*
+        info:
+          mtime: '{{ .CommitDate }}'
+      - src: manpages/*
+        info:
+          mtime: '{{ .CommitDate }}'
 
 checksum:
   name_template: checksums.txt

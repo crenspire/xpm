@@ -103,7 +103,19 @@ jobs:
           xpm="$RUNNER_TEMP/bin/xpm"
           "$xpm" env install node@20
           export PATH="$HOME/.xpm/env/shims:$PATH"
+          # The runner ships its own node 20, and an unconfigured shim falls
+          # back to it, so check that the shim and xpm's node are really used.
+          found=$(command -v node)
+          if [ "$found" != "$HOME/.xpm/env/shims/node" ]; then
+            echo "expected node to resolve to the shim $HOME/.xpm/env/shims/node, got $found" >&2
+            exit 1
+          fi
+          exe=$(node -p process.execPath)
+          case "$exe" in
+            "$HOME/.xpm/"*) ;;
+            *) echo "expected the shim to run node from $HOME/.xpm/, but it ran $exe" >&2; exit 1 ;;
+          esac
           v=$(node -v)
-          echo "node -v: $v"
+          echo "node -v: $v ($exe)"
           case "$v" in v20.*) ;; *) echo "expected node v20.x through the shim, got $v" >&2; exit 1 ;; esac
           "$xpm" env current

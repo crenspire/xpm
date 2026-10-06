@@ -138,11 +138,16 @@ mkdir -p "$tmp/extract"
 tar -xzf "$tmp/$archive" -C "$tmp/extract"
 [ -f "$tmp/extract/xpm" ] || err "$archive does not contain xpm"
 
+# Stage next to the target and rename, so an existing xpm is replaced
+# atomically and a failed copy never leaves a partial binary behind.
 mkdir -p "$dir"
-if ! install -m 0755 "$tmp/extract/xpm" "$dir/xpm" 2>/dev/null; then
-	cp "$tmp/extract/xpm" "$dir/xpm"
-	chmod 0755 "$dir/xpm"
+staged="$dir/.xpm.$$"
+trap 'rm -rf "$tmp"; rm -f "$staged"' EXIT
+if ! install -m 0755 "$tmp/extract/xpm" "$staged" 2>/dev/null; then
+	cp "$tmp/extract/xpm" "$staged" || err "could not write $staged"
+	chmod 0755 "$staged" || err "could not chmod $staged"
 fi
+mv -f "$staged" "$dir/xpm" || err "could not move $staged to $dir/xpm"
 
 echo "xpm $tag installed to $dir/xpm"
 case ":${PATH}:" in

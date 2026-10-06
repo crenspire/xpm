@@ -142,8 +142,9 @@ release: clean
 	@echo "Release binaries built in $(BUILD_DIR)/"
 	@ls -la $(BUILD_DIR)/
 
-# GoReleaser (the real release runs in .github/workflows/release.yml on a v* tag)
-GORELEASER=$(GO) run github.com/goreleaser/goreleaser/v2@latest
+# GoReleaser (the real release runs in .github/workflows/release.yml on a v* tag),
+# pinned to the version .goreleaser.yaml was validated with
+GORELEASER=$(GO) run github.com/goreleaser/goreleaser/v2@v2.18.2
 
 # Local snapshot build into dist/; publishes nothing (sbom skipped: needs syft)
 .PHONY: snapshot

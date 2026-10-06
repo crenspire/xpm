@@ -5,8 +5,7 @@ on:
     tags: ['v*']
 
 permissions:
-  contents: write # create the GitHub release and upload assets
-  id-token: write # keyless cosign signing of checksums.txt
+  contents: read
 
 jobs:
   test:
@@ -23,6 +22,9 @@ jobs:
     name: Release
     runs-on: ubuntu-latest
     needs: test
+    permissions:
+      contents: write # create the GitHub release and upload assets
+      id-token: write # keyless cosign signing of checksums.txt
     steps:
       - uses: actions/checkout@v4
         with:
@@ -54,8 +56,10 @@ jobs:
       #   sha256sum --ignore-missing -c checksums.txt
       - uses: sigstore/cosign-installer@v3
         continue-on-error: true
+        timeout-minutes: 5
       - name: Sign checksums.txt
         continue-on-error: true
+        timeout-minutes: 5
         run: >-
           cosign sign-blob --yes
           --output-signature dist/checksums.txt.sig
@@ -63,6 +67,7 @@ jobs:
           dist/checksums.txt
       - name: Upload signature
         continue-on-error: true
+        timeout-minutes: 5
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "$GITHUB_REF_NAME" dist/checksums.txt.sig dist/checksums.txt.pem --clobber
