@@ -2,6 +2,10 @@ package search
 
 import (
 	"context"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
 	"time"
 )
 
@@ -107,4 +111,28 @@ func toLower(c byte) byte {
 		return c + 32
 	}
 	return c
+}
+
+// maxMetadataBytes caps every registry response body xpm decodes.
+const maxMetadataBytes = 1 << 20 // 1 MiB
+
+const userAgent = "xpm (+https://github.com/crenspire/xpm)"
+
+// httpGet is the single entry point for registry GETs: shared client
+// (with its timeout), identifying User-Agent, JSON Accept header.
+func httpGet(rawURL string) (*http.Response, error) {
+	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("Accept", "application/json")
+	return httpClient.Do(req)
+}
+
+// statusError builds an error for a non-2xx response, including at most
+// 512 bytes of the body so HTML error pages don't flood the terminal.
+func statusError(registry string, resp *http.Response) error {
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+	return fmt.Errorf("%s registry returned status %d: %s", registry, resp.StatusCode, strings.TrimSpace(string(body)))
 }

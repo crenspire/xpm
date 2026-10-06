@@ -50,6 +50,9 @@ type Options struct {
 // DefaultTimeout is the HTTP request timeout for registry queries.
 const DefaultTimeout = 4 * time.Second
 
+// npmRegistryURL is the npm registry base; tests point it at httptest.
+var npmRegistryURL = "https://registry.npmjs.org"
+
 // httpClient is the shared HTTP client for all registry queries.
 var httpClient = &http.Client{
 	Timeout: DefaultTimeout,
@@ -98,43 +101,39 @@ func validatePackageNameForURL(pkg string) error {
 }
 
 // existsInNpm checks if a package exists in the npm registry.
-// Returns nil if the package is not found.
+// It fetches /<pkg>/latest (~2-4 KB) instead of the full packument, which is
+// 15 MB+ for packages like typescript and regularly blew the 4s timeout.
+// Returns (nil, nil) if the package is not found.
 func existsInNpm(pkg string) (*Result, error) {
 	if err := validatePackageNameForURL(pkg); err != nil {
 		return nil, fmt.Errorf("invalid package name: %w", err)
 	}
-	url := fmt.Sprintf("https://registry.npmjs.org/%s", url.PathEscape(pkg))
-	logx.Info("query npm: %s", url)
-	resp, err := httpClient.Get(url)
+	u := fmt.Sprintf("%s/%s/latest", npmRegistryURL, url.PathEscape(pkg))
+	logx.Info("query npm: %s", u)
+	resp, err := httpGet(u)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		// Read error body for debugging
-		body, _ := io.ReadAll(resp.Body)
-		if resp.StatusCode == 404 {
-			return nil, nil // Package not found
-		}
-		return nil, fmt.Errorf("npm registry returned status %d: %s", resp.StatusCode, string(body))
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, statusError("npm", resp)
 	}
 	var data struct {
-		Description string            `json:"description"`
-		DistTags    map[string]string `json:"dist-tags"`
+		Version     string `json:"version"`
+		Description string `json:"description"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		return nil, err
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxMetadataBytes)).Decode(&data); err != nil {
+		return nil, fmt.Errorf("npm: decode %s: %w", pkg, err)
 	}
-	res := &Result{
+	return &Result{
 		Manager: pm.Npm,
 		Name:    pkg,
 		Info:    data.Description,
-		Extra:   map[string]string{},
-	}
-	if v, ok := data.DistTags["latest"]; ok {
-		res.Extra["version"] = v
-	}
-	return res, nil
+		Extra:   map[string]string{"version": data.Version},
+	}, nil
 }
 
 // existsInPip checks if a package exists in the Python Package Index (PyPI).
@@ -145,18 +144,16 @@ func existsInPip(pkg string) (*Result, error) {
 	}
 	url := fmt.Sprintf("https://pypi.org/pypi/%s/json", url.PathEscape(pkg))
 	logx.Info("query pypi: %s", url)
-	resp, err := httpClient.Get(url)
+	resp, err := httpGet(url)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		// Read error body for debugging
-		body, _ := io.ReadAll(resp.Body)
 		if resp.StatusCode == 404 {
 			return nil, nil // Package not found
 		}
-		return nil, fmt.Errorf("PyPI returned status %d: %s", resp.StatusCode, string(body))
+		return nil, statusError("pypi", resp)
 	}
 	var data struct {
 		Info struct {
@@ -164,7 +161,7 @@ func existsInPip(pkg string) (*Result, error) {
 			Version string `json:"version"`
 		} `json:"info"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxMetadataBytes)).Decode(&data); err != nil {
 		return nil, err
 	}
 	return &Result{
@@ -183,15 +180,13 @@ func existsInComposer(pkg string) (*Result, error) {
 	}
 	url := fmt.Sprintf("https://packagist.org/search.json?q=%s", url.QueryEscape(pkg))
 	logx.Info("query packagist: %s", url)
-	resp, err := httpClient.Get(url)
+	resp, err := httpGet(url)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		// Read error body for debugging
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("Packagist returned status %d: %s", resp.StatusCode, string(body))
+		return nil, statusError("packagist", resp)
 	}
 	var data struct {
 		Results []struct {
@@ -199,7 +194,7 @@ func existsInComposer(pkg string) (*Result, error) {
 			Description string `json:"description"`
 		} `json:"results"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxMetadataBytes)).Decode(&data); err != nil {
 		return nil, err
 	}
 	if len(data.Results) == 0 {
@@ -220,36 +215,39 @@ func existsInCrates(pkg string) (*Result, error) {
 	if err := validatePackageNameForURL(pkg); err != nil {
 		return nil, fmt.Errorf("invalid package name: %w", err)
 	}
-	url := fmt.Sprintf("https://crates.io/api/v1/crates/%s", url.PathEscape(pkg))
+	url := fmt.Sprintf("%s/crates/%s?include=default_version", CratesIOURL, url.PathEscape(pkg))
 	logx.Info("query crates.io: %s", url)
-	resp, err := httpClient.Get(url)
+	resp, err := httpGet(url)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		// Read error body for debugging
-		body, _ := io.ReadAll(resp.Body)
 		if resp.StatusCode == 404 {
 			return nil, nil // Crate not found
 		}
-		return nil, fmt.Errorf("crates.io returned status %d: %s", resp.StatusCode, string(body))
+		return nil, statusError("crates.io", resp)
 	}
 	var data struct {
 		Crate struct {
-			Description string `json:"description"`
-			MaxVersion  string `json:"max_version"`
-			Name        string `json:"name"`
+			Description    string `json:"description"`
+			MaxVersion     string `json:"max_version"`
+			DefaultVersion string `json:"default_version"`
+			Name           string `json:"name"`
 		} `json:"crate"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxMetadataBytes)).Decode(&data); err != nil {
 		return nil, err
+	}
+	version := data.Crate.DefaultVersion // newest stable; max_version can be a prerelease
+	if version == "" {
+		version = data.Crate.MaxVersion
 	}
 	return &Result{
 		Manager: pm.Cargo,
 		Name:    data.Crate.Name,
 		Info:    data.Crate.Description,
-		Extra:   map[string]string{"version": data.Crate.MaxVersion},
+		Extra:   map[string]string{"version": version},
 	}, nil
 }
 
@@ -259,17 +257,15 @@ func existsInMaven(pkg string) (*Result, error) {
 	if err := validatePackageNameForURL(pkg); err != nil {
 		return nil, fmt.Errorf("invalid package name: %w", err)
 	}
-	url := fmt.Sprintf("https://search.maven.org/solrsearch/select?q=%s&rows=5&wt=json", url.QueryEscape(pkg))
+	url := fmt.Sprintf("%s?q=%s&rows=5&wt=json", MavenSearchURL, url.QueryEscape(pkg))
 	logx.Info("query maven: %s", url)
-	resp, err := httpClient.Get(url)
+	resp, err := httpGet(url)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		// Read error body for debugging
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("Maven Central returned status %d: %s", resp.StatusCode, string(body))
+		return nil, statusError("maven", resp)
 	}
 	var data struct {
 		Response struct {
@@ -281,7 +277,7 @@ func existsInMaven(pkg string) (*Result, error) {
 			} `json:"docs"`
 		} `json:"response"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxMetadataBytes)).Decode(&data); err != nil {
 		return nil, err
 	}
 	if len(data.Response.Docs) == 0 {

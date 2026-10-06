@@ -10,7 +10,7 @@ import (
 )
 
 // MavenSearchURL is the URL for Maven Central search API.
-const MavenSearchURL = "https://search.maven.org/solrsearch/select"
+const MavenSearchURL = "https://central.sonatype.com/solrsearch/select"
 
 // mavenSearchResponse represents the Maven Central search response.
 type mavenSearchResponse struct {

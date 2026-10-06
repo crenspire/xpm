@@ -385,7 +385,7 @@ func cmdInfo(args []string) int {
 			if artifact, ok := r.Extra["artifact"]; ok {
 				fmt.Printf("   Artifact: %s\n", artifact)
 			}
-			fmt.Printf("   Registry: https://search.maven.org/\n")
+			fmt.Printf("   Registry: https://central.sonatype.com/\n")
 		}
 	}
 
