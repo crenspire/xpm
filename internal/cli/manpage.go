@@ -30,7 +30,7 @@ xpm {{.Command}} \- {{.Description}}
 .SH EXIT STATUS
 0 on success; 1 on errors, invalid arguments, cancelled install prompts, no matches, or a refused non-interactive choice.
 2 on a \fBgraph\fR usage error (bad flag or argument).
-\fBinstall\fR (without packages), \fBci\fR, \fBlist\fR, \fBupdate\fR, \fBremove\fR and \fBrun\fR pass through the underlying tool's exit code.
+\fBinstall\fR (without packages), \fBci\fR, \fBlist\fR, \fBupdate\fR, \fBremove\fR and \fBrun\fR pass through the underlying tool's exit code; \fBrun -w\fR exits 1 if any project fails.
 .SH ENVIRONMENT
 .TP
 \fBXPM_NO_CACHE\fR (any non-empty value, e.g. 1)
@@ -237,7 +237,7 @@ Verify lockfiles haven't changed since last generation.
 Each recorded lockfile is reported as unchanged, changed or missing.
 Supported lockfiles on disk that xpm-lock.yaml does not record are reported as added.
 Unreadable entries and recorded paths outside the project are errors.
-Exit status 0 when every recorded lockfile is unchanged (or none is recorded); 1 otherwise, including when xpm-lock.yaml does not exist.`
+Exit status 0 when every recorded lockfile is unchanged and none was added (or there is nothing to verify); 1 otherwise, including when xpm-lock.yaml does not exist.`
 		data.Examples = `.B xpm lock
 Generate unified lockfile
 .PP

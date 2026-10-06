@@ -292,7 +292,7 @@ func TestGraphAndLockDocsCoverFlagsAndExitStatus(t *testing.T) {
 		}
 	}
 	for label, out := range map[string]string{"lock help": lockHelp, "lock man": lockPage} {
-		for _, want := range []string{"unchanged, changed or missing", "as added", "(or none is recorded)", "does not exist"} {
+		for _, want := range []string{"unchanged, changed or missing", "as added", "(or there is nothing to verify)", "does not exist"} {
 			if !strings.Contains(out, want) {
 				t.Errorf("%s: missing %q", label, want)
 			}
