@@ -3,8 +3,6 @@ package runtimes
 import (
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -27,7 +25,7 @@ func (g *GoInstaller) Name() string {
 
 // ListRemote fetches available Go versions.
 func (g *GoInstaller) ListRemote() ([]string, error) {
-	resp, err := http.Get("https://go.dev/dl/?mode=json")
+	resp, err := downloadClient.Get(goDLURL + "/?mode=json&include=all")
 	if err != nil {
 		return nil, err
 	}
@@ -107,36 +105,23 @@ func (g *GoInstaller) Install(version string, dest string) error {
 	}
 
 	filename := fmt.Sprintf("go%s.%s-%s.tar.gz", version, goos, arch)
-	url := fmt.Sprintf("https://go.dev/dl/%s", filename)
-
-	fmt.Printf("Downloading from %s...\n", url)
-
-	// Download
-	resp, err := http.Get(url)
+	meta, err := fetchSmall(goDLURL + "/?mode=json&include=all")
 	if err != nil {
-		return fmt.Errorf("failed to download: %w", err)
+		return fmt.Errorf("fetch Go release list: %w", err)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("download failed with status %d", resp.StatusCode)
-	}
-
-	// Create temp file
-	tmpFile, err := os.CreateTemp("", "go-*.tmp")
+	want, err := goChecksum(meta, filename)
 	if err != nil {
 		return err
 	}
-	defer os.Remove(tmpFile.Name())
-
-	if _, err := io.Copy(tmpFile, resp.Body); err != nil {
-		tmpFile.Close()
+	fmt.Printf("Downloading %s/%s...\n", goDLURL, filename)
+	archive, err := downloadVerified(goDLURL+"/"+filename, want)
+	if err != nil {
 		return err
 	}
-	tmpFile.Close()
+	defer os.Remove(archive)
 
 	// Extract
-	if err := extractTarGz(tmpFile.Name(), dest); err != nil {
+	if err := extractTarGz(archive, dest); err != nil {
 		return err
 	}
 

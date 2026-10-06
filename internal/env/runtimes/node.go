@@ -3,7 +3,6 @@ package runtimes
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -211,33 +210,21 @@ func (n *NodeInstaller) InstallWithAlias(version string, dest string, alias stri
 	}
 
 	filename := fmt.Sprintf("node-v%s-%s-%s.%s", version, nodeos, arch, ext)
-	url := fmt.Sprintf("https://nodejs.org/dist/v%s/%s", version, filename)
-
-	fmt.Printf("Downloading from %s...\n", url)
-
-	// Download
-	resp, err := http.Get(url)
+	base := fmt.Sprintf("%s/v%s", nodeDistURL, version)
+	sums, err := fetchSmall(base + "/SHASUMS256.txt")
 	if err != nil {
-		return fmt.Errorf("failed to download: %w", err)
+		return fmt.Errorf("fetch Node.js checksums: %w", err)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("download failed with status %d", resp.StatusCode)
-	}
-
-	// Create temp file
-	tmpFile, err := os.CreateTemp("", "node-*.tmp")
+	want, err := checksumFromSums(string(sums), filename)
 	if err != nil {
 		return err
 	}
-	defer os.Remove(tmpFile.Name())
-
-	if _, err := io.Copy(tmpFile, resp.Body); err != nil {
-		tmpFile.Close()
+	fmt.Printf("Downloading %s/%s...\n", base, filename)
+	archive, err := downloadVerified(base+"/"+filename, want)
+	if err != nil {
 		return err
 	}
-	tmpFile.Close()
+	defer os.Remove(archive)
 
 	// Extract to a temporary directory first
 	tmpExtractDir, err := os.MkdirTemp("", "node-extract-*")
@@ -248,11 +235,11 @@ func (n *NodeInstaller) InstallWithAlias(version string, dest string, alias stri
 
 	// Extract
 	if ext == "zip" {
-		if err := extractZip(tmpFile.Name(), tmpExtractDir); err != nil {
+		if err := extractZip(archive, tmpExtractDir); err != nil {
 			return err
 		}
 	} else {
-		if err := extractTarGz(tmpFile.Name(), tmpExtractDir); err != nil {
+		if err := extractTarGz(archive, tmpExtractDir); err != nil {
 			return err
 		}
 	}
