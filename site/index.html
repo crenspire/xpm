@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>xpm — one CLI for every ecosystem</title>
+<meta name="description" content="xpm searches npm, PyPI, Packagist, crates.io and Maven Central at once and installs with the right tool for your project. Fast, safe, one syntax.">
+<meta property="og:title" content="xpm — one CLI for every ecosystem">
+<meta property="og:description" content="Search every registry at once. Install with one syntax. Run any project's scripts.">
+<meta property="og:image" content="https://crenspire.github.io/xpm/og.png">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="logo-mark.svg" type="image/svg+xml">
+<style>
+:root {
+  --bg: #fafafb; --bg-2: #ffffff; --fg: #111827; --muted: #4b5563; --faint: #9ca3af;
+  --line: #e5e7eb; --term: #0f1220; --term-fg: #e5e7eb;
+  --violet: #7c3aed; --indigo: #4f46e5; --cyan: #0891b2; --cyan-2: #22d3ee; --ok: #16a34a; --warn: #b45309;
+  --grad: linear-gradient(120deg, #8b5cf6 0%, #6366f1 45%, #06b6d4 100%);
+  --radius: 14px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0b0d14; --bg-2: #121522; --fg: #f3f4f6; --muted: #a1a1aa; --faint: #6b7280;
+    --line: #23263a; --term: #070810; --ok: #4ade80; --warn: #fbbf24; --cyan: #22d3ee;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0b0d14; --bg-2: #121522; --fg: #f3f4f6; --muted: #a1a1aa; --faint: #6b7280;
+  --line: #23263a; --term: #070810; --ok: #4ade80; --warn: #fbbf24; --cyan: #22d3ee;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; overflow-x: hidden; background: var(--bg); color: var(--fg);
+  font: 16px/1.6 Inter, ui-sans-serif, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+}
+a { color: inherit; }
+code, pre, .mono { font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace; }
+.wrap { max-width: 1080px; margin: 0 auto; padding: 0 16px; }
+
+/* nav */
+nav { display: flex; align-items: center; justify-content: space-between; padding: 18px 0; }
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 800; font-size: 20px; letter-spacing: -.5px; text-decoration: none; }
+.brand img { width: 30px; height: 30px; }
+.navlinks { display: flex; gap: 18px; align-items: center; font-size: 15px; }
+.navlinks a { text-decoration: none; color: var(--muted); }
+.navlinks a:hover { color: var(--fg); }
+.gh { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border: 1px solid var(--line); border-radius: 999px; color: var(--fg) !important; }
+
+/* hero */
+.hero { position: relative; padding: 56px 16px 40px; text-align: center; }
+.hero::before {
+  content: ""; position: absolute; inset: -80px 0 auto; height: 420px; z-index: -1;
+  background: radial-gradient(600px 240px at 50% 30%, rgba(124,58,237,.22), transparent 70%),
+              radial-gradient(420px 200px at 70% 50%, rgba(6,182,212,.16), transparent 70%);
+}
+.hero img.mark { width: 104px; height: 104px; filter: drop-shadow(0 18px 30px rgba(99,102,241,.35)); }
+h1 { font-size: clamp(36px, 7vw, 64px); line-height: 1.05; letter-spacing: -2px; margin: 18px 0 14px; font-weight: 800; }
+h1 .g { background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.lede { font-size: clamp(17px, 2.4vw, 20px); color: var(--muted); max-width: 640px; margin: 0 auto 28px; }
+.install {
+  display: inline-flex; align-items: center; gap: 12px; max-width: 100%;
+  background: var(--bg-2); border: 1px solid var(--line); border-radius: 12px; padding: 10px 10px 10px 16px;
+}
+.install code { font-size: 14px; overflow-x: auto; white-space: nowrap; min-width: 0; flex: 1; text-align: left; }
+.install code::before { content: "$ "; color: var(--faint); }
+button.copy {
+  border: 0; border-radius: 8px; padding: 8px 12px; font: 600 13px/1 inherit; cursor: pointer;
+  color: #fff; background: var(--grad);
+}
+.cta { margin-top: 18px; font-size: 14px; color: var(--faint); }
+.cta a { color: var(--muted); }
+
+/* terminal */
+.term {
+  margin: 44px auto 0; max-width: 820px; text-align: left; background: var(--term); color: var(--term-fg);
+  border-radius: var(--radius); border: 1px solid #1f2335; box-shadow: 0 30px 60px -20px rgba(15,18,32,.55); overflow: hidden;
+}
+.term .bar { display: flex; gap: 7px; padding: 12px 14px; background: #121528; }
+.term .bar i { width: 11px; height: 11px; border-radius: 50%; background: #3a3f5c; display: block; }
+.term pre { margin: 0; padding: 18px 20px 22px; font-size: 13.5px; line-height: 1.65; overflow-x: auto; }
+.p { color: #8b93b8; } .c { color: #22d3ee; } .v { color: #a78bfa; } .d { color: #7d849f; } .k { color: #86efac; }
+
+/* sections */
+section { padding: 64px 0; }
+h2 { font-size: clamp(26px, 4vw, 34px); letter-spacing: -1px; margin: 0 0 10px; }
+.sub { color: var(--muted); margin: 0 0 30px; max-width: 640px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 16px; }
+.card { background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius); padding: 22px; }
+.card h3 { margin: 10px 0 6px; font-size: 18px; }
+.card p { margin: 0; color: var(--muted); font-size: 15px; }
+.icon { width: 38px; height: 38px; border-radius: 10px; display: grid; place-items: center; background: var(--grad); color: #fff; }
+.icon svg { width: 20px; height: 20px; }
+
+/* speed */
+.speed { display: grid; gap: 18px; }
+.row { display: grid; grid-template-columns: 220px 1fr; gap: 16px; align-items: center; }
+.row .label { font-weight: 600; font-size: 15px; }
+.row .label small { display: block; color: var(--faint); font-weight: 400; }
+.bars { display: grid; gap: 6px; }
+.bar { height: 26px; border-radius: 7px; display: flex; align-items: center; padding: 0 10px; font-size: 13px; font-weight: 600; white-space: nowrap; }
+.bar.before { background: var(--line); color: var(--muted); }
+.bar.now { background: var(--grad); color: #fff; min-width: 74px; }
+
+/* ecosystems */
+.chips { display: flex; flex-wrap: wrap; gap: 10px; }
+.chip { border: 1px solid var(--line); background: var(--bg-2); border-radius: 999px; padding: 8px 14px; font-size: 14px; }
+.chip b { font-weight: 700; }
+.chip span { color: var(--faint); }
+
+/* syntax table */
+table { width: 100%; border-collapse: collapse; font-size: 14.5px; }
+th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--faint); font-weight: 600; font-size: 13px; text-transform: uppercase; letter-spacing: .6px; }
+td code { font-size: 13.5px; }
+.tablewrap { overflow-x: auto; background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius); }
+
+/* status */
+.pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12.5px; font-weight: 600; }
+.pill.ok { color: var(--ok); background: color-mix(in srgb, var(--ok) 14%, transparent); }
+.pill.exp { color: var(--warn); background: color-mix(in srgb, var(--warn) 16%, transparent); }
+
+footer { padding: 40px 0 60px; color: var(--faint); font-size: 14px; border-top: 1px solid var(--line); }
+footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+
+@media (max-width: 640px) {
+  .navlinks a:not(.gh) { display: none; }
+  .row { grid-template-columns: 1fr; gap: 6px; }
+  section { padding: 48px 0; }
+  .install { display: flex; width: 100%; }
+  h1 { letter-spacing: -1px; }
+  .term pre { font-size: 12px; }
+}
+</style>
+</head>
+<body>
+<header class="wrap">
+  <nav>
+    <a class="brand" href="#"><img src="logo-mark.svg" alt="">xpm</a>
+    <div class="navlinks">
+      <a href="#features">Features</a>
+      <a href="#speed">Speed</a>
+      <a href="#status">Status</a>
+      <a class="gh" href="https://github.com/crenspire/xpm">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        GitHub
+      </a>
+    </div>
+  </nav>
+</header>
+
+<main>
+  <div class="wrap hero">
+    <img class="mark" src="logo-mark.svg" alt="xpm logo">
+    <h1>One CLI for <span class="g">every ecosystem</span></h1>
+    <p class="lede">xpm searches npm, PyPI, Packagist, crates.io and Maven Central at once, then installs with the right tool for your project. It uses one syntax, runs scripts from any manifest, and comes back in about a second.</p>
+    <div class="install">
+      <code id="cmd">go install github.com/crenspire/xpm/cmd/xpm@latest</code>
+      <button class="copy" id="copy" type="button">Copy</button>
+    </div>
+    <p class="cta">Requires Go 1.22+ · <a href="https://github.com/crenspire/xpm#install">other ways to install</a></p>
+
+    <div class="term" role="img" aria-label="Terminal showing xpm which axios finding the package in five registries">
+      <div class="bar"><i></i><i></i><i></i></div>
+<pre><span class="p">$</span> <span class="c">xpm which</span> axios
+Searching for "axios"...
+
+Found in:
+- <span class="v">npm</span>: axios <span class="k">@1.20.0</span> <span class="d">- Promise based HTTP client for the browser and node.js</span>
+  <span class="d">→ Also available via: yarn, pnpm, bun</span>
+- <span class="v">pip</span>: axios <span class="k">@0.4.0</span> <span class="d">- Command line utility to access family.axioscloud.it</span>
+- <span class="v">cargo</span>: axios <span class="k">@0.1.0</span> <span class="d">- A simple HTTP client for Rust</span>
+- <span class="v">maven</span>: org.mvnpm.at.nestjs:axios <span class="k">@12.0.1</span>
+- <span class="v">composer</span>: swlib/saber <span class="d">- Swoole coroutine HTTP client</span>
+
+<span class="p">$</span> <span class="c">xpm install</span> axios@1.7.0   <span class="d"># yarn.lock here → yarn add axios@1.7.0</span>
+<span class="p">$</span> <span class="c">xpm run</span> test -- --watch</pre>
+    </div>
+  </div>
+
+  <section id="features">
+    <div class="wrap">
+      <h2>Stop remembering which tool does what</h2>
+      <p class="sub">npm, pip, poetry, composer, cargo, mvn and go all spell the same idea differently. xpm translates for you and stays out of the way.</p>
+      <div class="grid">
+        <div class="card">
+          <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg></div>
+          <h3>Search every registry</h3>
+          <p><code>xpm which</code> and <code>xpm search</code> query five registries in parallel and show where a name exists and its latest version.</p>
+        </div>
+        <div class="card">
+          <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h10M4 17h7"/></svg></div>
+          <h3>One version syntax</h3>
+          <p><code>name@version</code> becomes <code>==</code>, <code>:</code> or <code>@</code>, whatever the underlying tool expects.</p>
+        </div>
+        <div class="card">
+          <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></div>
+          <h3>Respects your lockfile</h3>
+          <p>When you install, <code>yarn.lock</code> means yarn and <code>poetry.lock</code> means poetry, so xpm uses the tool your project already uses.</p>
+        </div>
+        <div class="card">
+          <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 3 14 9-14 9V3z"/></svg></div>
+          <h3>Run any project's scripts</h3>
+          <p><code>xpm run build</code> works with package.json, composer.json, pyproject.toml and Cargo, and passes args after <code>--</code> through untouched.</p>
+        </div>
+        <div class="card">
+          <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 4 6v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V6l-8-3z"/><path d="m9 12 2 2 4-4"/></svg></div>
+          <h3>Safe by default</h3>
+          <p>Flag-like names are rejected, runtime downloads are checked against published SHA-256 sums, and archives can't write outside their folder.</p>
+        </div>
+        <div class="card">
+          <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg></div>
+          <h3>Doctor</h3>
+          <p><code>xpm doctor</code> checks installed package managers, runtimes, lockfiles and project health in one report.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="speed">
+    <div class="wrap">
+      <h2>Fast, measured</h2>
+      <p class="sub">Registries are queried in parallel with a hard 2.5 s deadline, payloads are tiny, and answers are cached on disk. Numbers below are from macOS arm64.</p>
+      <div class="speed">
+        <div class="row">
+          <div class="label">xpm which axios<small>first lookup</small></div>
+          <div class="bars">
+            <div class="bar before" style="width:100%">before · 3–6 s</div>
+            <div class="bar now" style="width:23%">~1.2 s</div>
+          </div>
+        </div>
+        <div class="row">
+          <div class="label">xpm which axios<small>repeat lookup (cached)</small></div>
+          <div class="bars">
+            <div class="bar before" style="width:100%">before · 3–6 s</div>
+            <div class="bar now" style="width:2%">&lt; 10 ms</div>
+          </div>
+        </div>
+        <div class="row">
+          <div class="label">A registry hangs<small>worst case</small></div>
+          <div class="bars">
+            <div class="bar before" style="width:100%">before · up to 20 s</div>
+            <div class="bar now" style="width:13%">≤ 2.5 s</div>
+          </div>
+        </div>
+        <div class="row">
+          <div class="label">npm data per lookup<small>typescript</small></div>
+          <div class="bars">
+            <div class="bar before" style="width:100%">before · 15.7 MB</div>
+            <div class="bar now" style="width:2%">3.5 KB</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="ecosystems">
+    <div class="wrap">
+      <h2>Speaks every tool's language</h2>
+      <p class="sub">Same command, translated for each tool.</p>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>You type</th><th>Ecosystem</th><th>xpm runs</th></tr></thead>
+          <tbody>
+            <tr><td><code>xpm i axios@1.7.0</code></td><td>Node.js</td><td><code>npm install axios@1.7.0</code> (or yarn / pnpm / bun)</td></tr>
+            <tr><td><code>xpm i requests@2.31.0</code></td><td>Python</td><td><code>pip install requests==2.31.0</code> (or poetry / pipenv)</td></tr>
+            <tr><td><code>xpm i laravel/framework@10.0</code></td><td>PHP</td><td><code>composer require laravel/framework:10.0</code></td></tr>
+            <tr><td><code>xpm i serde@1.0</code></td><td>Rust</td><td><code>cargo add serde@1.0</code></td></tr>
+            <tr><td><code>xpm i com.google.guava:guava</code></td><td>Java</td><td>prints the Maven / Gradle dependency snippet</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="chips" style="margin-top:18px">
+        <span class="chip"><b>npm</b> <span>yarn · pnpm · bun</span></span>
+        <span class="chip"><b>PyPI</b> <span>pip · poetry · pipenv</span></span>
+        <span class="chip"><b>Packagist</b> <span>composer</span></span>
+        <span class="chip"><b>crates.io</b> <span>cargo</span></span>
+        <span class="chip"><b>Maven Central</b> <span>maven · gradle</span></span>
+        <span class="chip"><b>Go</b> <span>modules</span></span>
+      </div>
+    </div>
+  </section>
+
+  <section id="status">
+    <div class="wrap">
+      <h2>Honest status</h2>
+      <p class="sub">xpm is young. The core is solid; bigger subsystems are being rebuilt in the open.</p>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>Area</th><th>Commands</th><th>Status</th></tr></thead>
+          <tbody>
+            <tr><td>Search &amp; lookup</td><td><code>which</code> <code>search</code> <code>info</code></td><td><span class="pill ok">stable</span></td></tr>
+            <tr><td>Install / update / remove</td><td><code>install</code> <code>update</code> <code>remove</code> <code>list</code></td><td><span class="pill ok">stable</span></td></tr>
+            <tr><td>Project scripts</td><td><code>run</code></td><td><span class="pill ok">stable</span></td></tr>
+            <tr><td>Diagnostics</td><td><code>doctor</code></td><td><span class="pill ok">stable</span></td></tr>
+            <tr><td>Runtime versions</td><td><code>env</code></td><td><span class="pill exp">experimental</span> Node &amp; Go verified</td></tr>
+            <tr><td>Graph · lockfile · workspaces · cache</td><td><code>graph</code> <code>lock</code> <code>workspaces</code> <code>cache</code></td><td><span class="pill exp">experimental</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="cta" style="text-align:left">Track progress in the <a href="https://github.com/crenspire/xpm/blob/develop/docs/superpowers/plans/2026-10-06-xpm-roadmap.md">roadmap</a>.</p>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>xpm · MIT License · © Crenspire Technologies</span>
+    <span><a href="https://github.com/crenspire/xpm">GitHub</a> · <a href="https://github.com/crenspire/xpm/issues">Issues</a></span>
+  </div>
+</footer>
+
+<script>
+  const btn = document.getElementById('copy');
+  btn.addEventListener('click', async () => {
+    const text = document.getElementById('cmd').textContent;
+    try { await navigator.clipboard.writeText(text); btn.textContent = 'Copied'; }
+    catch { btn.textContent = 'Select & copy'; }
+    setTimeout(() => (btn.textContent = 'Copy'), 1600);
+  });
+</script>
+</body>
+</html>

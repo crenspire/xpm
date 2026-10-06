@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 128" role="img" aria-labelledby="t">
+  <title id="t">xpm — universal package manager</title>
+  <defs>
+    <linearGradient id="xl" x1="28" y1="22" x2="100" y2="64" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#8B5CF6"/><stop offset="1" stop-color="#6366F1"/></linearGradient>
+    <linearGradient id="xs1" x1="28" y1="43" x2="64" y2="106" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#5B21B6"/><stop offset="1" stop-color="#4338CA"/></linearGradient>
+    <linearGradient id="xs2" x1="64" y1="43" x2="100" y2="106" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#06B6D4"/><stop offset="1" stop-color="#0E7490"/></linearGradient>
+  </defs>
+  <path d="M64 20 102 42 64 64 26 42Z" fill="url(#xl)"/>
+  <path d="M26 42 64 64 64 108 26 86Z" fill="url(#xs1)"/>
+  <path d="M102 42 64 64 64 108 102 86Z" fill="url(#xs2)"/>
+  <g fill="none" stroke="#fff" stroke-linecap="round" stroke-width="8">
+    <path d="M47 33 81 51"/>
+    <path d="M81 33 47 51"/>
+  </g>
+  <path d="M64 64V108" stroke="#fff" stroke-opacity=".35" stroke-width="1.5"/>
+  <text x="124" y="84" font-family="Inter, 'SF Pro Display', 'Segoe UI', Helvetica, Arial, sans-serif" font-size="72" font-weight="800" letter-spacing="-2" fill="#F9FAFB">xpm</text>
+  <text x="128" y="108" font-family="Inter, 'SF Pro Text', 'Segoe UI', Helvetica, Arial, sans-serif" font-size="17" font-weight="600" letter-spacing="1.5" fill="#9CA3AF">ONE CLI · EVERY ECOSYSTEM</text>
+</svg>
