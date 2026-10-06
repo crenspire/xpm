@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -88,7 +89,8 @@ func cmdRun(args []string) int {
 
 	// Run the script
 	if err := scripts.RunScript(*script, extraArgs); err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
 			return exitErr.ExitCode()
 		}
 		fmt.Fprintln(os.Stderr, "error running task:", err)

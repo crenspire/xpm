@@ -223,7 +223,7 @@ func TestEmptyConfig(t *testing.T) {
 		t.Errorf("empty config Prefer should be nil/empty, got %v", c.Prefer)
 	}
 
-	if c.Search != nil && len(c.Search) != 0 {
+	if len(c.Search) != 0 {
 		t.Errorf("empty config Search should be nil/empty, got %v", c.Search)
 	}
 }

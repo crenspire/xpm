@@ -11,12 +11,13 @@ import (
 	"os"
 	"strings"
 
+	"github.com/manifoldco/promptui"
+
 	"github.com/crenspire/xpm/internal/config"
 	"github.com/crenspire/xpm/internal/doctor"
 	"github.com/crenspire/xpm/internal/logx"
 	"github.com/crenspire/xpm/internal/pm"
 	"github.com/crenspire/xpm/internal/search"
-	"github.com/manifoldco/promptui"
 )
 
 // Version is the current version of xpm.
