@@ -97,8 +97,9 @@ func buildComposerCommand(script ScriptDefinition, extraArgs []string) *exec.Cmd
 // shellCommand runs command through `sh -c`. Extra arguments are passed as
 // positional parameters and appended as "$@", so the shell never re-splits
 // or evaluates them. Trailing whitespace is trimmed first so a script ending
-// in a newline does not put "$@" on a line of its own. On Windows this needs an `sh` on PATH (Git for Windows,
-// MSYS2 or WSL), exactly as before; xpm does not translate scripts to cmd.exe.
+// in a newline does not put "$@" on a line of its own. On Windows this needs
+// an `sh` on PATH (Git for Windows, MSYS2 or WSL), exactly as before; xpm
+// does not translate scripts to cmd.exe.
 func shellCommand(command string, extraArgs []string) *exec.Cmd {
 	if len(extraArgs) == 0 {
 		return exec.Command("sh", "-c", command)
