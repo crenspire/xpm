@@ -1,6 +1,7 @@
 package env
 
 import (
+	"context"
 	"fmt"
 	"os"
 )
@@ -20,7 +21,7 @@ func UseVersion(m *Manager, runtime, spec string, global bool) (Active, error) {
 		return Active{}, fmt.Errorf("%s@%s is not installed\nInstall it: xpm env install %s@%s", runtime, spec, runtime, spec)
 	}
 	if global {
-		if err := m.SetGlobalVersion(runtime, exact); err != nil {
+		if err := m.withStateLock(context.Background(), func() error { return m.SetGlobalVersion(runtime, exact) }); err != nil {
 			return Active{}, err
 		}
 		return Active{Version: exact, Source: m.activePath, Global: true}, nil
@@ -29,7 +30,12 @@ func UseVersion(m *Manager, runtime, spec string, global bool) (Active, error) {
 	if err != nil {
 		return Active{}, err
 	}
-	path, err := SetLocalVersion(cwd, runtime, exact)
+	var path string
+	err = m.withStateLock(context.Background(), func() error {
+		var err error
+		path, err = SetLocalVersion(cwd, runtime, exact)
+		return err
+	})
 	if err != nil {
 		return Active{}, err
 	}

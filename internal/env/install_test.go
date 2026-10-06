@@ -182,6 +182,36 @@ func TestInstallRuntimeCancelledLeavesNothing(t *testing.T) {
 	noTmpLeft(t, m)
 }
 
+func TestInstallRuntimeCancelledInstallerErrorIsCancel(t *testing.T) {
+	m := isolate(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	useFake(t, &fakeInstaller{install: func(context.Context, InstallRequest) error {
+		cancel() // Ctrl-C kills rustup/brew; they fail with their own error
+		return errors.New("signal: interrupt")
+	}})
+	_, err := InstallRuntime(ctx, m, fakeRT, "1.0.0")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	noTmpLeft(t, m)
+}
+
+func TestInstallRuntimePostInstallFailureKeepsTheVersion(t *testing.T) {
+	m := isolate(t)
+	useFake(t, &fakeInstaller{})
+	if err := os.WriteFile(m.GetActivePath(), []byte("{bad"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	exact, err := InstallRuntime(context.Background(), m, fakeRT, "1.0.0")
+	var post *PostInstallError
+	if !errors.As(err, &post) || exact != "1.0.0" {
+		t.Fatalf("got %q, %v; want 1.0.0 and a PostInstallError", exact, err)
+	}
+	if verifyInstallation(filepath.Join(m.GetRuntimesPath(), fakeRT, "1.0.0"), []string{"bin/fakebin"}) != nil {
+		t.Fatal("version not installed")
+	}
+}
+
 func TestInstallRuntimeReplacesCorruptAndStaleDirs(t *testing.T) {
 	m := isolate(t)
 	rtDir := filepath.Join(m.GetRuntimesPath(), fakeRT)
@@ -209,8 +239,8 @@ func TestInstallRuntimeWaitsForConcurrentInstall(t *testing.T) {
 		t.Skip("flock is Unix-only")
 	}
 	m := isolate(t)
-	var out bytes.Buffer
-	m.SetOutput(&out)
+	out := newSignalWriter("Waiting for another xpm process installing xpmfake...")
+	m.SetOutput(out)
 	f := &fakeInstaller{}
 	useFake(t, f)
 	rtDir := filepath.Join(m.GetRuntimesPath(), fakeRT)
@@ -227,7 +257,7 @@ func TestInstallRuntimeWaitsForConcurrentInstall(t *testing.T) {
 		_, err := InstallRuntime(context.Background(), m, fakeRT, "1.0.0")
 		done <- err
 	}()
-	time.Sleep(200 * time.Millisecond)
+	out.wait(t)
 	installFake(t, m, "1.0.0", "")
 	unlock()
 	select {

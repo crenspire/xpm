@@ -2,6 +2,7 @@
 package env
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -26,8 +27,14 @@ type Manager struct {
 	out          io.Writer // progress and status messages
 }
 
-// NewManager creates a new environment manager.
+// NewManager creates a new environment manager and its directories.
 func NewManager(cfg config.Config) (*Manager, error) {
+	return newManager(cfg, true)
+}
+
+// newManager builds a Manager; ensure creates the directories. Shims pass
+// false: running a runtime must not write anything.
+func newManager(cfg config.Config, ensure bool) (*Manager, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get home directory: %w", err)
@@ -58,8 +65,10 @@ func NewManager(cfg config.Config) (*Manager, error) {
 		out:          os.Stdout,
 	}
 
-	if err := m.EnsureDirs(); err != nil {
-		return nil, err
+	if ensure {
+		if err := m.EnsureDirs(); err != nil {
+			return nil, err
+		}
 	}
 
 	return m, nil
@@ -99,6 +108,22 @@ func (m *Manager) EnsureDirs() error {
 		}
 	}
 	return nil
+}
+
+// withStateLock runs fn holding <root>/.state.lock, which serialises every
+// read-modify-write of active.json, .xpm-env and the shims dir across xpm
+// processes. Lock order: a runtime lock (runtimes/<rt>/.lock) first, then
+// this one; never the reverse.
+func (m *Manager) withStateLock(ctx context.Context, fn func() error) error {
+	if err := os.MkdirAll(m.envPath, 0o755); err != nil {
+		return err
+	}
+	unlock, err := lockFile(ctx, filepath.Join(m.envPath, ".state.lock"), func() {})
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	return fn()
 }
 
 func (m *Manager) printf(format string, args ...any) {

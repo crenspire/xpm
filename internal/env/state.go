@@ -179,13 +179,31 @@ func (m *Manager) GlobalVersion(runtime string) (string, error) {
 }
 
 // SetGlobalVersion writes runtime=version into active.json atomically
-// (sorted keys, trailing newline).
+// (sorted keys, trailing newline). Callers that also read state first hold
+// the state lock (withStateLock).
 func (m *Manager) SetGlobalVersion(runtime, version string) error {
 	active, err := m.loadActiveVersions()
 	if err != nil {
 		return err
 	}
 	active[runtime] = version
+	return m.writeActiveVersions(active)
+}
+
+// ClearGlobalVersion deletes runtime's entry from active.json atomically.
+func (m *Manager) ClearGlobalVersion(runtime string) error {
+	active, err := m.loadActiveVersions()
+	if err != nil {
+		return err
+	}
+	if _, ok := active[runtime]; !ok {
+		return nil
+	}
+	delete(active, runtime)
+	return m.writeActiveVersions(active)
+}
+
+func (m *Manager) writeActiveVersions(active map[string]string) error {
 	data, err := json.MarshalIndent(active, "", "  ")
 	if err != nil {
 		return err

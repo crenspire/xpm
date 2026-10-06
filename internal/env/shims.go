@@ -1,6 +1,7 @@
 package env
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -53,7 +54,7 @@ func RunShim(name string, args []string) int {
 	if !ok {
 		return shimFail(127, "xpm: %s is not provided by any runtime xpm manages", name)
 	}
-	m, err := NewManager(cfg)
+	m, err := newManager(cfg, false) // no writes on every runtime invocation
 	if err != nil {
 		return shimFail(1, "xpm: %v", err)
 	}
@@ -111,9 +112,12 @@ func shimFail(code int, format string, args ...any) int {
 	return code
 }
 
-// shimEnv returns environ with XPM_SHIM_DEPTH incremented and, when binDir
-// is set, binDir prepended to PATH so nested `#!/usr/bin/env node` calls hit
-// the same version directly.
+// shimEnv builds the child environment. For a managed version (binDir set)
+// binDir is prepended to PATH, so nested `#!/usr/bin/env node` calls hit the
+// same version directly, and XPM_SHIM_DEPTH is dropped: that child is a real
+// binary and cannot loop back. For the system fallback (binDir empty)
+// XPM_SHIM_DEPTH is incremented and capped, since the "system" binary may be
+// another xpm copy's shim.
 func shimEnv(environ []string, binDir, name string) ([]string, error) {
 	depth := 0
 	pathVal, hasPath := "", false
@@ -129,16 +133,17 @@ func shimEnv(environ []string, binDir, name string) ([]string, error) {
 			out = append(out, kv)
 		}
 	}
-	depth++
-	if depth > maxShimDepth {
-		return nil, fmt.Errorf("shim recursion detected for %s", name)
-	}
 	if binDir != "" {
 		if hasPath && pathVal != "" {
 			pathVal = binDir + string(os.PathListSeparator) + pathVal
 		} else {
-			pathVal, hasPath = binDir, true
+			pathVal = binDir
 		}
+		return append(out, "PATH="+pathVal), nil
+	}
+	depth++
+	if depth > maxShimDepth {
+		return nil, fmt.Errorf("shim recursion detected for %s", name)
 	}
 	if hasPath {
 		out = append(out, "PATH="+pathVal)
@@ -146,13 +151,14 @@ func shimEnv(environ []string, binDir, name string) ([]string, error) {
 	return append(out, shimDepthVar+"="+strconv.Itoa(depth)), nil
 }
 
-// findSystemBinary searches pathEnv for an executable `name`, skipping the
-// shims dir and anything that resolves to the xpm executable itself.
+// findSystemBinary searches pathEnv for an executable `name`, skipping
+// relative entries (like exec.LookPath's ErrDot), the shims dir and anything
+// that resolves to the xpm executable itself.
 func findSystemBinary(name, pathEnv, shimsDir, self string) (string, bool) {
 	realShims := realPath(shimsDir)
 	realSelf := realPath(self)
 	for _, dir := range filepath.SplitList(pathEnv) {
-		if dir == "" {
+		if dir == "" || !filepath.IsAbs(dir) {
 			continue
 		}
 		if filepath.Clean(dir) == filepath.Clean(shimsDir) || realPath(dir) == realShims {
@@ -165,9 +171,6 @@ func findSystemBinary(name, pathEnv, shimsDir, self string) (string, bool) {
 		}
 		if realSelf != "" && realPath(cand) == realSelf {
 			continue
-		}
-		if abs, err := filepath.Abs(cand); err == nil {
-			cand = abs
 		}
 		return cand, true
 	}
@@ -186,11 +189,17 @@ func realPath(p string) string {
 
 // CreateShims makes <shims>/<name> a symlink to the xpm executable for every
 // binary of every installed runtime, re-pointing existing links, and deletes
-// everything else in the shims dir (old compiled shims, stale names).
+// everything else in the shims dir (old compiled shims, stale names) except
+// dot-names and in-flight "*.tmp-*" links. It runs under the state lock, so
+// concurrent installs of different runtimes never prune each other's shims.
 func CreateShims(m *Manager) error {
 	if m.executable == "" {
 		return errors.New("cannot determine the path of the xpm executable")
 	}
+	return m.withStateLock(context.Background(), m.createShims)
+}
+
+func (m *Manager) createShims() error {
 	want := map[string]bool{}
 	for _, rt := range ListRuntimes() {
 		versions, err := m.InstalledVersions(rt)
@@ -223,10 +232,12 @@ func CreateShims(m *Manager) error {
 		return err
 	}
 	for _, e := range entries {
-		if !want[e.Name()] {
-			if err := os.RemoveAll(filepath.Join(m.shimsPath, e.Name())); err != nil {
-				return err
-			}
+		name := e.Name()
+		if want[name] || strings.HasPrefix(name, ".") || strings.Contains(name, ".tmp-") {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(m.shimsPath, name)); err != nil {
+			return err
 		}
 	}
 	return nil

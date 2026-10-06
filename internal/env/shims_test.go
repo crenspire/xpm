@@ -41,7 +41,7 @@ func TestCreateShimsLinksEveryBinaryAndPrunes(t *testing.T) {
 	useFake(t, &fakeInstaller{})
 	installFake(t, m, "1.0.0", "")
 	shims := m.GetShimsPath()
-	for _, junk := range []string{"node", "node.go", "stale.tmp-abc"} {
+	for _, junk := range []string{"node", "node.go", "stale"} {
 		if err := os.WriteFile(filepath.Join(shims, junk), []byte("old compiled shim"), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -119,6 +119,15 @@ func newShimRun(t *testing.T) *shimRun {
 	return r
 }
 
+func (r *shimRun) hasEnv(key string) bool {
+	for _, kv := range r.env {
+		if k, _, _ := strings.Cut(kv, "="); k == key {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *shimRun) envVar(key string) string {
 	for _, kv := range r.env {
 		if k, v, _ := strings.Cut(kv, "="); k == key {
@@ -146,8 +155,59 @@ func TestRunShimExecsTheActiveVersion(t *testing.T) {
 	if got := r.envVar("PATH"); got != filepath.Join(dir, "bin")+string(os.PathListSeparator)+"/usr/bin" {
 		t.Fatalf("PATH = %q", got)
 	}
-	if got := r.envVar(shimDepthVar); got != "1" {
-		t.Fatalf("depth = %q", got)
+	if r.hasEnv(shimDepthVar) {
+		t.Fatalf("a managed version must not get %s", shimDepthVar)
+	}
+}
+
+func TestRunShimManagedPathDropsShimDepth(t *testing.T) {
+	r := newShimRun(t)
+	installFake(t, r.m, "1.0.0", "")
+	if err := r.m.SetGlobalVersion(fakeRT, "1.0.0"); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(shimDepthVar, "4")
+	if code := RunShim("fakebin", nil); code != 0 || r.calls != 1 {
+		t.Fatalf("exit %d calls %d: %s", code, r.calls, r.stderr.String())
+	}
+	if r.hasEnv(shimDepthVar) {
+		t.Fatalf("child env has %s=%s", shimDepthVar, r.envVar(shimDepthVar))
+	}
+}
+
+func TestRunShimDoesNotCreateTheEnvRoot(t *testing.T) {
+	r := newShimRun(t)
+	root := r.m.GetEnvPath()
+	if err := os.RemoveAll(root); err != nil {
+		t.Fatal(err)
+	}
+	sys := t.TempDir()
+	if err := os.WriteFile(filepath.Join(sys, "fakebin"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", sys)
+	if code := RunShim("fakebin", nil); code != 0 || r.path != filepath.Join(sys, "fakebin") {
+		t.Fatalf("exit %d exec %q: %s", code, r.path, r.stderr.String())
+	}
+	if _, err := os.Stat(root); err == nil {
+		t.Fatal("the shim created the env root")
+	}
+}
+
+func TestFindSystemBinarySkipsRelativePathEntries(t *testing.T) {
+	skipOnWindows(t)
+	dir := t.TempDir()
+	chdir(t, dir)
+	if err := os.WriteFile(filepath.Join(dir, "fakebin"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{".", "./", "sub/.."} {
+		if bin, ok := findSystemBinary("fakebin", p, filepath.Join(t.TempDir(), "shims"), ""); ok {
+			t.Errorf("PATH %q found %q; relative entries must be skipped", p, bin)
+		}
+	}
+	if bin, ok := findSystemBinary("fakebin", dir, filepath.Join(t.TempDir(), "shims"), ""); !ok || bin != filepath.Join(dir, "fakebin") {
+		t.Fatalf("absolute entry: %q %v", bin, ok)
 	}
 }
 
@@ -208,6 +268,9 @@ func TestRunShimFallsBackToSystemBinary(t *testing.T) {
 	if r.path != sysBin || r.envVar("PATH") != os.Getenv("PATH") {
 		t.Fatalf("exec %q with PATH %q", r.path, r.envVar("PATH"))
 	}
+	if got := r.envVar(shimDepthVar); got != "1" {
+		t.Fatalf("depth = %q", got)
+	}
 }
 
 func TestRunShimNoVersionNoSystemBinary(t *testing.T) {
@@ -248,10 +311,11 @@ func TestRunShimDisabledConfigUsesSystem(t *testing.T) {
 
 func TestRunShimRecursionGuard(t *testing.T) {
 	r := newShimRun(t)
-	installFake(t, r.m, "1.0.0", "")
-	if err := r.m.SetGlobalVersion(fakeRT, "1.0.0"); err != nil {
+	sys := t.TempDir() // nothing configured: the system fallback path
+	if err := os.WriteFile(filepath.Join(sys, "fakebin"), []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("PATH", sys)
 	t.Setenv(shimDepthVar, "4")
 	if code := RunShim("fakebin", nil); code != 1 || r.calls != 0 {
 		t.Fatalf("exit %d calls %d", code, r.calls)

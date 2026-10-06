@@ -1,6 +1,7 @@
 package env
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -186,30 +187,66 @@ func TestUseVersionWritesExactInstalledVersion(t *testing.T) {
 	}
 }
 
-func TestRemoveVersionRefusesActiveAndGlobal(t *testing.T) {
+func TestRemoveVersionRefusesPinnedAndClearsGlobal(t *testing.T) {
 	m := isolate(t)
+	var out bytes.Buffer
+	m.SetOutput(&out)
 	installFake(t, m, "1.0.0", "")
 	installFake(t, m, "2.0.0", "")
 	installFake(t, m, "3.0.0", "")
 	if err := m.SetGlobalVersion(fakeRT, "1"); err != nil {
 		t.Fatal(err)
 	}
+	if err := m.SetGlobalVersion("othert", "9.0.0"); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(".xpm-env", []byte(fakeRT+"=2.0.0\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	cwd, _ := os.Getwd()
 	ctx := context.Background()
-	if err := RemoveVersion(ctx, m, fakeRT, "2.0.0"); err == nil || !strings.Contains(err.Error(), "active here") {
+	err := RemoveVersion(ctx, m, fakeRT, "2.0.0")
+	want := "cannot remove xpmfake@2.0.0: it is pinned in " + filepath.Join(cwd, ".xpm-env") + "\nSwitch first: xpm env use xpmfake@<other-version>"
+	if err == nil || err.Error() != want {
 		t.Fatalf("removing the local pin: %v", err)
 	}
-	if err := RemoveVersion(ctx, m, fakeRT, "1.0.0"); err == nil || !strings.Contains(err.Error(), "global default") {
+	if err := RemoveVersion(ctx, m, fakeRT, "1.0.0"); err != nil {
 		t.Fatalf("removing the global default: %v", err)
+	}
+	if !strings.Contains(out.String(), "Cleared the global xpmfake default (was 1)\n") {
+		t.Fatalf("output %q", out.String())
+	}
+	active, err := m.loadActiveVersions()
+	if err != nil || len(active) != 1 || active["othert"] != "9.0.0" {
+		t.Fatalf("active.json = %v, %v", active, err)
 	}
 	if err := RemoveVersion(ctx, m, fakeRT, "3.0.0"); err != nil {
 		t.Fatal(err)
 	}
 	entries, _ := os.ReadDir(filepath.Join(m.GetRuntimesPath(), fakeRT))
-	if len(entries) != 2 {
-		t.Fatalf("left %d entries, want 2 (no .tmp-old-*)", len(entries))
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	if strings.Join(names, ",") != ".lock,2.0.0" {
+		t.Fatalf("left %v, want .lock and 2.0.0 (no .tmp-old-*)", names)
+	}
+}
+
+func TestRemoveVersionLastAutoGlobal(t *testing.T) {
+	m := isolate(t)
+	useFake(t, &fakeInstaller{})
+	if _, err := InstallRuntime(context.Background(), m, fakeRT, "1.0.0"); err != nil {
+		t.Fatal(err)
+	}
+	if err := RemoveVersion(context.Background(), m, fakeRT, "1.0.0"); err != nil {
+		t.Fatalf("the only (auto-global) version must be removable: %v", err)
+	}
+	if g, err := m.GlobalVersion(fakeRT); err != nil || g != "" {
+		t.Fatalf("global = %q, %v", g, err)
+	}
+	if _, err := m.ActiveVersion(fakeRT); !errors.Is(err, ErrNoVersion) {
+		t.Fatalf("after removal: %v, want ErrNoVersion", err)
 	}
 }
 

@@ -62,7 +62,8 @@ func resolveSpec(ctx context.Context, inst RuntimeInstaller, spec string) (strin
 // writes .xpm-meta.json and renames the stage into place, all under a
 // per-runtime lock. On any failure or cancellation nothing is left behind.
 // It never writes .xpm-env; if the runtime has no global version yet, the
-// installed one becomes the global default.
+// installed one becomes the global default. When only that last step fails
+// it returns exact and a *PostInstallError.
 func InstallRuntime(ctx context.Context, m *Manager, rt, spec string) (string, error) {
 	if err := ValidateRuntimeName(rt); err != nil {
 		return "", err
@@ -92,7 +93,7 @@ func InstallRuntime(ctx context.Context, m *Manager, rt, spec string) (string, e
 
 	if verifyInstallation(dest, inst.BinaryPaths()) == nil {
 		m.printf("%s@%s is already installed\n", rt, exact)
-		return exact, m.afterInstall(rt, exact, dest, alias)
+		return exact, m.afterInstall(ctx, rt, exact, dest, alias)
 	}
 
 	rtDir := filepath.Dir(dest)
@@ -109,7 +110,7 @@ func InstallRuntime(ctx context.Context, m *Manager, rt, spec string) (string, e
 
 	if verifyInstallation(dest, inst.BinaryPaths()) == nil { // another process won
 		m.printf("%s@%s is already installed\n", rt, exact)
-		return exact, m.afterInstall(rt, exact, dest, alias)
+		return exact, m.afterInstall(ctx, rt, exact, dest, alias)
 	}
 	removeStale(rtDir)
 
@@ -126,6 +127,9 @@ func InstallRuntime(ctx context.Context, m *Manager, rt, spec string) (string, e
 
 	m.printf("Installing %s@%s...\n", rt, exact)
 	if err := inst.Install(ctx, InstallRequest{Version: exact, Dest: staging, Root: m.envPath}); err != nil {
+		if cerr := ctx.Err(); cerr != nil { // a killed subprocess reports its own error
+			return "", fmt.Errorf("install %s@%s: %w", rt, exact, cerr)
+		}
 		return "", fmt.Errorf("install %s@%s: %w", rt, exact, err)
 	}
 	if err := ctx.Err(); err != nil {
@@ -149,29 +153,43 @@ func InstallRuntime(ctx context.Context, m *Manager, rt, spec string) (string, e
 	}
 	done = true
 	m.printf("Installed %s@%s\n", rt, exact)
-	return exact, m.afterInstall(rt, exact, "", "")
+	return exact, m.afterInstall(ctx, rt, exact, "", "")
 }
 
+// PostInstallError means the version is installed but recording it (the lts
+// alias or the global default) failed; the CLI reports it as a warning.
+type PostInstallError struct{ Err error }
+
+func (e *PostInstallError) Error() string { return e.Err.Error() }
+func (e *PostInstallError) Unwrap() error { return e.Err }
+
 // afterInstall records an "lts" alias on an existing install and sets the
-// global default when the runtime has none.
-func (m *Manager) afterInstall(rt, exact, existingDir, alias string) error {
+// global default when the runtime has none, under the state lock. A failure
+// is a *PostInstallError.
+func (m *Manager) afterInstall(ctx context.Context, rt, exact, existingDir, alias string) error {
 	if existingDir != "" && alias == "lts" && readMeta(existingDir).Alias != "lts" {
 		if err := writeMeta(existingDir, versionMeta{Version: exact, Alias: alias}); err != nil {
-			return err
+			return &PostInstallError{Err: err}
 		}
 	}
-	global, err := m.GlobalVersion(rt)
-	if err != nil {
-		return err
-	}
-	if global == "" {
-		if err := m.SetGlobalVersion(rt, exact); err != nil {
+	err := m.withStateLock(ctx, func() error {
+		global, err := m.GlobalVersion(rt)
+		if err != nil {
 			return err
 		}
-		m.printf("Set %s@%s as the global default\n", rt, exact)
+		if global == "" {
+			if err := m.SetGlobalVersion(rt, exact); err != nil {
+				return err
+			}
+			m.printf("Set %s@%s as the global default\n", rt, exact)
+			return nil
+		}
+		m.printf("Use it here: xpm env use %s@%s\n", rt, exact)
 		return nil
+	})
+	if err != nil {
+		return &PostInstallError{Err: err}
 	}
-	m.printf("Use it here: xpm env use %s@%s\n", rt, exact)
 	return nil
 }
 
