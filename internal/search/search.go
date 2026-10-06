@@ -190,9 +190,11 @@ func existsInPip(ctx context.Context, pkg string) (*Result, error) {
 	}, nil
 }
 
-// existsInComposer searches Packagist and returns the first hit, which may
-// be a fuzzy match ("monolog" -> "monolog/monolog"). Returns (nil, nil) if
-// there are no hits.
+// existsInComposer searches Packagist and returns the hit named like the
+// query: "<q>" or "<q>/<q>" (monolog -> monolog/monolog), then "*/<q>",
+// ignoring case. Packagist ranks by popularity, so that hit is often not
+// first; without one the first hit is returned, which may be unrelated
+// (axios -> swlib/saber). Returns (nil, nil) if there are no hits.
 func existsInComposer(ctx context.Context, pkg string) (*Result, error) {
 	if err := validatePackageNameForURL(pkg); err != nil {
 		return nil, fmt.Errorf("invalid package name: %w", err)
@@ -219,22 +221,49 @@ func existsInComposer(ctx context.Context, pkg string) (*Result, error) {
 	if len(data.Results) == 0 {
 		return nil, nil
 	}
-	first := data.Results[0]
+	names := make([]string, len(data.Results))
+	for i, r := range data.Results {
+		names[i] = r.Name
+	}
+	best := data.Results[composerBestHit(pkg, names)]
 	return &Result{
 		Manager: pm.Composer,
-		Name:    first.Name,
-		Info:    first.Description,
+		Name:    best.Name,
+		Info:    best.Description,
 		Extra:   map[string]string{},
 	}, nil
 }
 
-// existsInMaven searches Maven Central and returns the first hit.
-// Returns (nil, nil) if there are no hits.
+// composerBestHit returns the index of the Packagist name that best
+// matches query: "<q>" or "<q>/<q>", then "<vendor>/<q>", else the first.
+func composerBestHit(query string, names []string) int {
+	q := strings.ToLower(query)
+	vendorMatch := -1
+	for i, n := range names {
+		n = strings.ToLower(n)
+		if n == q || n == q+"/"+q {
+			return i
+		}
+		if vendorMatch == -1 && strings.HasSuffix(n, "/"+q) {
+			vendorMatch = i
+		}
+	}
+	return max(vendorMatch, 0)
+}
+
+// mavenRows is how many Maven Central hits an exact lookup scans for the
+// artifact named like the query.
+const mavenRows = 10
+
+// existsInMaven searches Maven Central and returns the first hit whose
+// artifactId is the query (case-sensitive: "Express" is not "express") or
+// whose group:artifact is the query; without one, the first hit, which may
+// be unrelated. Returns (nil, nil) if there are no hits.
 func existsInMaven(ctx context.Context, pkg string) (*Result, error) {
 	if err := validatePackageNameForURL(pkg); err != nil {
 		return nil, fmt.Errorf("invalid package name: %w", err)
 	}
-	u := fmt.Sprintf("%s?q=%s&rows=5&wt=json", mavenSearchURL, url.QueryEscape(pkg))
+	u := fmt.Sprintf("%s?q=%s&rows=%d&wt=json", mavenSearchURL, url.QueryEscape(pkg), mavenRows)
 	logx.Info("query maven: %s", u)
 	resp, err := httpGet(ctx, u)
 	if err != nil {
@@ -252,6 +281,12 @@ func existsInMaven(ctx context.Context, pkg string) (*Result, error) {
 		return nil, nil
 	}
 	d := data.Response.Docs[0]
+	for _, doc := range data.Response.Docs {
+		if doc.Artifact == pkg || doc.Group+":"+doc.Artifact == pkg {
+			d = doc
+			break
+		}
+	}
 	return &Result{
 		Manager: pm.Maven,
 		Name:    d.Group + ":" + d.Artifact,

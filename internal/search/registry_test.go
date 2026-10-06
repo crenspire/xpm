@@ -168,3 +168,59 @@ func TestMultiSearchSendsUserAgent(t *testing.T) {
 		}
 	}
 }
+
+func TestExistsInComposerPrefersTheExactName(t *testing.T) {
+	for _, tc := range []struct {
+		query, results, want string
+	}{
+		// Packagist ranks by popularity: the package named like the query is often not first.
+		{"phpunit", `[{"name":"sebastian/phpunit-helper"},{"name":"other/phpunit"},{"name":"phpunit/phpunit","description":"The PHP Unit Testing framework."}]`, "phpunit/phpunit"},
+		{"PHPUnit", `[{"name":"sebastian/phpunit-helper"},{"name":"phpunit/phpunit"}]`, "phpunit/phpunit"},
+		{"swlib/saber", `[{"name":"swlib/saber-ext"},{"name":"swlib/saber"}]`, "swlib/saber"},
+		{"guzzle", `[{"name":"guzzlehttp/guzzle-services"},{"name":"guzzlehttp/guzzle"}]`, "guzzlehttp/guzzle"},
+		{"axios", `[{"name":"swlib/saber"},{"name":"x/axios-php"}]`, "swlib/saber"},
+	} {
+		fakeRegistry(t, func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprintf(w, `{"results":%s}`, tc.results)
+		})
+		r, err := existsInComposer(bg, tc.query)
+		if err != nil || r == nil || r.Name != tc.want {
+			t.Errorf("%s: got (%+v, %v), want %s", tc.query, r, err, tc.want)
+		}
+	}
+}
+
+func TestExistsInMavenPrefersTheExactArtifactID(t *testing.T) {
+	var rows string
+	fakeRegistry(t, func(w http.ResponseWriter, r *http.Request) {
+		rows = r.URL.Query().Get("rows")
+		switch r.URL.Query().Get("q") {
+		case "guava":
+			fmt.Fprint(w, `{"response":{"docs":[
+				{"id":"com.google.guava:guava-testlib","g":"com.google.guava","a":"guava-testlib","latestVersion":"33.3.1-jre"},
+				{"id":"org.example:Guava","g":"org.example","a":"Guava","latestVersion":"1.0"},
+				{"id":"com.google.guava:guava","g":"com.google.guava","a":"guava","latestVersion":"33.3.1-jre"}]}}`)
+		case "Express":
+			fmt.Fprint(w, `{"response":{"docs":[
+				{"id":"org.example:express-x","g":"org.example","a":"express-x","latestVersion":"1"},
+				{"id":"org.apache.royale.framework:Express","g":"org.apache.royale.framework","a":"Express","latestVersion":"0.9.10"}]}}`)
+		default:
+			fmt.Fprint(w, `{"response":{"docs":[
+				{"id":"org.webjars.npm:axios-retry","g":"org.webjars.npm","a":"axios-retry","latestVersion":"4.0.0"},
+				{"id":"org.example:Axios","g":"org.example","a":"Axios","latestVersion":"1"}]}}`)
+		}
+	})
+	for query, want := range map[string]string{
+		"guava":   "com.google.guava:guava",
+		"Express": "org.apache.royale.framework:Express",
+		"axios":   "org.webjars.npm:axios-retry", // no case-sensitive artifactId match: first doc
+	} {
+		r, err := existsInMaven(bg, query)
+		if err != nil || r == nil || r.Name != want {
+			t.Errorf("%s: got (%+v, %v), want %s", query, r, err, want)
+		}
+	}
+	if rows != "10" {
+		t.Errorf("rows = %q, want 10", rows)
+	}
+}
