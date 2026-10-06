@@ -77,6 +77,20 @@ func TestCachedLookupRefetchesExpiredEntries(t *testing.T) {
 	}
 }
 
+func TestCachedLookupRefetchesFutureDatedEntries(t *testing.T) {
+	dir := t.TempDir()
+	l, calls := countingLookup(pm.Npm, &Result{Manager: pm.Npm, Name: "x"}, nil)
+	path := cachePath(dir, pm.Npm, "x")
+	future, _ := json.Marshal(cacheEntry{Found: true, Result: &Result{Name: "old"}, At: time.Now().Add(24 * time.Hour)})
+	os.MkdirAll(filepath.Dir(path), 0o755)
+	os.WriteFile(path, future, 0o644)
+
+	r, _ := cachedLookup(dir, l, "x")
+	if *calls != 1 || r == nil || r.Name != "x" {
+		t.Fatalf("future-dated entry was served (calls=%d result=%+v)", *calls, r)
+	}
+}
+
 func TestCacheDisabledByEnv(t *testing.T) {
 	t.Setenv("XPM_NO_CACHE", "1")
 	if dir := defaultLookupCacheDir(); dir != "" {

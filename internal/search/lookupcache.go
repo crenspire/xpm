@@ -59,7 +59,7 @@ func cachedLookup(dir string, l lookup, pkg string) (*Result, error) {
 			if e.Found {
 				ttl = positiveTTL
 			}
-			if time.Since(e.At) < ttl {
+			if !e.At.After(time.Now()) && time.Since(e.At) < ttl {
 				return e.Result, nil
 			}
 		}
