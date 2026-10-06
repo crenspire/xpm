@@ -72,7 +72,7 @@ func skipCSI(rs []rune, i int) int {
 // the last index when it is unterminated.
 func skipString(rs []rune, i int, belEnds bool) int {
 	for ; i < len(rs); i++ {
-		if belEnds && rs[i] == bel {
+		if (belEnds && rs[i] == bel) || rs[i] == '\u009c' {
 			return i
 		}
 		if rs[i] == esc && i+1 < len(rs) && rs[i+1] == '\\' {

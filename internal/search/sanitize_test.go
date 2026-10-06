@@ -25,6 +25,8 @@ func TestSanitizeText(t *testing.T) {
 		{"other c0 and del", "a\x00b\x7fc\x08d", "abcd"},
 		{"invalid utf8", "a\xffb", "a�b"},
 		{"unterminated csi", "a\x1b[31", "a"},
+		{"osc c1 st", "a\x1b]0;t\u009cvisible", "avisible"},
+		{"osc 8-bit st", "a\u009d0;t\u009cvisible", "avisible"},
 		{"unterminated osc", "a\x1b]0;title", "a"},
 		{"c1 osc", "a\u009d0;t\u0007b", "ab"},
 	} {

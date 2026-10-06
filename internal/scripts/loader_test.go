@@ -25,6 +25,7 @@ func TestLoadPyprojectTOML(t *testing.T) {
 	}{
 		{"xpm only", "[tool.xpm.scripts]\ntest = \"pytest\"\n", []string{"test"}, "pytest"},
 		{"upm fallback", "[tool.upm.scripts]\ntest = \"pytest\"\n", []string{"test"}, "pytest"},
+		{"empty xpm table falls back to upm", "[tool.xpm.scripts]\n[tool.upm.scripts]\nb = \"y\"\n", []string{"b"}, "y"},
 		{"xpm wins over upm", "[tool.xpm.scripts]\na = \"x\"\n[tool.upm.scripts]\nb = \"y\"\n", []string{"a"}, "x"},
 		{"poetry only", "[tool.poetry.scripts]\nrun = \"pkg:main\"\n", []string{"run"}, "pkg:main"},
 		{"project only", "[project.scripts]\ncli = \"pkg:cli\"\n", []string{"cli"}, "pkg:cli"},

@@ -14,7 +14,7 @@ import (
 
 // Exact-lookup results are memoised on disk so repeat commands
 // (`xpm which x` then `xpm install x`) skip the network entirely.
-// Set XPM_NO_CACHE=1 to bypass, or XPM_CACHE_DIR=<dir> to move the cache
+// Set XPM_NO_CACHE (any non-empty value, e.g. 1) to bypass, or XPM_CACHE_DIR=<dir> to move the cache
 // (entries then live in <dir>/lookups).
 var (
 	lookupCacheDir = defaultLookupCacheDir()

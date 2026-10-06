@@ -64,19 +64,6 @@ func TestLoadNoFile(t *testing.T) {
 	}
 }
 
-// TestConfigPath verifies Path returns a non-empty string on most systems.
-func TestConfigPath(t *testing.T) {
-	path := Path()
-	// On most systems, this should return a valid path
-	// It might be empty if HOME is not set
-	if path != "" {
-		// Verify it ends with the expected filename
-		if filepath.Base(path) != "xpmrc.json" {
-			t.Errorf("Path() should end with xpmrc.json, got %s", path)
-		}
-	}
-}
-
 // TestPathFollowsEnv verifies Path() is derived from the environment variables
 // the platform uses, so tests can isolate the config with a temp dir.
 func TestPathFollowsEnv(t *testing.T) {

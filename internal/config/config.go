@@ -218,7 +218,9 @@ func defaultConfig() Config {
 	}
 }
 
-// Path returns the platform-specific config file path, or "" if it cannot be determined. Windows: %APPDATA%\xpm\xpmrc.json; elsewhere: $HOME/.config/xpm/xpmrc.json.
+// Path returns the platform-specific config file path, or "" if it cannot be
+// determined. Windows: %APPDATA%\xpm\xpmrc.json; elsewhere:
+// $HOME/.config/xpm/xpmrc.json.
 func Path() string {
 	if runtime.GOOS == "windows" {
 		base := os.Getenv("APPDATA")
