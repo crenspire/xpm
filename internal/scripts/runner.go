@@ -93,41 +93,33 @@ func buildComposerCommand(script ScriptDefinition, extraArgs []string) *exec.Cmd
 	return exec.Command("composer", args...)
 }
 
+// shellCommand runs command through `sh -c`. Extra arguments are passed as
+// positional parameters and appended as "$@", so the shell never re-splits
+// or evaluates them. On Windows this needs an `sh` on PATH (Git for Windows,
+// MSYS2 or WSL), exactly as before; xpm does not translate scripts to cmd.exe.
+func shellCommand(command string, extraArgs []string) *exec.Cmd {
+	if len(extraArgs) == 0 {
+		return exec.Command("sh", "-c", command)
+	}
+	args := append([]string{"-c", command + ` "$@"`, "sh"}, extraArgs...)
+	return exec.Command("sh", args...)
+}
+
 // buildPythonCommand creates the command for Python scripts.
 // Python scripts are executed directly via shell.
 func buildPythonCommand(script ScriptDefinition, extraArgs []string) *exec.Cmd {
-	// For Python, we execute the command directly via shell
-	command := script.Command
-	if len(extraArgs) > 0 {
-		for _, arg := range extraArgs {
-			command += " " + arg
-		}
-	}
-	return exec.Command("sh", "-c", command)
+	return shellCommand(script.Command, extraArgs)
 }
 
 // buildCargoCommand creates the command for Cargo scripts.
 // Cargo scripts are executed directly via shell.
 func buildCargoCommand(script ScriptDefinition, extraArgs []string) *exec.Cmd {
-	// For Cargo, we execute the command directly via shell
-	command := script.Command
-	if len(extraArgs) > 0 {
-		for _, arg := range extraArgs {
-			command += " " + arg
-		}
-	}
-	return exec.Command("sh", "-c", command)
+	return shellCommand(script.Command, extraArgs)
 }
 
 // buildShellCommand creates a generic shell command.
 func buildShellCommand(script ScriptDefinition, extraArgs []string) *exec.Cmd {
-	command := script.Command
-	if len(extraArgs) > 0 {
-		for _, arg := range extraArgs {
-			command += " " + arg
-		}
-	}
-	return exec.Command("sh", "-c", command)
+	return shellCommand(script.Command, extraArgs)
 }
 
 // RunScriptByName finds and runs a script by name from the merged scripts.
