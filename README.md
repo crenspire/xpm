@@ -53,7 +53,7 @@ xpm is young. The core commands are solid; the bigger subsystems are being rebui
 | Install / update / remove | `install`, `ci`, `update`, `remove`, `list` | ✅ Stable (Go modules and Gradle included) |
 | Project scripts | `run` | ✅ Stable |
 | Diagnostics | `doctor` | ✅ Stable |
-| Runtime versions (node, go, …) | `env` | 🧪 Experimental: Node and Go are checksum-verified; Rust needs rustup; others in progress |
+| Runtime versions (node, go, …) | `env` | 🧪 Experimental (macOS and Linux): node, go, python, java, bun and deno are checksum-verified; rust uses a private rustup; php uses Homebrew on macOS only |
 | Dependency graph | `graph` | 🧪 Experimental: parses npm, pnpm, yarn, Cargo, Go, Poetry, pyproject.toml, requirements.txt, Composer, Maven and Gradle files; runs build tools only with `--exec` |
 | Unified lockfile | `lock` | 🧪 Experimental: records lockfile hashes in `xpm-lock.yaml`; `--verify` detects changed, added and removed lockfiles and fails on entries it cannot check |
 | Monorepos | `workspaces`, `run --workspace`, `graph --workspace` | 🧪 Experimental: `xpm install --workspace` is not wired yet |
@@ -87,9 +87,9 @@ sudo mv xpm /usr/local/bin/
 
 | OS | Core commands (`which`, `search`, `info`, `install`, `ci`, `list`, `update`, `remove`, `config`) | `run` | `search` TUI | `env` (experimental) |
 |---|---|---|---|---|
-| Linux | Yes, tested in CI | Yes (`sh -c` for pyproject/Cargo scripts) | Yes | Experimental: Node and Go verified; shims need `go` on PATH |
-| macOS | Yes, tested in CI | Yes (`sh -c` for pyproject/Cargo scripts) | Yes | Experimental: Node and Go verified; shims need `go` on PATH |
-| Windows | Yes, tested in CI | Needs `sh` on PATH (Git for Windows or WSL) for pyproject/Cargo scripts; package.json and composer.json scripts do not | Yes, in Windows Terminal or another modern console | Untested (see roadmap P5) |
+| Linux | Yes, tested in CI | Yes (`sh -c` for pyproject/Cargo scripts) | Yes | Experimental: node, go, python, java, bun, deno checksum-verified; rust via a private rustup; php via Homebrew on macOS only; shims are links to xpm (no Go toolchain needed) |
+| macOS | Yes, tested in CI | Yes (`sh -c` for pyproject/Cargo scripts) | Yes | Experimental: node, go, python, java, bun, deno checksum-verified; rust via a private rustup; php via Homebrew on macOS only; shims are links to xpm (no Go toolchain needed) |
+| Windows | Yes, tested in CI | Needs `sh` on PATH (Git for Windows or WSL) for pyproject/Cargo scripts; package.json and composer.json scripts do not | Yes, in Windows Terminal or another modern console | Not supported: `xpm env` exits with a message |
 
 Windows support for the core commands is covered by CI but is used less in practice than Linux and macOS. The TUI needs a terminal; without one `xpm search` prints plain output.
 
