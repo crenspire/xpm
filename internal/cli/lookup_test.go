@@ -69,11 +69,13 @@ func TestNoMatchExitsOne(t *testing.T) {
 		"install": func() int { return cmdInstall([]string{"nope"}) },
 		"search":  func() int { return cmdSearch([]string{"nope"}) },
 	} {
-		var code int
-		out := captureStdout(t, func() { code = run() })
-		if code != 1 {
-			t.Errorf("%s: exit %d, want 1 for no matches\n%s", name, code, out)
-		}
+		t.Run(name, func(t *testing.T) {
+			var code int
+			out := captureStdout(t, func() { code = run() })
+			if code != 1 {
+				t.Errorf("exit %d, want 1 for no matches\n%s", code, out)
+			}
+		})
 	}
 }
 
@@ -119,5 +121,13 @@ func TestSearchWithPipedStdinUsesPlainOutput(t *testing.T) {
 	out := captureStdout(t, func() { code = cmdSearch([]string{"react"}) })
 	if code != 0 || !strings.Contains(out, "react") {
 		t.Fatalf("code=%d out=%q, want plain results", code, out)
+	}
+}
+
+func TestFormatAvailabilityStripsControlSequences(t *testing.T) {
+	st := registryStatus{Unavailable: []search.RegistryFailure{{Manager: pm.Npm, Err: errors.New("bad \x1b[2Jresponse\x1b]0;t\x07")}}}
+	out := formatAvailability(st)
+	if strings.Contains(out, "\x1b") || !strings.Contains(out, ": bad response\n") {
+		t.Fatalf("formatAvailability = %q, want sanitized error text", out)
 	}
 }

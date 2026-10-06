@@ -212,12 +212,13 @@ func TestUsageDoesNotPanic(t *testing.T) {
 
 // TestRunWithNoArgs verifies Run() returns error with no arguments.
 func TestRunWithNoArgs(t *testing.T) {
+	isolatedHome(t)
 	// Save original args
 	origArgs := os.Args
 	defer func() { os.Args = origArgs }()
 
 	// Set args to just the program name
-	os.Args = []string{"upm"}
+	os.Args = []string{"xpm"}
 
 	// Redirect stdout/stderr
 	oldStdout := os.Stdout
@@ -232,12 +233,13 @@ func TestRunWithNoArgs(t *testing.T) {
 
 // TestRunVersion verifies Run() handles version command.
 func TestRunVersion(t *testing.T) {
+	isolatedHome(t)
 	// Save original args
 	origArgs := os.Args
 	defer func() { os.Args = origArgs }()
 
 	// Test version command
-	os.Args = []string{"upm", "version"}
+	os.Args = []string{"xpm", "version"}
 
 	// Redirect stdout
 	oldStdout := os.Stdout
@@ -252,12 +254,13 @@ func TestRunVersion(t *testing.T) {
 
 // TestRunHelp verifies Run() handles help command.
 func TestRunHelp(t *testing.T) {
+	isolatedHome(t)
 	// Save original args
 	origArgs := os.Args
 	defer func() { os.Args = origArgs }()
 
 	// Test help command
-	os.Args = []string{"upm", "help"}
+	os.Args = []string{"xpm", "help"}
 
 	// Redirect stdout
 	oldStdout := os.Stdout
@@ -272,11 +275,12 @@ func TestRunHelp(t *testing.T) {
 
 // TestRunUnknownCommand verifies Run() handles unknown commands.
 func TestRunUnknownCommand(t *testing.T) {
+	isolatedHome(t)
 	// Save original args
 	origArgs := os.Args
 	defer func() { os.Args = origArgs }()
 
-	os.Args = []string{"upm", "unknown-command"}
+	os.Args = []string{"xpm", "unknown-command"}
 
 	// Redirect stdout/stderr
 	oldStdout := os.Stdout
@@ -296,6 +300,7 @@ func TestRunUnknownCommand(t *testing.T) {
 
 // TestVerboseFlag verifies verbose flag parsing.
 func TestVerboseFlag(t *testing.T) {
+	isolatedHome(t)
 	// Save original args
 	origArgs := os.Args
 	defer func() { os.Args = origArgs }()
@@ -304,7 +309,7 @@ func TestVerboseFlag(t *testing.T) {
 
 	for _, flag := range tests {
 		t.Run(flag, func(t *testing.T) {
-			os.Args = []string{"upm", flag, "version"}
+			os.Args = []string{"xpm", flag, "version"}
 
 			// Redirect stdout
 			oldStdout := os.Stdout

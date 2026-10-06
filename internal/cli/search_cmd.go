@@ -13,7 +13,7 @@ import (
 // cmdSearch handles the search command.
 func cmdSearch(args []string) int {
 	// Free text: several words are one query.
-	query := strings.Join(args, " ")
+	query := strings.TrimSpace(strings.Join(args, " "))
 
 	// The TUI needs a terminal on both stdin and stdout and interactive mode
 	// on; pipes (`echo q | xpm search`) and CI get plain output.

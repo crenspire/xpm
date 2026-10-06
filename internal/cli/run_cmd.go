@@ -56,8 +56,8 @@ func cmdRun(args []string) int {
 		fmt.Fprintln(os.Stderr, "\nSupported config files:")
 		fmt.Fprintln(os.Stderr, "  - package.json (npm/yarn/pnpm/bun scripts)")
 		fmt.Fprintln(os.Stderr, "  - composer.json (PHP/Composer scripts)")
-		fmt.Fprintln(os.Stderr, "  - pyproject.toml ([tool.upm.scripts] section)")
-		fmt.Fprintln(os.Stderr, "  - Cargo.toml ([package.metadata.upm.scripts] section)")
+		fmt.Fprintln(os.Stderr, "  - pyproject.toml ([tool.xpm.scripts] section)")
+		fmt.Fprintln(os.Stderr, "  - Cargo.toml ([package.metadata.xpm.scripts] section)")
 		return 1
 	}
 

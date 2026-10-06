@@ -44,63 +44,87 @@ func cmdMan(args []string) int {
 			return 1
 		}
 		fmt.Printf("\nMan pages generated in: %s\n", outputDir)
-		fmt.Println("To install, copy to your man path or run: sudo cp man/*.1 /usr/local/share/man/man1/")
+		fmt.Printf("To install, copy them to your man path, e.g.: sudo cp %s/*.1 /usr/local/share/man/man1/\n", outputDir)
 		return 0
 	}
 
 	command := args[0]
-	showCommandHelp(command)
+	if !showCommandHelp(command) {
+		return 1
+	}
 	return 0
+}
+
+// commandInfo describes one command for the usage and man listings.
+type commandInfo struct {
+	name         string
+	aliases      []string
+	description  string
+	experimental bool
+}
+
+// commandTable lists every command Run dispatches, in help order.
+var commandTable = []commandInfo{
+	{"install", []string{"i"}, "Install packages (several at once) or this project's dependencies", false},
+	{"ci", nil, "Frozen install from lockfiles; deletes nothing unasked", false},
+	{"run", []string{"r"}, "Run project scripts (package.json, composer.json, pyproject.toml, Cargo.toml)", false},
+	{"which", []string{"w"}, "Check which ecosystems have a package", false},
+	{"search", []string{"s"}, "Search all registries (TUI on a terminal, plain output otherwise)", false},
+	{"info", nil, "Show detailed package information", false},
+	{"list", []string{"l"}, "List installed packages for the current project", false},
+	{"update", []string{"u"}, "Update packages in the current project", false},
+	{"remove", []string{"rm"}, "Remove a package from the current project", false},
+	{"doctor", []string{"d"}, "Environment & project diagnostics", false},
+	{"config", nil, "View or edit configuration", false},
+	{"env", nil, "Manage runtime versions (node, go, ...)", true},
+	{"graph", []string{"g"}, "Dependency graph across ecosystems", true},
+	{"lock", nil, "Generate or verify the unified lockfile (xpm-lock.yaml)", true},
+	{"workspaces", nil, "List detected workspaces/monorepos", true},
+	{"cache", []string{"cc", "cg"}, "Manage the dependency cache (cc = cache clean, cg = cache gc)", true},
+	{"version", []string{"-v", "-V", "--version"}, "Show version information", false},
+	{"help", []string{"-h", "--help"}, "Show this help message", false},
+	{"man", nil, "Show the detailed manual for a command", false},
+}
+
+const experimentalNote = "Experimental commands are being reworked; their behaviour and output may change."
+
+// printCommandTable prints commandTable; shared by usage and `xpm man`.
+func printCommandTable() {
+	for _, cmd := range commandTable {
+		name := cmd.name
+		if len(cmd.aliases) > 0 {
+			name += ", " + strings.Join(cmd.aliases, ", ")
+		}
+		desc := cmd.description
+		if cmd.experimental {
+			desc += " (experimental)"
+		}
+		fmt.Printf("  %s%s%-28s%s %s\n", colorBold, colorCyan, name, colorReset, desc)
+	}
 }
 
 // listCommands lists all available commands with their descriptions.
 func listCommands() {
 	fmt.Printf("%s%sAvailable commands:%s\n\n", colorBold, colorYellow, colorReset)
 
-	commands := []struct {
-		name        string
-		aliases     []string
-		description string
-	}{
-		{"install", []string{"i"}, "Install packages or project dependencies"},
-		{"run", []string{"r"}, "Run project scripts (from package.json, etc.)"},
-		{"which", []string{"w"}, "Check which ecosystems have a package"},
-		{"list", []string{"l"}, "List installed packages for current project"},
-		{"update", []string{"u"}, "Update packages in the current project"},
-		{"remove", []string{"rm"}, "Remove a package from the current project"},
-		{"info", nil, "Show detailed package information"},
-		{"lock", nil, "Generate or verify unified lockfile (xpm-lock.yaml)"},
-		{"cache", nil, "Manage dependency cache (tree, size, clean, gc)"},
-		{"graph", []string{"g"}, "Show unified dependency graph across all ecosystems"},
-		{"search", []string{"s"}, "Interactive TUI package search"},
-		{"workspaces", nil, "List detected workspaces/monorepos"},
-		{"env", nil, "Manage runtime versions (node, python, go, java, rust, bun, deno)"},
-		{"doctor", []string{"d"}, "Comprehensive environment & project diagnostics"},
-		{"config", nil, "View or edit configuration"},
-		{"version", []string{"-v"}, "Show version information"},
-		{"help", []string{"-h"}, "Show this help message"},
-		{"man", nil, "Show detailed manual for commands"},
-	}
-
-	for _, cmd := range commands {
-		name := cmd.name
-		if len(cmd.aliases) > 0 {
-			name += ", " + strings.Join(cmd.aliases, ", ")
-		}
-		fmt.Printf("  %s%s%-20s%s %s\n", colorBold, colorCyan, name, colorReset, cmd.description)
-	}
+	printCommandTable()
+	fmt.Println()
+	fmt.Println(experimentalNote)
 	fmt.Println()
 	fmt.Printf("%sRun%s '%sxpm man <command>%s' for detailed help on a specific command.\n", colorBold, colorReset, colorCyan, colorReset)
 }
 
-// showCommandHelp displays detailed help for a specific command.
-func showCommandHelp(command string) {
+// showCommandHelp displays detailed help for a specific command. It reports
+// false for an unknown command (after listing the commands).
+func showCommandHelp(command string) bool {
 	// Normalize command name (handle aliases)
 	normalized := normalizeCommand(command)
 
 	switch normalized {
 	case "install":
 		showInstallHelp()
+	case "ci":
+		showCiHelp()
 	case "run":
 		showRunHelp()
 	case "which":
@@ -138,28 +162,22 @@ func showCommandHelp(command string) {
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n\n", command)
 		listCommands()
+		return false
 	}
+	return true
 }
 
 // normalizeCommand converts aliases to their canonical command names.
 func normalizeCommand(cmd string) string {
-	aliases := map[string]string{
-		"i":      "install",
-		"r":      "run",
-		"w":      "which",
-		"l":      "list",
-		"u":      "update",
-		"rm":     "remove",
-		"g":      "graph",
-		"s":      "search",
-		"d":      "doctor",
-		"-v":     "version",
-		"-h":     "help",
-		"--help": "help",
-	}
-
-	if canonical, ok := aliases[cmd]; ok {
-		return canonical
+	for _, c := range commandTable {
+		if cmd == c.name {
+			return c.name
+		}
+		for _, a := range c.aliases {
+			if cmd == a {
+				return c.name
+			}
+		}
 	}
 	return cmd
 }
@@ -174,24 +192,37 @@ func showCommandUsage(command string) {
 // Individual help functions for each command
 
 func showInstallHelp() {
-	fmt.Printf("%s\n", colorCommand("xpm install [package[@version]] [options]"))
+	fmt.Printf("%s\n", colorCommand("xpm install [-g|--global] [package[@version] ...] [--]"))
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("DESCRIPTION:"))
-	fmt.Println("  Install packages or project dependencies.")
+	fmt.Println("  Install one or several packages, or, without packages, this project's dependencies.")
+	fmt.Println("  Several packages are installed in order; xpm stops at the first failure.")
+	fmt.Println("  Without packages, the detected project's tool runs its install (with several")
+	fmt.Println("  projects, a terminal asks which one or all; a script runs all). -g without")
+	fmt.Println("  packages is an error: project dependencies are never global.")
+	fmt.Println("  Exit status 1 when no registry has a match or an install fails.")
 	fmt.Println()
-	fmt.Printf("%s\n", colorSection("SYNTAX:"))
-	fmt.Printf("  %s                    Auto-detect and install project dependencies\n", colorCommand("xpm install"))
-	fmt.Printf("  %s          Install a package (searches all ecosystems)\n", colorCommand("xpm install <package>"))
-	fmt.Printf("  %s Install a specific version\n", colorCommand("xpm install <package>@<version>"))
+	fmt.Printf("%s\n", colorSection("HOW XPM PICKS A TOOL:"))
+	fmt.Println("  Inside a project, an exact hit in the project's own ecosystem is installed with")
+	fmt.Println("  the project's tool (its lockfile decides, e.g. yarn.lock -> yarn). Outside a")
+	fmt.Println("  project, and for every -g install, exact hits from a single ecosystem are")
+	fmt.Println("  installed; with several, the \"prefer\" config list decides, else a terminal shows")
+	fmt.Println("  a menu and a script gets an error listing the candidates.")
+	fmt.Println("  A Go module path (github.com/gin-gonic/gin) runs go get (with -g, go install ...@latest")
+	fmt.Println("  or @version). A Maven or Gradle hit only prints the dependency snippet to add.")
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("OPTIONS:"))
-	fmt.Printf("  %s                   Install globally (if supported)\n", colorOption("-g, --global"))
+	fmt.Printf("  %s       Install globally (if the tool supports it); may come before or after the packages\n", colorOption("-g, --global"))
+	fmt.Printf("  %s                 Ends flag parsing; names starting with - are still rejected\n", colorOption("--"))
+	fmt.Println("  Any other flag, including --global=false, is rejected.")
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("EXAMPLES:"))
 	fmt.Printf("  %s                    Install dependencies for detected projects\n", colorExample("xpm install"))
 	fmt.Printf("  %s              Install axios (searches all ecosystems)\n", colorExample("xpm install axios"))
+	fmt.Printf("  %s       Install several packages in order\n", colorExample("xpm install axios lodash"))
 	fmt.Printf("  %s        Install specific version\n", colorExample("xpm install axios@1.0.0"))
-	fmt.Printf("  %s      Install globally\n", colorExample("xpm install -g typescript"))
+	fmt.Printf("  %s   Install globally\n", colorExample("xpm install typescript -g"))
+	fmt.Printf("  %s   go get a Go module\n", colorExample("xpm install github.com/gin-gonic/gin"))
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("ALIASES:"))
 	fmt.Printf("  %s\n", colorCommand("i, install"))
@@ -202,19 +233,47 @@ func showInstallHelp() {
 	fmt.Printf("  %s                     Remove a package\n", colorCommand("xpm remove"))
 }
 
+func showCiHelp() {
+	fmt.Printf("%s\n", colorCommand("xpm ci"))
+	fmt.Println()
+	fmt.Printf("%s\n", colorSection("DESCRIPTION:"))
+	fmt.Println("  Install every detected project's dependencies from its lockfile, using the")
+	fmt.Println("  tool's strict form where one exists: npm ci, pnpm/yarn/bun install --frozen-lockfile,")
+	fmt.Println("  yarn install --immutable (yarn 2+), pipenv install --deploy, cargo build --locked,")
+	fmt.Println("  go mod download. Other tools have no frozen flag and run their normal install:")
+	fmt.Println("  composer install, pip install -r requirements.txt (pip install . for pyproject.toml),")
+	fmt.Println("  poetry install, mvn install, gradle build.")
+	fmt.Println("  xpm checks every project's tool before running any install. It deletes nothing")
+	fmt.Println("  unasked: it never deletes lockfiles, and asks before removing node_modules/")
+	fmt.Println("  (yarn, pnpm, bun) or Composer's vendor/. ci takes no arguments.")
+	fmt.Println()
+	fmt.Printf("%s\n", colorSection("EXAMPLES:"))
+	fmt.Printf("  %s                         Frozen install for every detected project\n", colorExample("xpm ci"))
+	fmt.Println()
+	fmt.Printf("%s\n", colorSection("RELATED COMMANDS:"))
+	fmt.Printf("  %s                    Install packages or project dependencies\n", colorCommand("xpm install"))
+}
+
 func showRunHelp() {
 	fmt.Printf("%s\n", colorCommand("xpm run [task] [-- <args>]"))
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("DESCRIPTION:"))
 	fmt.Println("  Run project scripts from package.json, composer.json, pyproject.toml, or Cargo.toml.")
+	fmt.Println("  pyproject.toml: [tool.xpm.scripts] ([tool.upm.scripts] when that table is absent or")
+	fmt.Println("  empty), else [tool.poetry.scripts], else [project.scripts]. Cargo.toml:")
+	fmt.Println("  [package.metadata.xpm.scripts] ([package.metadata.upm.scripts] fallback).")
+	fmt.Println("  package.json scripts run with npm, yarn, pnpm or bun run; composer.json scripts with")
+	fmt.Println("  composer run-script; pyproject.toml and Cargo.toml scripts run with sh -c.")
+	fmt.Println("  The exit status is the script's.")
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("SYNTAX:"))
 	fmt.Printf("  %s                        List available scripts\n", colorCommand("xpm run"))
 	fmt.Printf("  %s                 Run a specific task\n", colorCommand("xpm run <task>"))
 	fmt.Printf("  %s       Run task with additional arguments\n", colorCommand("xpm run <task> -- <args>"))
+	fmt.Printf("  %s              Run task in every workspace project (flag before the task)\n", colorCommand("xpm run -w <task>"))
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("OPTIONS:"))
-	fmt.Printf("  %s                 Run task in all workspace projects\n", colorOption("-w, --workspace"))
+	fmt.Printf("  %s                 Run task in all workspace projects (experimental)\n", colorOption("-w, --workspace"))
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("EXAMPLES:"))
 	fmt.Printf("  %s                        List all available scripts\n", colorExample("xpm run"))
@@ -233,6 +292,8 @@ func showWhichHelp() {
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("DESCRIPTION:"))
 	fmt.Println("  Check which package ecosystems have a package available.")
+	fmt.Println("  Registries that do not answer within 2.5 s (by default) are listed as Unavailable.")
+	fmt.Println("  Exit status 1 when nothing matches or every registry fails.")
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("SYNTAX:"))
 	fmt.Printf("  %s\n", colorCommand("xpm which <package>"))
@@ -313,6 +374,8 @@ func showInfoHelp() {
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("DESCRIPTION:"))
 	fmt.Println("  Show detailed package information from all ecosystems.")
+	fmt.Println("  Registries that do not answer within 2.5 s (by default) are listed as Unavailable.")
+	fmt.Println("  Exit status 1 when nothing matches or every registry fails.")
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("SYNTAX:"))
 	fmt.Printf("  %s\n", colorCommand("xpm info <package>"))
@@ -329,7 +392,8 @@ func showLockHelp() {
 	fmt.Printf("%s\n", colorCommand("xpm lock [--verify]"))
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("DESCRIPTION:"))
-	fmt.Println("  Generate or verify unified lockfile (xpm-lock.yaml).")
+	fmt.Println("  Generate or verify unified lockfile (xpm-lock.yaml) (experimental)")
+	fmt.Println("  This command is experimental and is being reworked; its behaviour and output may change.")
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("SYNTAX:"))
 	fmt.Printf("  %s                       Generate xpm-lock.yaml\n", colorCommand("xpm lock"))
@@ -347,7 +411,8 @@ func showCacheHelp() {
 	fmt.Printf("%s\n", colorCommand("xpm cache <subcommand>"))
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("DESCRIPTION:"))
-	fmt.Println("  Manage dependency cache.")
+	fmt.Println("  Manage dependency cache (experimental)")
+	fmt.Println("  This command is experimental and is being reworked; its behaviour and output may change.")
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("SUBCOMMANDS:"))
 	fmt.Printf("  %s                           Show cache structure and contents\n", colorCommand("tree"))
@@ -375,7 +440,8 @@ func showGraphHelp() {
 	fmt.Printf("%s\n", colorCommand("xpm graph [package] [options]"))
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("DESCRIPTION:"))
-	fmt.Println("  Show unified dependency graph across all ecosystems.")
+	fmt.Println("  Show unified dependency graph across all ecosystems (experimental)")
+	fmt.Println("  This command is experimental and is being reworked; its behaviour and output may change.")
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("SYNTAX:"))
 	fmt.Printf("  %s                      Show dependency graph for all projects\n", colorCommand("xpm graph"))
@@ -399,13 +465,18 @@ func showGraphHelp() {
 }
 
 func showSearchHelp() {
-	fmt.Printf("%s\n", colorCommand("xpm search [query]"))
+	fmt.Printf("%s\n", colorCommand("xpm search [query ...]"))
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("DESCRIPTION:"))
-	fmt.Println("  Interactive TUI package search across all ecosystems.")
+	fmt.Println("  Search all ecosystems' registries. Several words are one query.")
+	fmt.Println("  The interactive TUI opens only when stdin and stdout are terminals and the")
+	fmt.Println("  interactive and searchUI.enabled settings are true; otherwise results are printed")
+	fmt.Println("  as plain text, and a query is required.")
+	fmt.Println("  In plain output, registries that do not answer within 2.5 s (by default) are listed as Unavailable.")
+	fmt.Println("  Plain output exits with status 1 when nothing matches or every registry fails.")
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("SYNTAX:"))
-	fmt.Printf("  %s                     Open interactive search UI\n", colorCommand("xpm search"))
+	fmt.Printf("  %s                     Open interactive search UI (terminal only)\n", colorCommand("xpm search"))
 	fmt.Printf("  %s             Search with pre-filled query\n", colorCommand("xpm search <query>"))
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("EXAMPLES:"))
@@ -424,13 +495,13 @@ func showWorkspacesHelp() {
 	fmt.Printf("%s\n", colorCommand("xpm workspaces"))
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("DESCRIPTION:"))
-	fmt.Println("  List detected workspaces/monorepos.")
+	fmt.Println("  List detected workspaces/monorepos (experimental)")
+	fmt.Println("  This command is experimental and is being reworked; its behaviour and output may change.")
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("SYNTAX:"))
 	fmt.Printf("  %s                 List all detected workspaces\n", colorCommand("xpm workspaces"))
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("RELATED COMMANDS:"))
-	fmt.Printf("  %s        Install in all workspaces\n", colorCommand("xpm install --workspace"))
 	fmt.Printf("  %s     Run task across workspaces\n", colorCommand("xpm run --workspace <task>"))
 }
 
@@ -438,7 +509,8 @@ func showEnvHelp() {
 	fmt.Printf("%s\n", colorCommand("xpm env <command> [arguments]"))
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("DESCRIPTION:"))
-	fmt.Println("  Manage runtime versions (node, python, go, java, rust, bun, deno).")
+	fmt.Println("  Manage runtime versions (node, python, go, java, rust, bun, deno) (experimental)")
+	fmt.Println("  This command is experimental and is being reworked; its behaviour and output may change.")
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("COMMANDS:"))
 	fmt.Printf("  %s    Install a runtime version\n", colorCommand("install <runtime>@<version>"))
@@ -486,12 +558,21 @@ func showConfigHelp() {
 	fmt.Printf("  %s                           Display current configuration\n", colorCommand("show"))
 	fmt.Printf("  %s                           Show config file path\n", colorCommand("path"))
 	fmt.Printf("  %s                           Open config in editor\n", colorCommand("edit"))
-	fmt.Printf("  %s              Set a configuration value\n", colorCommand("set <key> <value>"))
+	fmt.Printf("  %s              Set a configuration value (see KEYS)\n", colorCommand("set <key> <value>"))
 	fmt.Printf("  %s                          Reset to default configuration\n", colorCommand("reset"))
+	fmt.Println()
+	fmt.Printf("%s\n", colorSection("KEYS (config set):"))
+	fmt.Printf("  %s       Comma-separated manager IDs: npm, yarn, pnpm, bun, pip, poetry,\n", colorOption("prefer"))
+	fmt.Println("                 pipenv, composer, cargo, gomod, maven, gradle")
+	fmt.Printf("  %s  true/false (also yes/no, on/off, 1/0)\n", colorOption("autoInstallPM"))
+	fmt.Printf("  %s    true/false (also yes/no, on/off, 1/0)\n", colorOption("interactive"))
+	fmt.Printf("  %s  true/false (also yes/no, on/off, 1/0): enable or disable one registry;\n                 id is one of npm, pip, composer, cargo, maven\n", colorOption("search.<id>"))
+	fmt.Println("  Values are validated before anything is written; unknown keys are rejected.")
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("EXAMPLES:"))
 	fmt.Printf("  %s                Show current config\n", colorExample("xpm config show"))
-	fmt.Printf("  %s\n", colorExample("xpm config set interactive false"))
+	fmt.Printf("  %s Never prompt\n", colorExample("xpm config set interactive false"))
+	fmt.Printf("  %s   Prefer npm, then pip\n", colorExample("xpm config set prefer npm,pip"))
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("RELATED COMMANDS:"))
 	fmt.Printf("  %s                      Check environment\n", colorCommand("xpm doctor"))
@@ -505,14 +586,16 @@ func showVersionHelp() {
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("SYNTAX:"))
 	fmt.Printf("  %s\n", colorCommand("xpm version"))
-	fmt.Printf("  %s\n", colorCommand("xpm -v"))
+	fmt.Printf("  %s\n", colorCommand("xpm -V"))
+	fmt.Printf("  %s\n", colorCommand("xpm --version"))
+	fmt.Printf("  %s                         -v alone; with a command, -v means --verbose\n", colorCommand("xpm -v"))
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("EXAMPLES:"))
 	fmt.Printf("  %s                    Show version\n", colorExample("xpm version"))
 	fmt.Printf("  %s                         Show version (shorthand)\n", colorExample("xpm -v"))
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("ALIASES:"))
-	fmt.Printf("  %s\n", colorCommand("-v, --version, version"))
+	fmt.Printf("  %s\n", colorCommand("version, -V, --version, -v (alone)"))
 }
 
 func showHelpHelp() {
@@ -524,6 +607,10 @@ func showHelpHelp() {
 	fmt.Printf("%s\n", colorSection("SYNTAX:"))
 	fmt.Printf("  %s\n", colorCommand("xpm help"))
 	fmt.Printf("  %s\n", colorCommand("xpm -h"))
+	fmt.Println()
+	fmt.Printf("%s\n", colorSection("GLOBAL FLAGS (before the command):"))
+	fmt.Printf("  %s                 Verbose logging, e.g. xpm -v install axios\n", colorOption("-v, --verbose"))
+	fmt.Printf("  %s                 Show version\n", colorOption("-V, --version"))
 	fmt.Println()
 	fmt.Printf("%s\n", colorSection("EXAMPLES:"))
 	fmt.Printf("  %s                       Show help\n", colorExample("xpm help"))

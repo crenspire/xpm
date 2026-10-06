@@ -38,7 +38,7 @@ $ xpm run test               # runs package.json / composer.json / pyproject scr
 
 ## Why xpm
 
-- **Fast.** All registries are queried in parallel with a hard 2.5 s deadline, and answers are cached on disk. A first lookup takes about a second; a repeat lookup takes under 10 ms.
+- **Fast.** All registries are queried in parallel with a 2.5 s deadline by default, and answers are cached on disk. A first lookup takes about a second; a repeat lookup takes under 10 ms.
 - **One syntax.** `name@version` works everywhere: xpm translates it to `npm i name@v`, `pip install name==v`, `composer require name:v`, `cargo add name@v` or `go get name@v`.
 - **Respects your project.** Inside a project, `xpm install <name>` uses the project's own ecosystem (`xpm install phpunit` next to `composer.json` runs `composer require phpunit/phpunit`, not npm's squatter), and lockfiles pick the tool inside it (`yarn.lock` → yarn, `poetry.lock` → poetry, `build.gradle` → Gradle) for `install`, `list`, `update`, `remove` and `ci`. Outside a project, a name that exists in several ecosystems is your choice (or your `prefer` list's).
 - **Safe by default.** Package names that look like flags are rejected, runtime downloads are checked against published SHA-256 checksums, and archive extraction cannot write outside its folder.
@@ -84,7 +84,19 @@ sudo mv xpm /usr/local/bin/
 | Java | Maven, Gradle | `pom.xml` / `build.gradle(.kts)` pick the tool (xpm prints the dependency snippet) | Maven Central |
 | Go | Go modules | `go.mod` | — (`xpm install github.com/x/y` runs `go get` directly) |
 
+## Supported platforms
+
+| OS | Core commands (`which`, `search`, `info`, `install`, `ci`, `list`, `update`, `remove`, `config`) | `run` | `search` TUI | `env` (experimental) |
+|---|---|---|---|---|
+| Linux | Yes, tested in CI | Yes (`sh -c` for pyproject/Cargo scripts) | Yes | Experimental: Node and Go verified; shims need `go` on PATH |
+| macOS | Yes, tested in CI | Yes (`sh -c` for pyproject/Cargo scripts) | Yes | Experimental: Node and Go verified; shims need `go` on PATH |
+| Windows | Yes, tested in CI | Needs `sh` on PATH (Git for Windows or WSL) for pyproject/Cargo scripts; package.json and composer.json scripts do not | Yes, in Windows Terminal or another modern console | Untested (see roadmap P5) |
+
+Windows support for the core commands is covered by CI but is used less in practice than Linux and macOS. The TUI needs a terminal; without one `xpm search` prints plain output.
+
 ## Usage
+
+`xpm help` lists every command and marks the experimental ones; `xpm man <command>` has the details for one command. The everyday commands are `which`, `search`, `info`, `install`, `ci`, `list`, `update`, `remove`, `run` and `config`; `cc` and `cg` are short for `cache clean` and `cache gc` (experimental).
 
 ### Find a package everywhere
 
@@ -94,7 +106,7 @@ xpm search http client  # several words are one query; opens the interactive TUI
 xpm info serde          # details for one package
 ```
 
-If a registry doesn't answer within 2.5 s, xpm shows what the others found and lists that registry under **Unavailable**, separately from **Not found in**. If every registry fails (for example, you're offline), the command exits with an error rather than claiming "no matches". When nothing matches, `xpm which`, `xpm search` and `xpm install` exit 1.
+If a registry doesn't answer within 2.5 s, xpm shows what the others found. `xpm which`, `xpm info` and plain `xpm search` list that registry under **Unavailable**, separately from **Not found in**. If every registry fails (for example, you're offline), the command exits with an error rather than claiming "no matches". When nothing matches, `xpm which`, `xpm info`, `xpm search` and `xpm install` exit 1.
 
 ### Install
 
@@ -137,6 +149,8 @@ xpm run build
 xpm run test -- --watch # everything after -- goes to the script untouched
 ```
 
+Scripts come from `package.json` `scripts`, `composer.json` `scripts`, `pyproject.toml` `[tool.xpm.scripts]` (falls back to `[tool.upm.scripts]`, then `[tool.poetry.scripts]`, then `[project.scripts]`) and `Cargo.toml` `[package.metadata.xpm.scripts]`. `package.json` and `composer.json` scripts run through the project's package manager (`npm`/`yarn`/`pnpm`/`bun run`, `composer run-script`); `pyproject.toml` and `Cargo.toml` scripts run through `sh -c` (on Windows `sh` must be on PATH, e.g. Git for Windows).
+
 ### Diagnose
 
 ```bash
@@ -164,7 +178,7 @@ Without a terminal (stdin and stdout both must be terminals; pipes and CI are no
 | Exit code | Meaning |
 |---|---|
 | `0` | Success |
-| `1` | Error, cancelled, invalid arguments, **no matches**, or a refused non-interactive guess |
+| `1` | Error, cancelled install prompt, invalid arguments, **no matches**, or a refused non-interactive guess |
 | other | `install` (no package argument), `ci`, `list` / `update` / `remove` / `run` pass through the underlying tool's exit code |
 
 ### Changes in this release
@@ -175,7 +189,7 @@ Behaviour changes to check if you script xpm:
 - **Project first.** Inside a project, `xpm install <name>` installs the project ecosystem's exact hit without a menu, even on a terminal, and ignores namesakes in other ecosystems (see [How xpm picks a tool](#how-xpm-picks-a-tool)). Global installs (`-g`) ignore the project and follow `prefer`. A Maven artifactId must now match the name's case, and Packagist's `<name>/<name>` counts as the name itself.
 - **No terminal means no prompts.** When stdin or stdout is not a terminal, xpm behaves as if `interactive` were `false`: it never prompts, never opens the TUI, and refuses ambiguous or fuzzy installs instead of guessing.
 - **Extra arguments are errors.** `xpm install a b c` installs all three; commands that take no package (`ci`, `list`) or exactly one (`which`, `info`) now reject extra arguments instead of ignoring them.
-- **Unknown flags are errors.** `xpm install` accepts only `-g` / `--global` (before or after the packages) and `--` to end flags. `--global=false` and any other flag are rejected.
+- **Unknown flags are errors.** `xpm install` accepts only `-g` / `--global` (before or after the packages) and `--` to end flags. `--global=false` is rejected (omit the flag for a local install), as is any other flag.
 - **`-v` goes before the command.** `xpm -v install axios` is verbose logging; after the command, `-v` belongs to the command (`xpm install axios -v` is an unknown-flag error).
 - **`xpm ci` is a native frozen install** (see above) and deletes nothing unasked; it no longer removes lockfiles.
 - **Missing package managers** get printed official install steps; xpm no longer runs remote install scripts.
@@ -214,7 +228,7 @@ Behaviour changes to check if you script xpm:
 
 | Variable | Effect |
 |---|---|
-| `XPM_NO_CACHE=1` | Skip the on-disk lookup cache (results are cached for 1 h, "not found" for 15 min) |
+| `XPM_NO_CACHE` (any non-empty value, e.g. `1`) | Skip the on-disk lookup cache (results are cached for 1 h, "not found" for 15 min) |
 | `XPM_CACHE_DIR=<dir>` | Keep xpm's lookup cache in `<dir>/lookups` instead of the OS cache folder (used by `make perf`) |
 
 ## Performance

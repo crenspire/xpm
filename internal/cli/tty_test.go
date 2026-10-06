@@ -18,9 +18,7 @@ func TestEffectiveInteractive(t *testing.T) {
 
 func TestRunWithoutATerminalIsNonInteractive(t *testing.T) {
 	withConfig(t, cfg)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("APPDATA", home)
+	isolatedHome(t)
 	oldArgs, oldTTY := os.Args, isInteractiveTerminal
 	t.Cleanup(func() { os.Args, isInteractiveTerminal = oldArgs, oldTTY })
 	os.Args = []string{"xpm", "version"}

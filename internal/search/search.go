@@ -52,9 +52,6 @@ type Options struct {
 	RegistryTimeout map[pm.ID]time.Duration
 }
 
-// DefaultTimeout is the HTTP request timeout for registry queries.
-const DefaultTimeout = 4 * time.Second
-
 // httpClient is the shared HTTP client for all registry queries. Every
 // request carries a context deadline (Options.timeoutFor); the client
 // timeout is only a backstop for callers that pass context.Background().
