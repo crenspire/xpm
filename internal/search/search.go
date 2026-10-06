@@ -256,8 +256,9 @@ func composerBestHit(query string, names []string) int {
 const mavenRows = 10
 
 // existsInMaven searches Maven Central and returns the first hit whose
-// artifactId is the query (case-sensitive: "Express" is not "express") or
-// whose group:artifact is the query; without one, the first hit, which may
+// group:artifact is the query, or whose artifactId is the query
+// (case-sensitive: "Express" is not "express") outside the npm repackage
+// groups (org.mvnpm*, org.webjars*); without one, the first hit, which may
 // be unrelated. Returns (nil, nil) if there are no hits.
 func existsInMaven(ctx context.Context, pkg string) (*Result, error) {
 	if err := validatePackageNameForURL(pkg); err != nil {
@@ -282,7 +283,7 @@ func existsInMaven(ctx context.Context, pkg string) (*Result, error) {
 	}
 	d := data.Response.Docs[0]
 	for _, doc := range data.Response.Docs {
-		if doc.Artifact == pkg || doc.Group+":"+doc.Artifact == pkg {
+		if doc.Group+":"+doc.Artifact == pkg || (doc.Artifact == pkg && !isNpmRepackage(doc.Group)) {
 			d = doc
 			break
 		}
@@ -298,6 +299,13 @@ func existsInMaven(ctx context.Context, pkg string) (*Result, error) {
 			"artifact": d.Artifact,
 		},
 	}, nil
+}
+
+// isNpmRepackage reports whether a Maven group republishes npm packages
+// under their npm names (org.mvnpm*, org.webjars*).
+func isNpmRepackage(group string) bool {
+	g := strings.ToLower(group)
+	return strings.HasPrefix(g, "org.mvnpm") || strings.HasPrefix(g, "org.webjars")
 }
 
 // lookup is one registry's exact-name check. fn must honour ctx.

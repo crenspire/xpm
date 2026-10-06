@@ -25,8 +25,9 @@ type fakeWorld struct {
 
 // fakeRegistries serves a tiny, fixed world full of the namesakes live
 // registries have: npm has axios, lodash, typescript, keyring, express,
-// requests and a phpunit squatter; PyPI has requests, keyring, axios and
-// lodash; crates.io has express and requests; Packagist has
+// requests, left-pad and a phpunit squatter; PyPI has requests, keyring,
+// axios, lodash and typescript; crates.io has express, requests and
+// typescript; Packagist has
 // monolog/monolog and phpunit/phpunit (not its first hit); Maven Central has
 // guava (not its first hit) and org.apache.royale.framework:Express. Like
 // the live Packagist and Maven searches, both also return unrelated hits
@@ -41,16 +42,19 @@ func fakeRegistries(t *testing.T, w fakeWorld) {
 		"express":    `{"version":"4.21.1","description":"Fast, unopinionated, minimalist web framework"}`,
 		"requests":   `{"version":"0.3.0","description":"An streaming XHR abstraction"}`,
 		"phpunit":    `{"version":"0.0.1-security","description":"security holding package"}`,
+		"left-pad":   `{"version":"1.3.0","description":"String left pad"}`,
 	}
 	pypi := map[string]string{
-		"requests": `{"info":{"name":"requests","summary":"Python HTTP for Humans.","version":"2.32.3"}}`,
-		"keyring":  `{"info":{"name":"keyring","summary":"Store and access your passwords safely.","version":"25.5.0"}}`,
-		"axios":    `{"info":{"name":"axios","summary":"","version":"0.0.1"}}`,
-		"lodash":   `{"info":{"name":"lodash","summary":"A port of lodash to Python","version":"0.0.1"}}`,
+		"typescript": `{"info":{"name":"typescript","summary":"","version":"0.0.1"}}`,
+		"requests":   `{"info":{"name":"requests","summary":"Python HTTP for Humans.","version":"2.32.3"}}`,
+		"keyring":    `{"info":{"name":"keyring","summary":"Store and access your passwords safely.","version":"25.5.0"}}`,
+		"axios":      `{"info":{"name":"axios","summary":"","version":"0.0.1"}}`,
+		"lodash":     `{"info":{"name":"lodash","summary":"A port of lodash to Python","version":"0.0.1"}}`,
 	}
 	crates := map[string]string{ // sparse-index path -> index file
-		"ex/pr/express":  `{"name":"express","vers":"0.1.2","yanked":false}`,
-		"re/qu/requests": `{"name":"requests","vers":"0.0.30","yanked":false}`,
+		"ex/pr/express":    `{"name":"express","vers":"0.1.2","yanked":false}`,
+		"re/qu/requests":   `{"name":"requests","vers":"0.0.30","yanked":false}`,
+		"ty/pe/typescript": `{"name":"typescript","vers":"0.1.0","yanked":false}`,
 	}
 	packagist := map[string][]string{
 		"monolog":    {"monolog/monolog"},
@@ -61,6 +65,7 @@ func fakeRegistries(t *testing.T, w fakeWorld) {
 		"requests":   {"psr/http-message"},
 		"keyring":    {"psr/http-message"},
 		"typescript": {"acme/ts-transpiler"},
+		"left-pad":   {"acme/str-pad"},
 	}
 	mavenAxios := w.mavenAxios
 	if mavenAxios == "" {
@@ -73,6 +78,7 @@ func fakeRegistries(t *testing.T, w fakeWorld) {
 		"requests":   {"org.webjars.npm:axios-retry:1.0.0"},
 		"express":    {"org.apache.royale.framework:Express:0.9.10"},
 		"typescript": {"org.mvnpm:typescript:5.6.3"},
+		"left-pad":   {"org.mvnpm:left-pad:1.3.0"},
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w2 http.ResponseWriter, r *http.Request) {
 		p, q := r.URL.Path, r.URL.Query().Get("q")
@@ -164,8 +170,8 @@ func TestREADMEInstallExamples(t *testing.T) {
 		{"pin a version", []string{"package.json", "package-lock.json"}, false, "install axios@1.7.0", 0, []string{"npm install axios@1.7.0"}, "Will install axios@1.7.0 via npm (Node.js).", fakeWorld{}, "", ""},
 		{"pip pin uses ==", []string{"requirements.txt"}, false, "install requests@2.31", 0, []string{"pip install requests==2.31"}, "Will install requests@2.31 via pip", fakeWorld{}, "", ""},
 		{"no implicit pin", []string{"package.json", "package-lock.json"}, false, "install axios", 0, []string{"npm install axios"}, "", fakeWorld{}, "", ""},
-		{"global install", nil, false, "install -g typescript", 0, []string{"npm install -g typescript"}, "", fakeWorld{}, "", ""},
-		{"flag after the package", nil, false, "install typescript -g", 0, []string{"npm install -g typescript"}, "", fakeWorld{}, "", ""},
+		{"global install", nil, false, "install -g typescript", 0, []string{"npm install -g typescript"}, "", fakeWorld{}, `{"prefer":["npm"]}`, ""},
+		{"flag after the package", nil, false, "install typescript -g", 0, []string{"npm install -g typescript"}, "", fakeWorld{}, `{"prefer":["npm"]}`, ""},
 		{"several packages", []string{"package.json", "package-lock.json"}, false, "install axios lodash", 0, []string{"npm install axios", "npm install lodash"}, "[2/2] lodash", fakeWorld{}, "", ""},
 		{"yarn.lock selects yarn", []string{"package.json", "yarn.lock"}, false, "install axios", 0, []string{"yarn add axios"}, "", fakeWorld{}, "", ""},
 		{"vendor/name equal to the query is exact", []string{"composer.json"}, false, "install monolog", 0, []string{"composer require monolog/monolog"}, `"monolog" matched monolog/monolog.`, fakeWorld{}, "", ""},
@@ -181,7 +187,7 @@ func TestREADMEInstallExamples(t *testing.T) {
 		// Packagist and Maven return their first, often unrelated, hit.
 		{"node project ignores unrelated composer and maven hits", []string{"package.json", "package-lock.json"}, false, "install axios", 0, []string{"npm install axios"}, "Will install axios via npm", fakeWorld{mavenAxios: "org.mvnpm.at.nestjs:axios"}, "", ""},
 		{"node project still uses npm while maven times out", []string{"package.json", "package-lock.json"}, false, "install axios", 0, []string{"npm install axios"}, "maven (Java): timed out", fakeWorld{mavenDown: true}, "", ""},
-		{"empty dir: the one exact hit wins over closest matches and an mvnpm repackage", nil, false, "install typescript", 0, []string{"npm install typescript"}, "Will install typescript via npm", fakeWorld{}, "", ""},
+		{"empty dir: the one exact hit wins over closest matches and an mvnpm repackage", nil, false, "install left-pad", 0, []string{"npm install left-pad"}, "Will install left-pad via npm", fakeWorld{}, "", ""},
 		{"python project: exact on pip and npm uses pip", []string{"requirements.txt"}, false, "install keyring", 0, []string{"pip install keyring"}, "", fakeWorld{}, "", ""},
 		{"empty dir: exact on npm and pip is refused", nil, false, "install keyring", 1, nil, "", fakeWorld{}, "", "keyring exists in several ecosystems: npm (Node), pip (Python)."},
 		// Project first: the project's ecosystem beats namesakes elsewhere.
@@ -193,6 +199,8 @@ func TestREADMEInstallExamples(t *testing.T) {
 		{"empty dir: prefer settles npm vs pip", nil, false, "install axios", 0, []string{"npm install axios"}, `Using npm ("prefer" in config; also found: Python).`, fakeWorld{}, `{"prefer":["npm"]}`, ""},
 		{"empty dir: Maven Express is not express, npm vs cargo is refused", nil, false, "install express", 1, nil, "", fakeWorld{}, "", "express exists in several ecosystems: npm (Node), cargo (Rust)."},
 		{"empty dir: prefer settles express", nil, false, "install express", 0, []string{"npm install express"}, "", fakeWorld{}, `{"prefer":["npm"]}`, ""},
+		{"global install in a python project ignores the project: refused", []string{"requirements.txt"}, false, "install -g typescript", 1, nil, "", fakeWorld{}, "", `typescript exists in several ecosystems: npm (Node), pip (Python), cargo (Rust). Set "prefer"`},
+		{"global install in a python project follows prefer", []string{"requirements.txt"}, false, "install -g typescript", 0, []string{"npm install -g typescript"}, "", fakeWorld{}, `{"prefer":["npm"]}`, ""},
 		{"terminal in a node project: no menu", []string{"package.json", "package-lock.json"}, true, "install axios", 0, []string{"npm install axios"}, "Using npm for this Node project (also found: Python).", fakeWorld{}, "", ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {

@@ -32,7 +32,7 @@ Found in:
 - pip: axios @0.4.0 - Command line utility to access https://family.axioscloud.it
 
 $ xpm install axios          # picks the right tool for this project (npm/yarn/pnpm/bun …)
-$ xpm install requests@2.31  # → pip install requests==2.31
+$ xpm install requests@2.31  # in a Python project → pip install requests==2.31
 $ xpm run test               # runs package.json / composer.json / pyproject scripts
 ```
 
@@ -99,10 +99,14 @@ If a registry doesn't answer within 2.5 s, xpm shows what the others found and l
 ### Install
 
 ```bash
+# in a Node project (package.json): the project's ecosystem and lockfile pick the tool
 xpm install axios               # search, then install with the right tool
 xpm install axios@1.7.0         # pin a version (universal @ syntax); without @ the tool picks its latest
 xpm install axios lodash        # several packages, in order (stops at the first failure)
-xpm install -g typescript       # global install where the tool supports it (-g may also come last)
+
+# global installs ignore the current project; prefer settles names found in several ecosystems
+xpm config set prefer npm
+xpm install -g typescript       # → npm install -g typescript (-g may also come last)
 xpm install -g golang.org/x/tools/gopls   # Go: go install golang.org/x/tools/gopls@latest
 xpm install github.com/gin-gonic/gin   # Go module path: runs go get, no registry search
 xpm install                     # no args: install this project's dependencies with its own tool
@@ -117,7 +121,7 @@ Live registries are full of namesakes: PyPI has an `axios`, npm has `requests` a
 
 1. **Exact names only.** A hit counts as the package you typed when its name is the same, ignoring case (PyPI also ignores `-`/`_`/`.`). On Packagist, `vendor/<name>` with the vendor equal to the name also counts (`phpunit` → `phpunit/phpunit`). On Maven Central the artifactId must match **with the same case** (`Express` is not `express`), unless you typed the full `group:artifact`; npm and web-asset repackages (groups starting with `org.mvnpm` or `org.webjars`) never count. Anything else is a *closest match*: Packagist and Maven Central answer every name with some search hit (`axios` → `swlib/saber`).
 2. **Inside a project, its ecosystem wins.** The current directory is a project for every ecosystem that has a project file there: `package.json` or a Node lockfile, `requirements.txt` / `pyproject.toml` / `Pipfile` / `poetry.lock`, `composer.json`, `Cargo.toml`, `go.mod`, `pom.xml`, `build.gradle(.kts)`. An exact hit in that ecosystem is installed right away, without a menu, and xpm says so: `Using composer for this PHP project (also found: Node).` Lockfiles pick the tool (`yarn.lock` → yarn); with several lockfiles in one ecosystem a terminal asks unless `prefer` decides, and without a terminal the first by `prefer` (then lockfile) order is used. Registries of other ecosystems that did not answer do not matter. You get the menu (or, without a terminal, a refusal that lists the candidates) when the project's own registry did not answer, when the name is exact in two of the project's ecosystems (say `package.json` and `requirements.txt` side by side), or when the project's ecosystem has no exact hit; that menu lists the project's ecosystem first, then exact hits elsewhere, then closest matches. `prefer` does not override the project.
-3. **Outside a project.** If the exact hits all come from one ecosystem, that one is installed. If they come from several, your `prefer` list settles it when it ranks exactly one of them first (`Using npm ("prefer" in config; also found: Python).`); otherwise a terminal shows a menu (exact hits first, closest matches last, marked "(closest match)") and a script gets an error such as `axios exists in several ecosystems: npm (Node), pip (Python). Set "prefer" in config (e.g. xpm config set prefer npm) or run inside a project`. If no hit is exact, a single registry's closest match is offered for confirmation (refused without a terminal; a Maven or Gradle snippet is only printed, so it is not confirmed), and closest matches from several registries are a menu or a refusal. A registry that did not answer stops every automatic choice here: a terminal shows the menu, a script gets an error.
+3. **Outside a project, and for every global install.** A global install (`-g`) does not go into the current project, so the project does not choose it, even when you run it inside one. If the exact hits all come from one ecosystem, that one is installed. If they come from several, your `prefer` list settles it when it ranks exactly one of them first (`Using npm ("prefer" in config; also found: Python).`); otherwise a terminal shows a menu (exact hits first, closest matches last, marked "(closest match)") and a script gets an error such as `axios exists in several ecosystems: npm (Node), pip (Python). Set "prefer" in config (e.g. xpm config set prefer npm) or run inside a project`. If no hit is exact, a single registry's closest match is offered for confirmation (refused without a terminal; a Maven or Gradle snippet is only printed, so it is not confirmed), and closest matches from several registries are a menu or a refusal. A registry that did not answer stops every automatic choice here: a terminal shows the menu, a script gets an error.
 
 Picking a closest match from a menu installs it without asking again. `xpm ci` runs the tool's strict form where one exists: `npm ci`, `pnpm`/`yarn`/`bun install --frozen-lockfile`, `yarn install --immutable` (yarn 2+), `pipenv install --deploy`, `cargo build --locked`, and `go mod download`. Other tools have no frozen flag, so `ci` runs their normal install: `composer install` (which installs from `composer.lock` when present), `pip install -r requirements.txt`, `poetry install`, `mvn install`, `gradle build`. `xpm ci` checks every detected project's tool before running any install, never deletes lockfiles, and deletes `node_modules/` (yarn, pnpm, bun) or Composer's `vendor/` only if you confirm. In a Go project `xpm install` runs `go mod tidy`, while `xpm ci` runs `go mod download`.
 
@@ -155,7 +159,7 @@ Global flags go **before** the command: `xpm -v install axios` turns on verbose 
 
 ### Scripts and CI
 
-Without a terminal (stdin and stdout both must be terminals; pipes and CI are not), xpm never prompts and the search TUI does not open. `xpm install <name>` follows [How xpm picks a tool](#how-xpm-picks-a-tool); where a terminal would show a menu, it refuses, lists the candidates and exits 1. To make CI installs deterministic: run xpm inside the project (where the project's ecosystem wins), or set `prefer` (`xpm config set prefer npm`) for runs outside a project, or name the package exactly: `vendor/package` for Composer, `group:artifact` for Maven and Gradle, a module path for Go. If a registry did not answer, retry or turn it off (`xpm config set search.maven false`). `update` and `remove` (with or without a package name) refuse when several project types are present; `list` uses the first.
+Without a terminal (stdin and stdout both must be terminals; pipes and CI are not), xpm never prompts and the search TUI does not open. `xpm install <name>` follows [How xpm picks a tool](#how-xpm-picks-a-tool); where a terminal would show a menu, it refuses, lists the candidates and exits 1. To make CI installs deterministic: run xpm inside the project (where the project's ecosystem wins), or set `prefer` (`xpm config set prefer npm`) for runs outside a project and for global installs, or name the package exactly: `vendor/package` for Composer, `group:artifact` for Maven and Gradle, a module path for Go. If a registry did not answer, retry or turn it off (`xpm config set search.maven false`). `update` and `remove` (with or without a package name) refuse when several project types are present; `list` uses the first.
 
 | Exit code | Meaning |
 |---|---|
@@ -168,7 +172,7 @@ Without a terminal (stdin and stdout both must be terminals; pipes and CI are no
 Behaviour changes to check if you script xpm:
 
 - **Exit codes.** "No matches" now exits 1 (it was 0) for `which`, `search` and `install`. A search where every registry fails exits 1 as well.
-- **Project first.** Inside a project, `xpm install <name>` installs the project ecosystem's exact hit without a menu, even on a terminal, and ignores namesakes in other ecosystems (see [How xpm picks a tool](#how-xpm-picks-a-tool)). A Maven artifactId must now match the name's case, and Packagist's `<name>/<name>` counts as the name itself.
+- **Project first.** Inside a project, `xpm install <name>` installs the project ecosystem's exact hit without a menu, even on a terminal, and ignores namesakes in other ecosystems (see [How xpm picks a tool](#how-xpm-picks-a-tool)). Global installs (`-g`) ignore the project and follow `prefer`. A Maven artifactId must now match the name's case, and Packagist's `<name>/<name>` counts as the name itself.
 - **No terminal means no prompts.** When stdin or stdout is not a terminal, xpm behaves as if `interactive` were `false`: it never prompts, never opens the TUI, and refuses ambiguous or fuzzy installs instead of guessing.
 - **Extra arguments are errors.** `xpm install a b c` installs all three; commands that take no package (`ci`, `list`) or exactly one (`which`, `info`) now reject extra arguments instead of ignoring them.
 - **Unknown flags are errors.** `xpm install` accepts only `-g` / `--global` (before or after the packages) and `--` to end flags. `--global=false` and any other flag are rejected.
@@ -191,7 +195,7 @@ Behaviour changes to check if you script xpm:
 
 | Key | Default | What it does |
 |---|---|---|
-| `prefer` | `[]` | Package managers to list first when choosing; outside a project it settles a name found in several ecosystems |
+| `prefer` | `[]` | Package managers to list first when choosing; outside a project and for `-g` it settles a name found in several ecosystems |
 | `search.<id>` | `true` | Turn a registry off (`npm`, `pip`, `composer`, `cargo`, `maven`) |
 | `interactive` | `true` | Prompt for choices (only when a terminal is attached); `false` decides as without a terminal (see [Scripts and CI](#scripts-and-ci)) |
 | `autoInstallPM` | `true` | Offer to install a missing pnpm, yarn, pip, poetry or pipenv (always asks first); other tools get official install steps |

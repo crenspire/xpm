@@ -95,10 +95,17 @@ func installOne(spec string, global bool) int {
 		fmt.Println()
 	}
 
-	cwd, _ := os.Getwd()
-	cands := buildCandidates(rep.Results, pm.ProjectManagers(cwd))
+	// A global install does not go into this directory's project, so its
+	// lockfiles and ecosystems do not choose the tool.
+	var projectFiles map[pm.Ecosystem][]pm.ProjectFile
+	var projectEcos []string
+	if !global {
+		cwd, _ := os.Getwd()
+		projectFiles, projectEcos = pm.ProjectManagers(cwd), projectEcosystems(cwd)
+	}
+	cands := buildCandidates(rep.Results, projectFiles)
 	sortCandidates(cands, cfg.Prefer)
-	chosen, ok := chooseCandidate(cands, pkg, projectEcosystems(cwd), rep.UnavailableIDs())
+	chosen, ok := chooseCandidate(cands, pkg, projectEcos, global, rep.UnavailableIDs())
 	if !ok {
 		return 1
 	}
@@ -107,10 +114,10 @@ func installOne(spec string, global bool) int {
 
 // chooseCandidate picks the candidate for query with decideInstall: it
 // installs, shows the menu, or prints why it will not choose.
-func chooseCandidate(cands []candidate, query string, projectEcos []string, unavailable []pm.ID) (candidate, bool) {
+func chooseCandidate(cands []candidate, query string, projectEcos []string, global bool, unavailable []pm.ID) (candidate, bool) {
 	d := decideInstall(installInputs{
 		Query: query, Cands: cands, ProjectEcos: projectEcos, Prefer: cfg.Prefer,
-		Unavailable: unavailable, Interactive: cfg.Interactive,
+		Unavailable: unavailable, Interactive: cfg.Interactive, Global: global,
 	})
 	switch d.Action {
 	case actionRefuse:

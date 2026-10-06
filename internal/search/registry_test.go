@@ -224,3 +224,33 @@ func TestExistsInMavenPrefersTheExactArtifactID(t *testing.T) {
 		t.Errorf("rows = %q, want 10", rows)
 	}
 }
+
+func TestExistsInMavenSkipsNpmRepackagesWhenMatchingTheArtifactID(t *testing.T) {
+	fakeRegistry(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"response":{"docs":[
+			{"id":"org.example:jquery-ui","g":"org.example","a":"jquery-ui","latestVersion":"1"},
+			{"id":"org.mvnpm:jquery","g":"org.mvnpm","a":"jquery","latestVersion":"3.7.1"},
+			{"id":"org.webjars.npm:jquery","g":"org.webjars.npm","a":"jquery","latestVersion":"3.7.1"},
+			{"id":"org.example.real:jquery","g":"org.example.real","a":"jquery","latestVersion":"2.0"}]}}`)
+	})
+	for query, want := range map[string]string{
+		"jquery":                 "org.example.real:jquery",
+		"org.webjars.npm:jquery": "org.webjars.npm:jquery", // typed in full: exact
+	} {
+		r, err := existsInMaven(bg, query)
+		if err != nil || r == nil || r.Name != want {
+			t.Errorf("%s: got (%+v, %v), want %s", query, r, err, want)
+		}
+	}
+}
+
+func TestExistsInMavenFallsBackToTheFirstDocWhenOnlyRepackagesMatch(t *testing.T) {
+	fakeRegistry(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"response":{"docs":[
+			{"id":"org.example:jquery-ui","g":"org.example","a":"jquery-ui","latestVersion":"1"},
+			{"id":"org.mvnpm:jquery","g":"org.mvnpm","a":"jquery","latestVersion":"3.7.1"}]}}`)
+	})
+	if r, err := existsInMaven(bg, "jquery"); err != nil || r == nil || r.Name != "org.example:jquery-ui" {
+		t.Fatalf("got (%+v, %v), want the first doc", r, err)
+	}
+}

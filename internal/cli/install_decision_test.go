@@ -186,3 +186,31 @@ func TestProjectEcosystems(t *testing.T) {
 		}
 	}
 }
+
+// A global install does not go into the current project, so the project
+// must not choose its ecosystem: outside-project rules apply.
+func TestGlobalInstallIgnoresTheProject(t *testing.T) {
+	results := []search.Result{
+		{Manager: pm.Npm, Name: "typescript"},
+		{Manager: pm.Pip, Name: "typescript"},
+		{Manager: pm.Cargo, Name: "typescript"},
+	}
+	decide := func(global bool, prefer []string) installDecision {
+		cands := buildCandidates(results, pyReqs)
+		sortCandidates(cands, prefer)
+		return decideInstall(installInputs{Query: "typescript", Cands: cands, ProjectEcos: []string{"python"}, Prefer: prefer, Global: global})
+	}
+	if d := decide(false, nil); d.Action != actionPick || d.Pick.Result.Manager != pm.Pip {
+		t.Fatalf("project install: %+v, want pip (project first)", d)
+	}
+	d := decide(true, nil)
+	if d.Action != actionRefuse || !strings.Contains(d.Err.Error(), `typescript exists in several ecosystems: npm (Node), pip (Python, via requirements.txt), cargo (Rust). Set "prefer"`) {
+		t.Fatalf("global install: %+v, want a refusal with the prefer hint", d)
+	}
+	if strings.Contains(d.Err.Error(), "run inside a project") {
+		t.Errorf("global refusal %q suggests a project, which cannot help", d.Err)
+	}
+	if d := decide(true, []string{"npm"}); d.Action != actionPick || d.Pick.Result.Manager != pm.Npm || strings.Contains(d.Note, "project") {
+		t.Fatalf("global install, prefer npm: %+v, want npm without a project note", d)
+	}
+}

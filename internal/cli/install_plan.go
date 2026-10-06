@@ -239,6 +239,7 @@ type installInputs struct {
 	Prefer      []string
 	Unavailable []pm.ID // registries that did not answer
 	Interactive bool    // a menu can be shown
+	Global      bool    // a global install: the current project does not decide
 }
 
 // installDecision is decideInstall's answer. Note (with actionPick) is a
@@ -260,7 +261,7 @@ type installDecision struct {
 //     their registries did not answer. Exact hits in two of the project's
 //     ecosystems, no exact hit in them, or the project's own registry not
 //     answering mean a menu, or a refusal without a terminal.
-//   - Outside a project, exact hits from one ecosystem (or, without any
+//   - Outside a project, and for global installs anywhere, exact hits from one ecosystem (or, without any
 //     exact hit, the one registry that answered with a closest match) are
 //     installed; "prefer" settles exact hits from several ecosystems when
 //     it puts one strictly first; anything else is a menu or a refusal. A
@@ -269,7 +270,7 @@ type installDecision struct {
 // A closest match picked here is still confirmed (or refused) by
 // installCandidate.
 func decideInstall(in installInputs) installDecision {
-	if len(in.ProjectEcos) > 0 {
+	if len(in.ProjectEcos) > 0 && !in.Global {
 		return decideInProject(in)
 	}
 	return decideOutsideProject(in)
@@ -336,8 +337,12 @@ func decideOutsideProject(in installInputs) installDecision {
 		return installDecision{Action: actionPick, Pick: c,
 			Note: fmt.Sprintf("Using %s (\"prefer\" in config%s).", c.Result.Manager, alsoFound(exact, ecosystemKey(c.Result.Manager), "; "))}
 	}
-	return menuOrRefuse(in, fmt.Errorf("%s exists in several ecosystems: %s. Set \"prefer\" in config (e.g. xpm config set prefer %s) or run inside a project",
-		exact[0].Result.Name, choiceList(in.Query, exact), exact[0].Result.Manager))
+	where := " or run inside a project"
+	if in.Global {
+		where = "" // a project does not choose a global install
+	}
+	return menuOrRefuse(in, fmt.Errorf("%s exists in several ecosystems: %s. Set \"prefer\" in config (e.g. xpm config set prefer %s)%s",
+		exact[0].Result.Name, choiceList(in.Query, exact), exact[0].Result.Manager, where))
 }
 
 // menuOrRefuse shows the menu on a terminal and refuses with err otherwise.
