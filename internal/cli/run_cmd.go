@@ -34,7 +34,8 @@ func cmdRun(args []string) int {
 			showCommandUsage("run")
 			return 1
 		}
-		return cmdRunWorkspace(runArgs[0])
+		task, extra := splitRunArgs(runArgs)
+		return cmdRunWorkspace(task, extra)
 	}
 
 	cwd, err := os.Getwd()
@@ -70,21 +71,12 @@ func cmdRun(args []string) int {
 		return 0
 	}
 
-	scriptName := runArgs[0]
+	scriptName, extraArgs := splitRunArgs(runArgs)
 	script, found := merged.GetScript(scriptName)
 	if !found {
 		fmt.Fprintf(os.Stderr, "error: task %q not found\n\n", scriptName)
 		showCommandUsage("run")
 		return 1
-	}
-
-	// Collect extra arguments after --
-	var extraArgs []string
-	for i, arg := range runArgs {
-		if arg == "--" && i+1 < len(runArgs) {
-			extraArgs = runArgs[i+1:]
-			break
-		}
 	}
 
 	// Run the script
@@ -98,4 +90,22 @@ func cmdRun(args []string) int {
 	}
 
 	return 0
+}
+
+// splitRunArgs splits the arguments left after flag parsing into the task name
+// and the extra arguments given after the first "--". Arguments after the task
+// without "--" are ignored; a trailing "--" yields no extra arguments.
+func splitRunArgs(runArgs []string) (task string, extra []string) {
+	if len(runArgs) == 0 {
+		return "", nil
+	}
+	for i, arg := range runArgs[1:] {
+		if arg == "--" {
+			if rest := runArgs[i+2:]; len(rest) > 0 {
+				extra = rest
+			}
+			break
+		}
+	}
+	return runArgs[0], extra
 }

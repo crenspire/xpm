@@ -67,8 +67,9 @@ func cmdInstallWorkspace(global bool) int {
 	return 0
 }
 
-// cmdRunWorkspace runs a task across all workspace projects.
-func cmdRunWorkspace(task string) int {
+// cmdRunWorkspace runs a task across all workspace projects, passing extra
+// to the task in every project.
+func cmdRunWorkspace(task string, extra []string) int {
 	workspaces, err := loadWorkspaces()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -80,6 +81,7 @@ func cmdRunWorkspace(task string) int {
 	}
 	err = workspace.Run(workspaces, task, workspace.RunOptions{
 		Parallel:   cfg.Workspace.Parallel,
+		Args:       extra,
 		Prefer:     cfg.Scripts.Prefer,
 		Executable: workspaceExecutable,
 		Runner:     workspaceRunner,

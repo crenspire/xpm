@@ -171,7 +171,7 @@ xpm graph --workspace      # combine the graphs of all workspace projects
 xpm lock                   # write xpm-lock.yaml (hashes of the lockfiles in the project root)
 xpm lock --verify          # exit 1 if a lockfile changed, appeared or disappeared since `xpm lock`, or cannot be checked (unreadable, or a recorded path outside the project)
 xpm workspaces             # list monorepo projects (npm/yarn/pnpm, Cargo, go.work, Poetry and uv, Maven, Gradle, Composer)
-xpm run --workspace test   # run `test` in every project that defines it
+xpm run --workspace test   # run `test` in every project that defines it (`-- args` are passed to the task in every project)
 ```
 
 `xpm graph` reads files only; it never runs a build tool unless you pass `--exec`. `xpm-lock.yaml` has no timestamps, so running `xpm lock` again on an unchanged project leaves the file untouched. Workspace commands honour `workspace.include` / `workspace.exclude` (glob lists matched against each project's path relative to the workspace root, `**` allowed). `workspace.parallel` applies to `run --workspace` (and to `install --workspace` once it is wired), not to `workspaces` or `graph --workspace`; a parallel run prints each project's output when that project finishes, not live. `graph --workspace` reads npm/pnpm/yarn and Cargo workspaces from the root lockfile, which covers their members.

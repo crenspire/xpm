@@ -95,7 +95,7 @@ func TestCmdRunWorkspaceReexecsInEachProject(t *testing.T) {
 	withConfig(t, config.Config{})
 	calls := withWorkspaceRunner(t, root, "")
 	var code int
-	captureStdout(t, func() { code = cmdRunWorkspace("build") })
+	captureStdout(t, func() { code = cmdRunWorkspace("build", nil) })
 	if code != 0 {
 		t.Fatalf("exit = %d", code)
 	}
@@ -111,7 +111,7 @@ func TestCmdRunWorkspaceFailureExitsNonZero(t *testing.T) {
 	calls := withWorkspaceRunner(t, root, "a")
 	var code int
 	errOut := captureStderr(t, func() {
-		captureStdout(t, func() { code = cmdRunWorkspace("build") })
+		captureStdout(t, func() { code = cmdRunWorkspace("build", nil) })
 	})
 	if code != 1 {
 		t.Fatalf("exit = %d, want 1", code)

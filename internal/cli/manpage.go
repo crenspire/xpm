@@ -152,6 +152,8 @@ If no task is specified, lists all available scripts.
 pyproject.toml: [tool.xpm.scripts] ([tool.upm.scripts] when that table is absent or empty), else [tool.poetry.scripts], else [project.scripts].
 Cargo.toml: [package.metadata.xpm.scripts] ([package.metadata.upm.scripts] fallback).
 package.json scripts run with npm, yarn, pnpm or bun run; composer.json scripts with \fBcomposer run-script\fR; pyproject.toml and Cargo.toml scripts run with \fBsh -c\fR.
+Arguments after \fB--\fR are passed to the script as separate, unexpanded arguments, appended to the end of the script command as "$@" (a script that already uses "$@" receives them twice).
+With \fB-w\fR they go to the task in every project.
 The exit status is the script's.`
 		data.Options = `.TP
 \fB-w\fR, \fB--workspace\fR
