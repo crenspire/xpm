@@ -8,6 +8,9 @@ import (
 // dense cyclic graph cannot run away. Hitting it marks the result truncated.
 const maxPathPops = 200000
 
+// maxPathPushes bounds the queue growth (and so the memory) per target.
+const maxPathPushes = 1000000
+
 // TargetPaths holds the dependency paths to one node.
 type TargetPaths struct {
 	// Target is the node ID.
@@ -154,6 +157,7 @@ func pathsToTarget(g *DepGraph, isRoot map[string]bool, target string, limit int
 	}
 
 	pq := &pathQueue{{link: &pathLink{id: target, n: 1}, key: 1 + dist[target]}}
+	pushes, capped := 1, false
 	for pops := 0; pq.Len() > 0; pops++ {
 		if pops >= maxPathPops {
 			return paths, true
@@ -176,8 +180,13 @@ func pathsToTarget(g *DepGraph, isRoot map[string]bool, target string, limit int
 			if !ok || head.contains(parent) {
 				continue
 			}
+			if pushes >= maxPathPushes {
+				capped = true
+				break
+			}
+			pushes++
 			heap.Push(pq, pathItem{link: &pathLink{id: parent, next: head, n: head.n + 1}, key: head.n + 1 + d})
 		}
 	}
-	return paths, false
+	return paths, capped
 }

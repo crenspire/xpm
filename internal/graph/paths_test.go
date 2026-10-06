@@ -3,6 +3,7 @@ package graph
 import (
 	"fmt"
 	"reflect"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -94,6 +95,42 @@ func TestPathsToPerTargetLimit(t *testing.T) {
 			t.Errorf("%s: %+v", tp.Target, tp)
 		}
 	}
+}
+
+func TestPathsToDenseCycleUnlimitedIsBounded(t *testing.T) {
+	g := denseCycleGraph()
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	start := time.Now()
+	got := PathsTo(g, "target", 0)
+	d := time.Since(start)
+	runtime.ReadMemStats(&after)
+	if d > 2*time.Second {
+		t.Fatalf("took %v", d)
+	}
+	if len(got) != 1 || !got[0].Truncated || len(got[0].Paths) == 0 {
+		t.Fatalf("got %d targets, truncated %v", len(got), len(got) == 1 && got[0].Truncated)
+	}
+	if alloc := after.TotalAlloc - before.TotalAlloc; alloc > 1<<30 {
+		t.Errorf("allocated %d MB", alloc>>20)
+	}
+}
+
+// denseCycleGraph: 25 mutually dependent nodes, one root edge in, the target below.
+func denseCycleGraph() *DepGraph {
+	var edges [][2]string
+	name := func(i int) string { return fmt.Sprintf("n%d", i) }
+	edges = append(edges, [2]string{"app", name(0)})
+	for i := 0; i < 25; i++ {
+		for j := 0; j < 25; j++ {
+			if i != j {
+				edges = append(edges, [2]string{name(i), name(j)})
+			}
+		}
+	}
+	edges = append(edges, [2]string{name(24), "target"})
+	return pathsGraph([]string{"app"}, edges)
 }
 
 func TestPathsToDenseCycle(t *testing.T) {
