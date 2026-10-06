@@ -2,6 +2,8 @@ package search
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -19,7 +21,7 @@ func TestInstallManagersFor(t *testing.T) {
 		pm.Maven: "[maven gradle]",
 		pm.Cargo: "[cargo]",
 	} {
-		if got := fmt.Sprint(installManagersFor(id)); got != want {
+		if got := fmt.Sprint(installManagersFor(id, t.TempDir())); got != want {
 			t.Errorf("installManagersFor(%s) = %s, want %s", id, got, want)
 		}
 	}
@@ -214,5 +216,31 @@ func TestInitDoesNotSearchBehindTheRegistryScreen(t *testing.T) {
 	m.registryMode = false
 	if m.Init() == nil {
 		t.Fatal("Init must debounce an initial query once past the registry screen")
+	}
+}
+
+func TestProjectLockfileToolIsOfferedFirst(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "yarn.lock"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := fmt.Sprint(installManagersFor(pm.Npm, dir)); got != "[yarn npm pnpm bun]" {
+		t.Fatalf("installManagersFor(npm) in a yarn project = %s, want yarn first", got)
+	}
+	m := queryModel(t)
+	m.dir = dir
+	m.results = []search.Result{{Manager: pm.Npm, Name: "react"}}
+	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if got := m.chosen(); got == nil || got.PM != pm.Yarn {
+		t.Fatalf("Enter, Enter in a yarn project chose %+v, want yarn", got)
+	}
+}
+
+func TestTypingOnTheRegistryScreenAppendsToTheQuery(t *testing.T) {
+	m := NewModel("reac", search.Options{}, UIOptions{DebounceMs: 1})
+	m, _ = press(t, m, runes("t"))
+	if m.registryMode || m.query != "react" {
+		t.Fatalf("query=%q registryMode=%v, want \"react\" past the registry screen", m.query, m.registryMode)
 	}
 }

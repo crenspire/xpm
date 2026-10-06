@@ -1,20 +1,16 @@
 package cli
 
 import (
-	"os"
 	"strings"
-
-	"golang.org/x/term"
 
 	"github.com/crenspire/xpm/internal/pm"
 	"github.com/crenspire/xpm/internal/search"
 )
 
-// Seams for tests: the registry fan-outs and the terminal check.
+// Seams for tests: the registry fan-outs.
 var (
-	lookupReport     = search.SearchEverywhereReport
-	searchReport     = search.SearchReport
-	stdoutIsTerminal = func() bool { return term.IsTerminal(int(os.Stdout.Fd())) }
+	lookupReport = search.SearchEverywhereReport
+	searchReport = search.SearchReport
 )
 
 // registryStatus says, for the registries that did not return a result,

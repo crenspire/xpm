@@ -154,7 +154,7 @@ func handleInstallSelectMsg(m model, msg installSelectMsg) (tea.Model, tea.Cmd) 
 	m.installMode = true
 	m.selectedResult = &msg.result
 
-	m.installPMs = installManagersFor(msg.result.Manager)
+	m.installPMs = installManagersFor(msg.result.Manager, m.dir)
 	m.installCursor = 0
 
 	return m, nil
@@ -325,7 +325,7 @@ func handleRegistryKeyMsg(m model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyRunes:
 		m = applyRegistrySelection(m)
-		m.query = string(msg.Runes)
+		m.query += string(msg.Runes)
 		return queryChanged(m)
 	case tea.KeyBackspace, tea.KeyDelete:
 		m.registryMode = false
@@ -336,10 +336,27 @@ func handleRegistryKeyMsg(m model, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // installManagersFor lists the tools that can install a hit from registry
 // id: every manager of its ecosystem (npm hit: npm, yarn, pnpm, bun; Maven
-// hit: maven, gradle), or just id for single-tool ecosystems.
-func installManagersFor(id pm.ID) []pm.ID {
-	if ids := pm.ManagersInEcosystem(pm.EcosystemForManager(id)); len(ids) > 0 {
-		return ids
+// hit: maven, gradle), or just id for single-tool ecosystems. Tools that
+// dir's lock or build files point at come first, so Enter-Enter in a yarn
+// project installs with yarn.
+func installManagersFor(id pm.ID, dir string) []pm.ID {
+	eco := pm.EcosystemForManager(id)
+	all := pm.ManagersInEcosystem(eco)
+	if len(all) == 0 {
+		return []pm.ID{id}
 	}
-	return []pm.ID{id}
+	out := make([]pm.ID, 0, len(all))
+	seen := map[pm.ID]bool{}
+	for _, f := range pm.ProjectManagers(dir)[eco] {
+		if !seen[f.Manager] {
+			out = append(out, f.Manager)
+			seen[f.Manager] = true
+		}
+	}
+	for _, m := range all {
+		if !seen[m] {
+			out = append(out, m)
+		}
+	}
+	return out
 }

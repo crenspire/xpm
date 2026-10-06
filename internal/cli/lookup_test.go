@@ -62,9 +62,6 @@ func TestNoMatchExitsOne(t *testing.T) {
 	withConfig(t, config.Config{})
 	withLookupReport(t, search.Report{Unavailable: []search.RegistryFailure{timedOut}}, nil)
 	withSearchReport(t, search.Report{}, nil)
-	old := stdoutIsTerminal
-	stdoutIsTerminal = func() bool { return false }
-	t.Cleanup(func() { stdoutIsTerminal = old })
 
 	for name, run := range map[string]func() int{
 		"which":   func() int { return cmdWhich([]string{"nope"}) },
@@ -92,9 +89,6 @@ func TestAllRegistriesFailedExitsOne(t *testing.T) {
 
 func TestSearchJoinsSeveralWordsIntoOneQuery(t *testing.T) {
 	withConfig(t, config.Config{})
-	old := stdoutIsTerminal
-	stdoutIsTerminal = func() bool { return false }
-	t.Cleanup(func() { stdoutIsTerminal = old })
 	var queries []string
 	oldSearch := searchReport
 	searchReport = func(q string, _ search.Options) (search.Report, error) {

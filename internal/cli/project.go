@@ -267,10 +267,11 @@ func cleanDirs(c projectCmd) []string {
 	return nil
 }
 
-// selectTarget picks the project to act on: the only one, a prompt, or
-// (non-interactive) the first.
-func selectTarget(targets []projectTarget, label, pkg string) (projectTarget, bool) {
-	if len(targets) > 1 && !cfg.Interactive && pkg != "" {
+// selectTarget picks the project to act on: the only one, or a prompt.
+// Without a terminal, a mutating action (update, remove) refuses to guess
+// among several project types; a read-only one (list) uses the first.
+func selectTarget(targets []projectTarget, label string, mutating bool) (projectTarget, bool) {
+	if len(targets) > 1 && !cfg.Interactive && mutating {
 		names := make([]string, len(targets))
 		for i, t := range targets {
 			names[i] = t.Label
@@ -464,14 +465,25 @@ func cmdCleanInstall(args []string) int {
 		}
 		pcs[i] = pc
 	}
+	// Check every tool before deleting or installing anything, so a
+	// missing tool for a later target cannot fail after an earlier
+	// target's install already ran.
+	type prepared struct {
+		bin  string
+		args []string
+		skip bool // nothing to run (a manual-step message was printed)
+	}
+	preps := make([]prepared, len(targets))
+	for i := range targets {
+		bin, args, done, code := prepareProject(pcs[i], "ci", "")
+		if done && code != 0 {
+			return code
+		}
+		preps[i] = prepared{bin: bin, args: args, skip: done}
+	}
 	for i, t := range targets {
 		fmt.Printf("Detected: %s\n", t.Label)
-		// Make sure the tool is there before deleting anything.
-		bin, args, done, code := prepareProject(pcs[i], "ci", "")
-		if done {
-			if code != 0 {
-				return code
-			}
+		if preps[i].skip {
 			continue
 		}
 		for _, dir := range cleanDirs(pcs[i]) {
@@ -486,8 +498,8 @@ func cmdCleanInstall(args []string) int {
 				}
 			}
 		}
-		fmt.Printf("Running: %s %s\n\n", bin, strings.Join(args, " "))
-		if code := runTool(bin, args); code != 0 {
+		fmt.Printf("Running: %s %s\n\n", preps[i].bin, strings.Join(preps[i].args, " "))
+		if code := runTool(preps[i].bin, preps[i].args); code != 0 {
 			return code
 		}
 	}
@@ -505,7 +517,7 @@ func cmdList(args []string) int {
 		fmt.Println(noProjectFiles)
 		return 1
 	}
-	t, ok := selectTarget(targets, "Select project to list packages for", "")
+	t, ok := selectTarget(targets, "Select project to list packages for", false)
 	if !ok {
 		return 1
 	}
@@ -524,7 +536,7 @@ func cmdUpdate(args []string) int {
 		fmt.Println(noProjectFiles)
 		return 1
 	}
-	t, ok := selectTarget(targets, "Select project to update", pkg)
+	t, ok := selectTarget(targets, "Select project to update", true)
 	if !ok {
 		return 1
 	}
@@ -543,7 +555,7 @@ func cmdRemove(args []string) int {
 		fmt.Println(noProjectFiles)
 		return 1
 	}
-	t, ok := selectTarget(targets, "Select project to remove package from", pkg)
+	t, ok := selectTarget(targets, "Select project to remove package from", true)
 	if !ok {
 		return 1
 	}

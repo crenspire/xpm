@@ -45,6 +45,7 @@ type model struct {
 	pageSize           int            // max rows shown; 0 = fit the terminal
 	seq                int            // bumped on every query change; older results are dropped
 	confirmed          bool           // Enter was pressed on the install-manager picker
+	dir                string         // project directory whose lock files order the install tools
 }
 
 // NewModel creates a new TUI model with initial state.
@@ -67,6 +68,7 @@ func NewModel(initialQuery string, opts search.Options, ui UIOptions) model {
 		selectedRegistries: selectedRegistries,
 		debounce:           debounce,
 		pageSize:           ui.PageSize,
+		dir:                ".",
 	}
 }
 

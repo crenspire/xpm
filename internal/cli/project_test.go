@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -265,8 +266,34 @@ func TestMixedProjectRefusesPackageCommandsNonInteractively(t *testing.T) {
 	if code := cmdUpdate([]string{"requests"}); code != 1 {
 		t.Errorf("update code=%d", code)
 	}
+	var code int
+	captureStdout(t, func() { code = cmdUpdate(nil) })
+	if code != 1 {
+		t.Errorf("update (all packages) code=%d, want 1: it must not pick a project type by itself", code)
+	}
 	if len(*ran) != 0 {
 		t.Errorf("ran %v", *ran)
+	}
+	captureStdout(t, func() { code = cmdList(nil) })
+	if code != 0 || len(*ran) != 1 {
+		t.Errorf("list code=%d ran=%v; listing changes nothing, so it may pick", code, *ran)
+	}
+}
+
+func TestCIPreparesEveryTargetBeforeRunningAny(t *testing.T) {
+	withConfig(t, config.Config{})
+	inProject(t, "package.json", "package-lock.json", "composer.json")
+	ran := recordTools(t)
+	ensurePM = func(id pm.ID) error {
+		if id == pm.Composer {
+			return errors.New("composer is not installed")
+		}
+		return nil
+	}
+	var code int
+	captureStdout(t, func() { code = cmdCleanInstall(nil) })
+	if code != 1 || len(*ran) != 0 {
+		t.Fatalf("code=%d ran=%v: npm ci ran although composer was missing", code, *ran)
 	}
 }
 
