@@ -199,3 +199,49 @@ func TestMakeSymlinkRejectsRootRelativeTargets(t *testing.T) {
 		}
 	}
 }
+
+func TestExtractRejectsLinkChainsThroughDotDot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks need privileges on Windows")
+	}
+	cases := map[string][]tarEntry{
+		"dotdot-through-link": {
+			{name: "s", link: ".", typ: tar.TypeSymlink},
+			{name: "l", link: "s/..", typ: tar.TypeSymlink},
+		},
+		"later-filled": {
+			{name: "x", link: "y/..", typ: tar.TypeSymlink},
+			{name: "s", link: ".", typ: tar.TypeSymlink},
+			{name: "y", link: "s", typ: tar.TypeSymlink},
+		},
+	}
+	for name, entries := range cases {
+		t.Run(name, func(t *testing.T) {
+			dest, parent := newDest(t)
+			if err := os.WriteFile(filepath.Join(parent, "secret"), []byte("s"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := extractTarGz(makeTarGz(t, entries), dest); err == nil {
+				t.Fatal("link chain accepted; want error")
+			}
+			for _, l := range []string{"l", "x"} {
+				if _, err := os.ReadFile(filepath.Join(dest, l, "secret")); err == nil {
+					t.Fatalf("outside file reachable via %s", l)
+				}
+			}
+		})
+	}
+}
+
+func TestVerifySymlinksWithinCatchesEscapingLink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks need privileges on Windows")
+	}
+	dest, _ := newDest(t)
+	if err := os.Symlink("..", filepath.Join(dest, "up")); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifySymlinksWithin(dest); err == nil {
+		t.Fatal("escaping symlink not detected")
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -117,7 +118,7 @@ func writeEntry(root, target string, mode os.FileMode, r io.Reader) error {
 		return err
 	}
 	if _, err := io.Copy(f, r); err != nil {
-		f.Close()
+		_ = f.Close() // the copy error wins
 		return err
 	}
 	return f.Close()
@@ -144,12 +145,64 @@ func makeSymlink(root, target, linkname string) error {
 	if err != nil {
 		return err
 	}
-	native := filepath.FromSlash(linkname)
+	native := filepath.Clean(filepath.FromSlash(linkname))
+	// ".." may only climb from the link's own directory (a leading run). A ".."
+	// after a real component would be followed by the kernel through whatever
+	// that component is (possibly another symlink), so lexical checks lie.
+	seenName := false
+	for _, part := range strings.Split(filepath.FromSlash(linkname), string(filepath.Separator)) {
+		switch part {
+		case "", ".":
+		case "..":
+			if seenName {
+				return fmt.Errorf("symlink %s -> %q: %q after a path component is not allowed", target, linkname, "..")
+			}
+		default:
+			seenName = true
+		}
+	}
 	if !within(realRoot, filepath.Join(realParent, native)) {
 		return fmt.Errorf("symlink %s -> %q escapes the destination", target, linkname)
 	}
 	_ = os.Remove(target)
 	return os.Symlink(native, target)
+}
+
+// verifySymlinksWithin walks root and fails if any symlink resolves outside it.
+// Dangling links are resolved lexically from their real directory. It is the
+// final guard against link chains assembled across entries.
+func verifySymlinksWithin(root string) error {
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return err
+	}
+	return filepath.WalkDir(realRoot, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.Type()&fs.ModeSymlink == 0 {
+			return nil
+		}
+		resolved, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			link, lerr := os.Readlink(path)
+			if lerr != nil {
+				return lerr
+			}
+			if filepath.IsAbs(link) {
+				return fmt.Errorf("symlink %s -> %q is absolute", path, link)
+			}
+			realDir, derr := filepath.EvalSymlinks(filepath.Dir(path))
+			if derr != nil {
+				return derr
+			}
+			resolved = filepath.Join(realDir, link)
+		}
+		if !within(realRoot, resolved) {
+			return fmt.Errorf("symlink %s resolves outside the destination", path)
+		}
+		return nil
+	})
 }
 
 // extractTarGz extracts a .tar.gz into dest. Every entry is confined to dest;
@@ -172,7 +225,7 @@ func extractTarGz(src, dest string) error {
 	for {
 		header, err := tr.Next()
 		if errors.Is(err, io.EOF) {
-			return nil
+			return verifySymlinksWithin(dest)
 		}
 		if err != nil {
 			return err
@@ -187,7 +240,7 @@ func extractTarGz(src, dest string) error {
 				return err
 			}
 		case tar.TypeReg:
-			if err := writeEntry(dest, target, os.FileMode(header.Mode), tr); err != nil {
+			if err := writeEntry(dest, target, header.FileInfo().Mode(), tr); err != nil {
 				return err
 			}
 		case tar.TypeSymlink:
@@ -253,7 +306,7 @@ func extractZip(src, dest string) error {
 				return err
 			}
 			link, err := io.ReadAll(io.LimitReader(rc, 4096))
-			rc.Close()
+			_ = rc.Close() // read-only; the read error is what matters
 			if err != nil {
 				return err
 			}
@@ -266,13 +319,13 @@ func extractZip(src, dest string) error {
 				return err
 			}
 			err = writeEntry(dest, target, mode, rc)
-			rc.Close()
+			_ = rc.Close() // read-only; the write error is what matters
 			if err != nil {
 				return err
 			}
 		}
 	}
-	return nil
+	return verifySymlinksWithin(dest)
 }
 
 // copyDirectory copies a directory recursively, handling symlinks.
