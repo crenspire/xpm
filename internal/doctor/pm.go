@@ -132,7 +132,7 @@ func checkPM(check PMCheck) PMInfo {
 		Optional: check.Optional,
 	}
 
-	path, err := exec.LookPath(check.Binary)
+	path, err := lookPath(check.Binary)
 	if err != nil {
 		info.Installed = false
 		return info

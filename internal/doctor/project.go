@@ -28,37 +28,38 @@ type ProjectFileSpec struct {
 	Name      string
 	Type      FileType
 	Ecosystem string
-	LockFile  string // Associated lock file (for dependency files)
-	DepFile   string // Associated dependency file (for lock files)
 }
 
 // projectFileSpecs defines all project files to check.
 var projectFileSpecs = []ProjectFileSpec{
 	// Node.js
-	{Name: "package.json", Type: FileTypeDependency, Ecosystem: "node", LockFile: "package-lock.json"},
-	{Name: "package-lock.json", Type: FileTypeLock, Ecosystem: "node", DepFile: "package.json"},
-	{Name: "yarn.lock", Type: FileTypeLock, Ecosystem: "node", DepFile: "package.json"},
-	{Name: "pnpm-lock.yaml", Type: FileTypeLock, Ecosystem: "node", DepFile: "package.json"},
-	{Name: "bun.lockb", Type: FileTypeLock, Ecosystem: "node", DepFile: "package.json"},
+	{Name: "package.json", Type: FileTypeDependency, Ecosystem: "node"},
+	{Name: "package-lock.json", Type: FileTypeLock, Ecosystem: "node"},
+	{Name: "yarn.lock", Type: FileTypeLock, Ecosystem: "node"},
+	{Name: "pnpm-lock.yaml", Type: FileTypeLock, Ecosystem: "node"},
+	{Name: "bun.lock", Type: FileTypeLock, Ecosystem: "node"},
+	{Name: "bun.lockb", Type: FileTypeLock, Ecosystem: "node"},
 
 	// PHP
-	{Name: "composer.json", Type: FileTypeDependency, Ecosystem: "php", LockFile: "composer.lock"},
-	{Name: "composer.lock", Type: FileTypeLock, Ecosystem: "php", DepFile: "composer.json"},
+	{Name: "composer.json", Type: FileTypeDependency, Ecosystem: "php"},
+	{Name: "composer.lock", Type: FileTypeLock, Ecosystem: "php"},
 
 	// Python
-	{Name: "pyproject.toml", Type: FileTypeDependency, Ecosystem: "python", LockFile: "poetry.lock"},
-	{Name: "requirements.txt", Type: FileTypeDependency, Ecosystem: "python", LockFile: "requirements.lock"},
-	{Name: "poetry.lock", Type: FileTypeLock, Ecosystem: "python", DepFile: "pyproject.toml"},
-	{Name: "Pipfile", Type: FileTypeDependency, Ecosystem: "python", LockFile: "Pipfile.lock"},
-	{Name: "Pipfile.lock", Type: FileTypeLock, Ecosystem: "python", DepFile: "Pipfile"},
+	{Name: "pyproject.toml", Type: FileTypeDependency, Ecosystem: "python"},
+	{Name: "requirements.txt", Type: FileTypeDependency, Ecosystem: "python"},
+	{Name: "poetry.lock", Type: FileTypeLock, Ecosystem: "python"},
+	{Name: "uv.lock", Type: FileTypeLock, Ecosystem: "python"},
+	{Name: "pdm.lock", Type: FileTypeLock, Ecosystem: "python"},
+	{Name: "Pipfile", Type: FileTypeDependency, Ecosystem: "python"},
+	{Name: "Pipfile.lock", Type: FileTypeLock, Ecosystem: "python"},
 
 	// Rust
-	{Name: "Cargo.toml", Type: FileTypeDependency, Ecosystem: "rust", LockFile: "Cargo.lock"},
-	{Name: "Cargo.lock", Type: FileTypeLock, Ecosystem: "rust", DepFile: "Cargo.toml"},
+	{Name: "Cargo.toml", Type: FileTypeDependency, Ecosystem: "rust"},
+	{Name: "Cargo.lock", Type: FileTypeLock, Ecosystem: "rust"},
 
 	// Go
-	{Name: "go.mod", Type: FileTypeDependency, Ecosystem: "go", LockFile: "go.sum"},
-	{Name: "go.sum", Type: FileTypeLock, Ecosystem: "go", DepFile: "go.mod"},
+	{Name: "go.mod", Type: FileTypeDependency, Ecosystem: "go"},
+	{Name: "go.sum", Type: FileTypeLock, Ecosystem: "go"},
 
 	// Java
 	{Name: "pom.xml", Type: FileTypeBuild, Ecosystem: "maven"},
@@ -74,63 +75,83 @@ type ProjectScanResult struct {
 	Ecosystems       map[string]bool
 }
 
-// ScanProject scans a directory for project files.
+// ScanProject scans dir for project files and lists the lockfiles that a
+// present dependency file needs but that are absent.
 func ScanProject(dir string) ProjectScanResult {
 	result := ProjectScanResult{
-		Files:      make([]ProjectFileInfo, 0),
+		Files:      make([]ProjectFileInfo, 0, len(projectFileSpecs)),
 		Ecosystems: make(map[string]bool),
 	}
-
-	// Check each project file
-	depFiles := make(map[string]bool)
-	lockFiles := make(map[string]bool)
+	present := make(map[string]bool)
 
 	for _, spec := range projectFileSpecs {
 		path := filepath.Join(dir, spec.Name)
 		exists := fileExists(path)
-
-		info := ProjectFileInfo{
+		if exists {
+			present[spec.Name] = true
+			result.Ecosystems[spec.Ecosystem] = true
+		}
+		result.Files = append(result.Files, ProjectFileInfo{
 			Name:      spec.Name,
 			Path:      path,
 			Exists:    exists,
 			Type:      spec.Type,
 			Ecosystem: spec.Ecosystem,
-		}
-
-		if exists {
-			result.Ecosystems[spec.Ecosystem] = true
-
-			if spec.Type == FileTypeDependency {
-				depFiles[spec.Name] = true
-			} else if spec.Type == FileTypeLock {
-				lockFiles[spec.Name] = true
-			}
-		}
-
-		result.Files = append(result.Files, info)
+		})
 	}
 
-	// Check for missing lock files
 	for _, spec := range projectFileSpecs {
-		if spec.Type == FileTypeDependency && spec.LockFile != "" {
-			if depFiles[spec.Name] && !lockFiles[spec.LockFile] {
-				// Special case for Node.js: any lock file is acceptable
-				if spec.Ecosystem == "node" {
-					hasNodeLock := lockFiles["package-lock.json"] ||
-						lockFiles["yarn.lock"] ||
-						lockFiles["pnpm-lock.yaml"] ||
-						lockFiles["bun.lockb"]
-					if !hasNodeLock {
-						result.MissingLockFiles = append(result.MissingLockFiles, spec.LockFile)
-					}
-				} else {
-					result.MissingLockFiles = append(result.MissingLockFiles, spec.LockFile)
-				}
-			}
+		if spec.Type != FileTypeDependency || !present[spec.Name] {
+			continue
+		}
+		if lf := missingLockfile(dir, spec.Name, present); lf != "" {
+			result.MissingLockFiles = append(result.MissingLockFiles, lf)
 		}
 	}
 
 	return result
+}
+
+// missingLockfile returns the lockfile that depFile (present in dir) needs
+// but that is absent, or "" when it needs none or has one:
+//   - package.json: any Node lockfile will do (else package-lock.json);
+//   - pyproject.toml: poetry.lock only for a [tool.poetry] project; PEP 621
+//     projects may use uv.lock, pdm.lock, or no lockfile at all;
+//   - requirements.txt: never (pip has no lockfile);
+//   - go.mod: go.sum only when go.mod has requirements whose sums it must hold.
+func missingLockfile(dir, depFile string, present map[string]bool) string {
+	switch depFile {
+	case "package.json":
+		for _, lf := range nodeLockfiles {
+			if present[lf] {
+				return ""
+			}
+		}
+		return "package-lock.json"
+	case "composer.json":
+		if !present["composer.lock"] {
+			return "composer.lock"
+		}
+	case "pyproject.toml":
+		if !present["poetry.lock"] && isPoetryProject(dir) {
+			return "poetry.lock"
+		}
+	case "Pipfile":
+		if !present["Pipfile.lock"] {
+			return "Pipfile.lock"
+		}
+	case "Cargo.toml":
+		if !present["Cargo.lock"] {
+			return "Cargo.lock"
+		}
+	case "go.mod":
+		if !present["go.sum"] {
+			if reqs, err := goRequirements(dir); err == nil && len(reqs) > 0 {
+				return "go.sum"
+			}
+		}
+	}
+	return ""
 }
 
 // fileExists checks if a file exists.

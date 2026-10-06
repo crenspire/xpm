@@ -1,107 +1,65 @@
 package workspace
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"os"
-	"sync"
 
 	"github.com/crenspire/xpm/internal/scripts"
 )
 
-// RunInWorkspaces runs a task across all projects in workspaces.
-func RunInWorkspaces(workspaces []Workspace, task string, parallel bool) error {
-	if len(workspaces) == 0 {
-		return fmt.Errorf("no workspaces provided")
-	}
-
-	var allProjects []Project
-	for _, ws := range workspaces {
-		allProjects = append(allProjects, ws.Projects...)
-	}
-
-	if len(allProjects) == 0 {
-		return fmt.Errorf("no projects found in workspaces")
-	}
-
-	if parallel {
-		return runInProjectsParallel(allProjects, task)
-	}
-
-	return runInProjectsSequential(allProjects, task)
+// RunOptions configures Run.
+type RunOptions struct {
+	Parallel   bool
+	Prefer     []string  // scripts.prefer: which config file wins a name clash
+	Executable string    // binary re-executed per project; "" = os.Executable()
+	Runner     Runner    // nil = ExecRunner
+	Stdout     io.Writer // nil = os.Stdout
+	Stderr     io.Writer // nil = os.Stderr
 }
 
-// runInProjectsParallel runs tasks in parallel using goroutines.
-func runInProjectsParallel(projects []Project, task string) error {
-	var wg sync.WaitGroup
-	errors := make(chan error, len(projects))
-
-	for _, project := range projects {
-		wg.Add(1)
-		go func(p Project) {
-			defer wg.Done()
-			if err := runInProject(p, task); err != nil {
-				errors <- fmt.Errorf("[%s] %v", p.Name, err)
-			}
-		}(project)
+// Run runs task in every project that defines it by re-executing xpm as
+// `<exe> run <task>` with the project as working directory. Projects without
+// the task are skipped with a note on stderr; it is an error when no project
+// has it. A directory listed by several ecosystems runs once. Failures are
+// returned joined, in project order.
+func Run(workspaces []Workspace, task string, opts RunOptions) error {
+	stderr := opts.Stderr
+	if stderr == nil {
+		stderr = os.Stderr
 	}
-
-	wg.Wait()
-	close(errors)
-
-	// Collect errors
-	var errs []error
-	for err := range errors {
-		errs = append(errs, err)
-	}
-
-	if len(errs) > 0 {
-		return fmt.Errorf("errors in %d projects: %v", len(errs), errs[0])
-	}
-
-	return nil
-}
-
-// runInProjectsSequential runs tasks sequentially.
-func runInProjectsSequential(projects []Project, task string) error {
-	for _, project := range projects {
-		if err := runInProject(project, task); err != nil {
-			return fmt.Errorf("[%s] %v", project.Name, err)
+	exe := opts.Executable
+	if exe == "" {
+		var err error
+		if exe, err = os.Executable(); err != nil {
+			return fmt.Errorf("cannot locate the xpm binary: %w", err)
 		}
 	}
-	return nil
-}
-
-// runInProject runs a task in a single project.
-func runInProject(project Project, task string) error {
-	// Check if task exists in project
-	merged, err := scripts.LoadAllScripts(project.Path, nil)
-	if err != nil {
-		return fmt.Errorf("failed to load scripts: %w", err)
+	seen := map[string]bool{}
+	var steps []step
+	for _, ws := range workspaces {
+		for _, p := range ws.Projects {
+			if seen[p.Path] {
+				continue
+			}
+			seen[p.Path] = true
+			merged, err := scripts.LoadAllScripts(p.Path, opts.Prefer)
+			if err != nil {
+				steps = append(steps, step{label: p.Name, err: fmt.Errorf("loading tasks: %w", err)})
+				continue
+			}
+			if _, found := merged.GetScript(task); !found {
+				_, _ = fmt.Fprintf(stderr, "[%s] skipped: no task %q\n", p.Name, task)
+				continue
+			}
+			steps = append(steps, step{label: p.Name, cmd: Command{Dir: p.Path, Name: exe, Args: []string{"run", "--", task}}})
+		}
 	}
-
-	script, found := merged.GetScript(task)
-	if !found {
-		return fmt.Errorf("task %q not found", task)
+	if len(steps) == 0 {
+		return fmt.Errorf("no workspace project defines task %q", task)
 	}
-
-	// Change to project directory
-	originalDir, err := os.Getwd()
-	if err != nil {
-		return err
-	}
-	defer os.Chdir(originalDir)
-
-	if err := os.Chdir(project.Path); err != nil {
-		return fmt.Errorf("failed to change directory: %w", err)
-	}
-
-	fmt.Printf("[%s] Running %s...\n", project.Name, task)
-
-	// Run the script
-	if err := scripts.RunScript(*script, nil); err != nil {
-		return fmt.Errorf("task execution failed: %w", err)
-	}
-
-	fmt.Printf("[%s] ✓ Completed\n", project.Name)
-	return nil
+	return execute(context.Background(), steps, execOptions{
+		parallel: opts.Parallel, run: opts.Runner, stdout: opts.Stdout, stderr: stderr,
+	})
 }

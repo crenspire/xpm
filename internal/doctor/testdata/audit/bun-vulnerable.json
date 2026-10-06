@@ -1,0 +1,13 @@
+{
+  "lodash": [
+    {
+      "id": 1094499,
+      "url": "https://github.com/advisories/GHSA-jf85-cpcp-j695",
+      "title": "Prototype Pollution in lodash",
+      "severity": "critical",
+      "vulnerable_versions": "<4.17.12",
+      "cwe": ["CWE-1321"],
+      "cvss": {"score": 9.1, "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N"}
+    }
+  ]
+}

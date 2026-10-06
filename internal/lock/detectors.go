@@ -1,10 +1,5 @@
 package lock
 
-import (
-	"os"
-	"path/filepath"
-)
-
 // LockfileSpec defines a lockfile to detect.
 type LockfileSpec struct {
 	// File is the lockfile name.
@@ -17,12 +12,14 @@ type LockfileSpec struct {
 	Manager string
 }
 
-// SupportedLockfiles lists all lockfiles that can be detected.
+// SupportedLockfiles lists all lockfiles that can be detected, in the order
+// they are reported.
 var SupportedLockfiles = []LockfileSpec{
 	// Node.js ecosystem
 	{File: "package-lock.json", Ecosystem: "node", Manager: "npm"},
 	{File: "yarn.lock", Ecosystem: "node", Manager: "yarn"},
 	{File: "pnpm-lock.yaml", Ecosystem: "node", Manager: "pnpm"},
+	{File: "bun.lock", Ecosystem: "node", Manager: "bun"},
 	{File: "bun.lockb", Ecosystem: "node", Manager: "bun"},
 
 	// PHP ecosystem
@@ -30,6 +27,7 @@ var SupportedLockfiles = []LockfileSpec{
 
 	// Python ecosystem
 	{File: "poetry.lock", Ecosystem: "python", Manager: "poetry"},
+	{File: "uv.lock", Ecosystem: "python", Manager: "uv"},
 	{File: "requirements.lock", Ecosystem: "python", Manager: "pip"},
 	{File: "Pipfile.lock", Ecosystem: "python", Manager: "pipenv"},
 
@@ -48,96 +46,34 @@ type DetectedLockfile struct {
 	// Spec is the lockfile specification.
 	Spec LockfileSpec
 
-	// Path is the full path to the lockfile.
+	// Path is the full path to the lockfile, symlinks resolved.
 	Path string
 
-	// RelPath is the path relative to the scan directory.
+	// RelPath is the slash-separated path relative to the scanned root; it is
+	// the file's key in xpm-lock.yaml.
 	RelPath string
 }
 
-// DetectAll scans a directory for all supported lockfiles.
-// Returns a slice of detected lockfiles.
-func DetectAll(dir string) ([]DetectedLockfile, error) {
+// DetectAll returns the supported lockfiles present in dir (the project root
+// only; subdirectories are not scanned), in SupportedLockfiles order.
+// A lockfile that is a symlink resolving outside dir is not detected.
+func DetectAll(dir string) []DetectedLockfile {
 	var detected []DetectedLockfile
-
 	for _, spec := range SupportedLockfiles {
-		path := filepath.Join(dir, spec.File)
-		if fileExists(path) {
-			detected = append(detected, DetectedLockfile{
-				Spec:    spec,
-				Path:    path,
-				RelPath: spec.File,
-			})
-		}
-	}
-
-	return detected, nil
-}
-
-// DetectByEcosystem scans a directory for lockfiles of a specific ecosystem.
-func DetectByEcosystem(dir string, ecosystem string) ([]DetectedLockfile, error) {
-	var detected []DetectedLockfile
-
-	for _, spec := range SupportedLockfiles {
-		if spec.Ecosystem != ecosystem {
+		full, err := containedPath(dir, spec.File)
+		if err != nil || !fileExists(full) {
 			continue
 		}
-		path := filepath.Join(dir, spec.File)
-		if fileExists(path) {
-			detected = append(detected, DetectedLockfile{
-				Spec:    spec,
-				Path:    path,
-				RelPath: spec.File,
-			})
-		}
+		detected = append(detected, DetectedLockfile{
+			Spec:    spec,
+			Path:    full,
+			RelPath: spec.File,
+		})
 	}
-
-	return detected, nil
+	return detected
 }
 
-// HasLockfiles checks if any supported lockfiles exist in the directory.
-func HasLockfiles(dir string) bool {
-	for _, spec := range SupportedLockfiles {
-		path := filepath.Join(dir, spec.File)
-		if fileExists(path) {
-			return true
-		}
-	}
-	return false
-}
-
-// GetEcosystemKey returns a unique key for a detected lockfile.
-// For ecosystems with multiple possible managers (like Node), uses the ecosystem name.
-// For single-manager ecosystems, uses the ecosystem name.
-func GetEcosystemKey(d DetectedLockfile) string {
-	return d.Spec.Ecosystem
-}
-
-// fileExists checks if a file exists and is not a directory.
-func fileExists(path string) bool {
-	info, err := os.Stat(path)
-	if err != nil {
-		return false
-	}
-	return !info.IsDir()
-}
-
-// ListSupportedEcosystems returns a list of all supported ecosystems.
-func ListSupportedEcosystems() []string {
-	seen := make(map[string]bool)
-	var ecosystems []string
-
-	for _, spec := range SupportedLockfiles {
-		if !seen[spec.Ecosystem] {
-			seen[spec.Ecosystem] = true
-			ecosystems = append(ecosystems, spec.Ecosystem)
-		}
-	}
-
-	return ecosystems
-}
-
-// ListSupportedFiles returns a list of all supported lockfile names.
+// ListSupportedFiles returns the names of all supported lockfiles.
 func ListSupportedFiles() []string {
 	files := make([]string, len(SupportedLockfiles))
 	for i, spec := range SupportedLockfiles {

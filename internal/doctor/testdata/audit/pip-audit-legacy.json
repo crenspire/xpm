@@ -1,0 +1,1 @@
+[{"name": "requests", "version": "2.25.0", "vulns": [{"id": "PYSEC-2023-74", "fix_versions": ["2.31.0"]}, {"id": "GHSA-9wx4-h78v-vm56", "fix_versions": ["2.32.0"]}]}, {"name": "certifi", "version": "2024.2.2", "vulns": []}]

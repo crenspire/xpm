@@ -1,6 +1,7 @@
 package graph
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,60 +20,70 @@ func (e *CargoExtractor) Supports(file string) bool {
 	return file == "Cargo.lock"
 }
 
-func (e *CargoExtractor) Extract(dir string) (*DepGraph, error) {
-	path := filepath.Join(dir, "Cargo.lock")
-	data, err := os.ReadFile(path)
+func (e *CargoExtractor) Extract(dir string, _ ExtractOptions) (*DepGraph, error) {
+	data, err := os.ReadFile(filepath.Join(dir, "Cargo.lock"))
 	if err != nil {
 		return nil, err
 	}
-
-	var lockfile struct {
-		Package []struct {
-			Name         string   `toml:"name"`
-			Version      string   `toml:"version"`
-			Dependencies []string `toml:"dependencies"`
-		} `toml:"package"`
-	}
-
-	if _, err := toml.Decode(string(data), &lockfile); err != nil {
-		return nil, err
-	}
-
-	graph := NewGraph()
-	nodeMap := make(map[string]*DepNode)
-
-	// First pass: create all nodes
-	for _, pkg := range lockfile.Package {
-		node := NewDepNode("rust", pkg.Name, pkg.Version)
-		graph.AddNode(node)
-		nodeMap[pkg.Name] = node
-
-		// Mark first package as root
-		if len(graph.Root) == 0 {
-			graph.AddRoot(node.ID)
-		}
-	}
-
-	// Second pass: create edges
-	for _, pkg := range lockfile.Package {
-		if node, ok := nodeMap[pkg.Name]; ok {
-			for _, depSpec := range pkg.Dependencies {
-				depName := e.parseDependencySpec(depSpec)
-				if depNode, ok := nodeMap[depName]; ok {
-					graph.AddEdge(NewEdge(node.ID, depNode.ID))
-				}
-			}
-		}
-	}
-
-	return graph, nil
+	return parseCargoLock(data)
 }
 
-func (e *CargoExtractor) parseDependencySpec(spec string) string {
-	// Format: "name version (source)" or just "name version"
-	parts := strings.Fields(spec)
-	if len(parts) > 0 {
-		return parts[0]
+type cargoPackage struct {
+	Name         string   `toml:"name"`
+	Version      string   `toml:"version"`
+	Source       string   `toml:"source"`
+	Dependencies []string `toml:"dependencies"`
+}
+
+// parseCargoLock builds the graph of a Cargo.lock (v1–v4). Nodes are keyed by
+// name+version, so two versions of one crate stay distinct. A dependency entry
+// is "name" (the only locked version), "name version", or
+// "name version (source)". Roots are the packages without a source: the
+// workspace members.
+func parseCargoLock(data []byte) (*DepGraph, error) {
+	var lock struct {
+		Package []cargoPackage `toml:"package"`
 	}
-	return spec
+	if _, err := toml.Decode(string(data), &lock); err != nil {
+		return nil, fmt.Errorf("parse Cargo.lock: %w", err)
+	}
+	g := NewGraph()
+	byName := map[string][]string{} // name -> versions
+	for _, p := range lock.Package {
+		if p.Name == "" || p.Version == "" {
+			return nil, fmt.Errorf("parse Cargo.lock: [[package]] without name or version")
+		}
+		n := NewDepNode("rust", p.Name, p.Version)
+		if g.GetNode(n.ID) == nil {
+			if p.Source != "" {
+				n.WithMetadata("source", p.Source)
+			}
+			g.AddNode(n)
+			byName[p.Name] = append(byName[p.Name], p.Version)
+		}
+		if p.Source == "" {
+			g.AddRoot(n.ID)
+		}
+	}
+	for _, p := range lock.Package {
+		from := NodeID("rust", p.Name, p.Version)
+		for _, spec := range p.Dependencies {
+			f := strings.Fields(spec)
+			if len(f) == 0 {
+				return nil, fmt.Errorf("parse Cargo.lock: empty dependency in %s %s", p.Name, p.Version)
+			}
+			version := ""
+			if len(f) >= 2 {
+				version = f[1]
+			} else if vs := byName[f[0]]; len(vs) == 1 {
+				version = vs[0]
+			}
+			to := NodeID("rust", f[0], version)
+			if version == "" || g.GetNode(to) == nil {
+				return nil, fmt.Errorf("parse Cargo.lock: %s %s depends on %q, which is not locked", p.Name, p.Version, spec)
+			}
+			g.AddEdge(NewEdge(from, to))
+		}
+	}
+	return g, nil
 }

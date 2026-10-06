@@ -1,0 +1,89 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    dependencies:
+      react:
+        specifier: ^18.3.1
+        version: 18.3.1
+      react-dom:
+        specifier: ^18.3.1
+        version: 18.3.1(react@18.3.1)
+      react-is-legacy:
+        specifier: npm:react-is@^16.13.1
+        version: react-is@16.13.1
+    devDependencies:
+      '@types/react':
+        specifier: ^18.3.3
+        version: 18.3.3
+
+packages:
+
+  '@types/prop-types@15.7.12':
+    resolution: {integrity: sha512-QZ+PIsMOh+YDyPpY9ZMmJ0sRj1OxRAVwDH/ZAjgt+qvC3h1rpThRHHehiCfW8rz7SIOoB2V4hVkBfs8dAnvr5A==}
+
+  '@types/react@18.3.3':
+    resolution: {integrity: sha512-es5tiXmJ+zQp/GayYQAegFnWuQgCeJ+xQQ4dr+2TXsyqQwOOTN0vSekh656Q1f3OBvHPOipxruQouDt0ckB2VQ==}
+
+  csstype@3.1.3:
+    resolution: {integrity: sha512-nn4YAF2akFr0tn22Q3fpTnhyh6NgJpZypPjuKSCBC5ww2dA+W2a/DtMGjS5Mv8algdoQpgyeZb48sG+3htbjjA==}
+
+  js-tokens@4.0.0:
+    resolution: {integrity: sha512-hgvFIIZXEh0qKUvHJA9tb+6uMdEHBUTTBVdE5bnB0HXjEjOjXG0NsMmG74DF0EoiAWA+OCL55ZseKfL6rFqqEw==}
+
+  loose-envify@1.4.0:
+    resolution: {integrity: sha512-p6tV/43Z8c4seu03wSajLEoUgCE8tth0qwIk9TQuGL/l4A1cGuu5pJMkpTfGeg4X8Ex5aYGsz2uKe7iYEkGBGw==}
+    hasBin: true
+
+  react-dom@18.3.1:
+    resolution: {integrity: sha512-YM2/ll2MO+woZHNGQ1mu++6D+gDT6DSE/nIPHowsudr4x5FgMaviwvJTTTHXoRF4wRyvZ2+g1blR8BY0C082KQ==}
+    peerDependencies:
+      react: ^18.3.1
+
+  react-is@16.13.1:
+    resolution: {integrity: sha512-sj7wCk+ooIaBlsMgU8GpEb6iVyxhykVG1zXhSqqfMmnf87PpkTEw+80LmzmkqUlmB5Ah/1Qq1v2J9EJ9Q/JqBg==}
+
+  react@18.3.1:
+    resolution: {integrity: sha512-2+1d312Gv/F0ka3L+WanxnvPQ93+m+j2HLOWk54rzWk/lAPxKcimaVSC+kRml1k+lqAEalcc0tQie4/Wubz/Zg==}
+    engines: {node: '>=0.10.0'}
+
+  scheduler@0.23.2:
+    resolution: {integrity: sha512-/IkGAvk7w1qsKI9IeufIMtt+45SyCsBBSlQJOED3kzK+Clxc/VtOM+qPBaim7xZgJMyqrmEibpcx32f3dRZ3GQ==}
+
+snapshots:
+
+  '@types/prop-types@15.7.12': {}
+
+  '@types/react@18.3.3':
+    dependencies:
+      '@types/prop-types': 15.7.12
+      csstype: 3.1.3
+
+  csstype@3.1.3: {}
+
+  js-tokens@4.0.0: {}
+
+  loose-envify@1.4.0:
+    dependencies:
+      js-tokens: 4.0.0
+
+  react-dom@18.3.1(react@18.3.1):
+    dependencies:
+      loose-envify: 1.4.0
+      react: 18.3.1
+      scheduler: 0.23.2
+
+  react-is@16.13.1: {}
+
+  react@18.3.1:
+    dependencies:
+      loose-envify: 1.4.0
+
+  scheduler@0.23.2:
+    dependencies:
+      loose-envify: 1.4.0

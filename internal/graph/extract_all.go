@@ -1,15 +1,16 @@
 package graph
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
 )
 
-// ExtractAll runs all extractors in parallel and merges the results.
-func ExtractAll(dir string) (*DepGraph, error) {
-	extractors := []Extractor{
+// extractors lists every ecosystem extractor in the fixed order ExtractAll
+// runs and merges them.
+func extractors() []Extractor {
+	return []Extractor{
 		&NodeExtractor{},
 		&PythonExtractor{},
 		&ComposerExtractor{},
@@ -17,144 +18,78 @@ func ExtractAll(dir string) (*DepGraph, error) {
 		&GoExtractor{},
 		&JavaExtractor{},
 	}
+}
 
-	// Detect which ecosystems are present
+// ExtractAll runs the extractor of every ecosystem detected in dir, one after
+// another in a fixed order, and merges their graphs. Parsing is fast and
+// external tools run only with opts.Exec, so there is no goroutine fan-out:
+// the merge order, the warnings and opts.Run calls stay deterministic.
+//
+// An extractor that fails is reported through opts.Warn when another one
+// succeeded; when every detected extractor fails the joined errors are
+// returned instead. No ecosystem detected yields an empty graph.
+func ExtractAll(dir string, opts ExtractOptions) (*DepGraph, error) {
 	detected := DetectEcosystems(dir)
-
-	// Run extractors in parallel
-	type result struct {
-		graph *DepGraph
-		err   error
-		name  string
-	}
-
-	results := make(chan result, len(extractors))
-	var wg sync.WaitGroup
-
-	for _, extractor := range extractors {
-		// Only run extractor if ecosystem is detected
-		if !isEcosystemDetected(extractor, detected) {
-			continue
-		}
-
-		wg.Add(1)
-		go func(ext Extractor) {
-			defer wg.Done()
-			graph, err := ext.Extract(dir)
-			results <- result{graph: graph, err: err, name: ext.Name()}
-		}(extractor)
-	}
-
-	go func() {
-		wg.Wait()
-		close(results)
-	}()
-
-	// Merge all graphs
 	merged := NewGraph()
-	var errors []error
-
-	for res := range results {
-		if res.err != nil {
-			errors = append(errors, fmt.Errorf("%s: %w", res.name, res.err))
+	var failures []error
+	ok := 0
+	for _, ext := range extractors() {
+		if !detected[ext.Name()] {
 			continue
 		}
-		if res.graph != nil {
-			merged.Merge(res.graph)
+		g, err := ext.Extract(dir, opts)
+		if err != nil {
+			failures = append(failures, fmt.Errorf("%s: %w", ext.Name(), err))
+			continue
 		}
+		ok++
+		merged.Merge(g)
 	}
-
-	if len(merged.Nodes) == 0 && len(errors) > 0 {
-		return nil, fmt.Errorf("failed to extract dependencies: %v", errors)
+	if ok == 0 && len(failures) > 0 {
+		return nil, fmt.Errorf("extract dependencies: %w", errors.Join(failures...))
 	}
-
+	for _, err := range failures {
+		opts.warn("%v", err)
+	}
 	return merged, nil
 }
 
-// isEcosystemDetected checks if an extractor's ecosystem is detected.
-func isEcosystemDetected(extractor Extractor, detected map[string]bool) bool {
-	name := extractor.Name()
-	return detected[name]
+// ecosystemFiles maps the files whose presence enables an extractor.
+// Manifests without a lockfile are listed too, so their extractor reports
+// what is missing instead of the ecosystem being silently ignored.
+var ecosystemFiles = []struct {
+	file      string
+	ecosystem string
+}{
+	{"package-lock.json", "node"},
+	{"pnpm-lock.yaml", "node"},
+	{"yarn.lock", "node"},
+	{"bun.lock", "node"},
+	{"bun.lockb", "node"},
+	{"package.json", "node"},
+	{"poetry.lock", "python"},
+	{"pyproject.toml", "python"},
+	{"requirements.txt", "python"},
+	{"composer.lock", "php"},
+	{"composer.json", "php"},
+	{"Cargo.lock", "rust"},
+	{"Cargo.toml", "rust"},
+	{"go.mod", "go"},
+	{"pom.xml", "java"},
+	{"gradle.lockfile", "java"},
+	{"build.gradle", "java"},
+	{"build.gradle.kts", "java"},
+	{"settings.gradle", "java"},
+	{"settings.gradle.kts", "java"},
 }
 
-// DetectEcosystems detects which ecosystems are present in the directory.
+// DetectEcosystems reports which ecosystems have a manifest or lockfile in dir.
 func DetectEcosystems(dir string) map[string]bool {
 	detected := make(map[string]bool)
-
-	// Check for lockfiles and dependency files
-	files := []struct {
-		file      string
-		ecosystem string
-	}{
-		{"package-lock.json", "node"},
-		{"yarn.lock", "node"},
-		{"pnpm-lock.yaml", "node"},
-		{"bun.lockb", "node"},
-		{"poetry.lock", "python"},
-		{"requirements.txt", "python"},
-		{"pyproject.toml", "python"},
-		{"composer.lock", "php"},
-		{"Cargo.lock", "rust"},
-		{"go.mod", "go"},
-		{"pom.xml", "java"},
-		{"build.gradle", "java"},
-		{"build.gradle.kts", "java"},
-	}
-
-	for _, f := range files {
-		path := filepath.Join(dir, f.file)
-		if _, err := os.Stat(path); err == nil {
+	for _, f := range ecosystemFiles {
+		if _, err := os.Stat(filepath.Join(dir, f.file)); err == nil {
 			detected[f.ecosystem] = true
 		}
 	}
-
 	return detected
-}
-
-// ExtractForPackage extracts dependencies for a specific package.
-func ExtractForPackage(dir string, packageName string) (*DepGraph, error) {
-	graph, err := ExtractAll(dir)
-	if err != nil {
-		return nil, err
-	}
-
-	// Find the package node
-	nodes := graph.FindNodeByName(packageName)
-	if len(nodes) == 0 {
-		return nil, fmt.Errorf("package %s not found", packageName)
-	}
-
-	// Create a subgraph starting from this package
-	subgraph := NewGraph()
-	targetNode := nodes[0]
-	subgraph.AddNode(targetNode)
-	subgraph.AddRoot(targetNode.ID)
-
-	// Get all transitive dependencies
-	transitive := graph.GetTransitive(targetNode.ID)
-	for _, depID := range transitive {
-		if depNode := graph.GetNode(depID); depNode != nil {
-			subgraph.AddNode(depNode)
-		}
-	}
-
-	// Add edges for the subgraph
-	for _, edge := range graph.Edges {
-		if edge.From == targetNode.ID || contains(transitive, edge.From) {
-			if contains(transitive, edge.To) || edge.To == targetNode.ID {
-				subgraph.AddEdge(edge)
-			}
-		}
-	}
-
-	return subgraph, nil
-}
-
-func contains(slice []string, item string) bool {
-	for _, s := range slice {
-		if s == item {
-			return true
-		}
-	}
-	return false
 }

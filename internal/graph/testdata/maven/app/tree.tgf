@@ -1,0 +1,20 @@
+1306896155 com.example:demo:jar:0.0.1-SNAPSHOT
+1597655940 org.springframework.boot:spring-boot-starter-web:jar:3.3.0:compile
+2049051802 org.springframework:spring-web:jar:6.1.8:compile
+1427040229 org.springframework:spring-beans:jar:6.1.8:compile
+1720891078 org.springframework:spring-webmvc:jar:6.1.8:compile
+1374754432 com.fasterxml.jackson.core:jackson-databind:jar:2.17.1:compile
+1891502635 com.fasterxml.jackson.core:jackson-core:jar:2.17.1:compile
+557023567 io.netty:netty-transport-native-epoll:jar:linux-x86_64:4.1.110.Final:runtime
+1276504061 org.junit.jupiter:junit-jupiter-api:jar:5.10.2:test
+597190999 org.opentest4j:opentest4j:jar:1.3.0:test
+#
+1306896155 1597655940 compile
+1597655940 2049051802 compile
+2049051802 1427040229 compile
+1597655940 1720891078 compile
+1597655940 1374754432 compile
+1374754432 1891502635 compile
+1306896155 557023567 runtime
+1306896155 1276504061 test
+1276504061 597190999 test

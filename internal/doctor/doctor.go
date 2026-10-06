@@ -6,6 +6,8 @@ import (
 
 // Config holds configuration for the doctor command.
 type Config struct {
+	// Dir is the project directory to diagnose; "" means the current directory.
+	Dir           string
 	SkipEnv       bool
 	SkipSecurity  bool
 	SkipConflicts bool
@@ -27,10 +29,13 @@ type Report struct {
 func Run(cfg Config) Report {
 	report := Report{}
 
-	// Get current directory
-	cwd, err := os.Getwd()
-	if err != nil {
-		cwd = "."
+	dir := cfg.Dir
+	if dir == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			cwd = "."
+		}
+		dir = cwd
 	}
 
 	// Environment check
@@ -42,7 +47,7 @@ func Run(cfg Config) Report {
 	report.PackageManagers = CheckPackageManagers()
 
 	// Project file scan
-	report.Project = ScanProject(cwd)
+	report.Project = ScanProject(dir)
 
 	// Conflict detection
 	if !cfg.SkipConflicts {
@@ -51,12 +56,12 @@ func Run(cfg Config) Report {
 
 	// Drift detection
 	if !cfg.SkipDrift {
-		report.Drift = CheckDrift(cwd)
+		report.Drift = CheckDrift(dir)
 	}
 
 	// Security audit
 	if !cfg.SkipSecurity {
-		report.Security = RunSecurityAudit(report.Project, report.PackageManagers)
+		report.Security = RunSecurityAudit(dir, report.Project)
 	}
 
 	// Generate recommendations
@@ -173,35 +178,34 @@ func PrintRecommendations(recommendations []string) {
 
 // PrintSummary prints a summary of the diagnostic.
 func PrintSummary(report Report, cfg Config) {
-	var good, bad, warn int
+	good, bad, warn := summarize(report, cfg)
+	Summary(good, bad, warn)
+}
 
-	// Count environment results
+// summarize counts passed, failed and warning checks. A missing lockfile is
+// counted once, from the project scan (drift checks skip absent lockfiles).
+func summarize(report Report, cfg Config) (good, bad, warn int) {
 	if !cfg.SkipEnv {
 		installed, missing := CountEnvResults(report.Environment)
 		good += installed
 		bad += missing
 	}
 
-	// Count package manager results
-	pmInstalled, pmMissing, pmOptional := CountPMResults(report.PackageManagers)
+	// Missing package managers are not failures: not all are needed.
+	pmInstalled, _, pmOptional := CountPMResults(report.PackageManagers)
 	good += pmInstalled
-	// Don't count missing PMs as "bad" since not all are needed
-	_ = pmMissing
 	warn += pmOptional
 
-	// Count conflicts
 	if !cfg.SkipConflicts {
 		warn += CountConflicts(report.Conflicts)
 	}
 
-	// Count drift issues
 	if !cfg.SkipDrift {
-		ok, outdated, missing := CountDriftIssues(report.Drift)
+		ok, outdated, invalid := CountDriftIssues(report.Drift)
 		good += ok
-		bad += outdated + missing
+		bad += outdated + invalid
 	}
 
-	// Count security issues
 	if !cfg.SkipSecurity {
 		secOK, secVuln, secUnavail := CountSecurityIssues(report.Security)
 		good += secOK
@@ -209,10 +213,8 @@ func PrintSummary(report Report, cfg Config) {
 		warn += secUnavail
 	}
 
-	// Count missing lock files
 	bad += len(report.Project.MissingLockFiles)
-
-	Summary(good, bad, warn)
+	return good, bad, warn
 }
 
 // HasIssues checks if the report contains any issues.

@@ -1,165 +1,115 @@
 package workspace
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
-	"sync"
+	"path/filepath"
 
 	"github.com/crenspire/xpm/internal/pm"
 )
 
-// InstallWorkspaces installs dependencies across all projects in workspaces.
-func InstallWorkspaces(workspaces []Workspace, parallel bool) error {
-	if len(workspaces) == 0 {
-		return fmt.Errorf("no workspaces provided")
-	}
+// InstallOptions configures Install.
+type InstallOptions struct {
+	Parallel bool
+	Runner   Runner                            // nil = ExecRunner
+	LookPath func(file string) (string, error) // nil = exec.LookPath
+	Stdout   io.Writer                         // nil = os.Stdout
+	Stderr   io.Writer                         // nil = os.Stderr
+}
 
-	var allProjects []Project
+// Install installs the dependencies of every workspace, in order. A workspace
+// with a RootPM (npm/yarn/pnpm/bun, Cargo, Maven) is installed once at its
+// root; every other project is installed in its own directory. Nothing is
+// built. A project whose tool is not on PATH fails on its own; the others
+// still run, and all failures are returned joined.
+func Install(workspaces []Workspace, opts InstallOptions) error {
+	if opts.LookPath == nil {
+		opts.LookPath = exec.LookPath
+	}
+	stderr := opts.Stderr
+	if stderr == nil {
+		stderr = os.Stderr
+	}
+	var steps []step
 	for _, ws := range workspaces {
-		allProjects = append(allProjects, ws.Projects...)
-	}
-
-	if len(allProjects) == 0 {
-		return fmt.Errorf("no projects found in workspaces")
-	}
-
-	if parallel {
-		return installProjectsParallel(allProjects)
-	}
-
-	return installProjectsSequential(allProjects)
-}
-
-// installProjectsParallel installs dependencies in parallel.
-func installProjectsParallel(projects []Project) error {
-	var wg sync.WaitGroup
-	errors := make(chan error, len(projects))
-
-	for _, project := range projects {
-		wg.Add(1)
-		go func(p Project) {
-			defer wg.Done()
-			if err := installProject(p); err != nil {
-				errors <- fmt.Errorf("[%s] %v", p.Name, err)
+		if len(ws.Projects) == 0 {
+			continue
+		}
+		if ws.RootPM != "" {
+			label := ws.Ecosystem + " workspace"
+			cmd, ok := installCommand(ws.RootPM, ws.Root)
+			if !ok {
+				_, _ = fmt.Fprintf(stderr, "[%s] skipped: no install command for %s\n", label, ws.RootPM)
+				continue
 			}
-		}(project)
-	}
-
-	wg.Wait()
-	close(errors)
-
-	// Collect errors
-	var errs []error
-	for err := range errors {
-		errs = append(errs, err)
-	}
-
-	if len(errs) > 0 {
-		return fmt.Errorf("errors in %d projects: %v", len(errs), errs[0])
-	}
-
-	return nil
-}
-
-// installProjectsSequential installs dependencies sequentially.
-func installProjectsSequential(projects []Project) error {
-	for _, project := range projects {
-		if err := installProject(project); err != nil {
-			return fmt.Errorf("[%s] %v", project.Name, err)
+			steps = append(steps, checkTool(step{label: label, cmd: cmd}, opts.LookPath))
+			continue
 		}
-	}
-	return nil
-}
-
-// installProject installs dependencies for a single project.
-func installProject(project Project) error {
-	// Use detected PM or detect from lockfiles
-	pmID := project.PM
-	if pmID == "" {
-		lockFiles := pm.DetectLockFiles(project.Path)
-		// Try to determine PM from lockfiles
-		for _, pms := range lockFiles {
-			if len(pms) > 0 {
-				pmID = pms[0]
-				break
+		for _, p := range ws.Projects {
+			cmd, ok := installCommand(p.PM, p.Path)
+			if !ok {
+				_, _ = fmt.Fprintf(stderr, "[%s] skipped: nothing to install for %s\n", p.Name, p.PM)
+				continue
 			}
+			steps = append(steps, checkTool(step{label: p.Name, cmd: cmd}, opts.LookPath))
 		}
 	}
-
-	if pmID == "" {
-		// Try to infer from ecosystem
-		switch project.Ecosystem {
-		case "node":
-			pmID = pm.Npm
-		case "python":
-			pmID = pm.Pip
-		case "rust":
-			pmID = pm.Cargo
-		case "go":
-			pmID = pm.GoMod
-		case "java":
-			pmID = pm.Maven
-		case "php":
-			pmID = pm.Composer
-		default:
-			return fmt.Errorf("cannot determine package manager for ecosystem %s", project.Ecosystem)
-		}
+	if len(steps) == 0 {
+		return errors.New("no workspace projects to install")
 	}
+	return execute(context.Background(), steps, execOptions{
+		parallel: opts.Parallel, run: opts.Runner, stdout: opts.Stdout, stderr: stderr,
+	})
+}
 
-	meta, ok := pm.MetaFor(pmID)
-	if !ok {
-		return fmt.Errorf("unknown package manager: %s", pmID)
+// checkTool turns a step whose executable is not on PATH into a failed step.
+func checkTool(s step, lookPath func(string) (string, error)) step {
+	if _, err := lookPath(s.cmd.Name); err != nil {
+		s.err = fmt.Errorf("%s is not installed (needed for: %s)", s.cmd.Name, s.cmd)
 	}
+	return s
+}
 
-	if !pm.Exists(meta.Binary) {
-		return fmt.Errorf("package manager %s (%s) is not installed", meta.Name, meta.Binary)
+// installCommand returns the command that downloads id's dependencies for
+// the project or workspace root in dir without building anything. ok is
+// false when there is nothing to run (a pip project without
+// requirements.txt, or an unknown manager).
+func installCommand(id pm.ID, dir string) (cmd Command, ok bool) {
+	c := func(name string, args ...string) (Command, bool) {
+		return Command{Dir: dir, Name: name, Args: args}, true
 	}
-
-	// Change to project directory
-	originalDir, err := os.Getwd()
-	if err != nil {
-		return err
-	}
-	defer os.Chdir(originalDir)
-
-	if err := os.Chdir(project.Path); err != nil {
-		return fmt.Errorf("failed to change directory: %w", err)
-	}
-
-	fmt.Printf("[%s] Installing dependencies via %s...\n", project.Name, meta.Name)
-
-	// Run install command based on package manager
-	var installArgs []string
-	switch pmID {
+	switch id {
 	case pm.Npm, pm.Yarn, pm.Pnpm, pm.Bun:
-		installArgs = []string{"install"}
-	case pm.Pip, pm.Poetry, pm.Pipenv:
-		installArgs = []string{"install"}
+		meta, _ := pm.MetaFor(id)
+		return c(meta.Binary, "install")
+	case uvID:
+		return c("uv", "sync")
+	case pm.Poetry:
+		return c("poetry", "install")
+	case pm.Pipenv:
+		return c("pipenv", "install")
+	case pm.Pip:
+		if !isFile(filepath.Join(dir, "requirements.txt")) {
+			return Command{}, false
+		}
+		return c("pip", "install", "-r", "requirements.txt")
 	case pm.Composer:
-		installArgs = []string{"install"}
+		return c("composer", "install")
 	case pm.Cargo:
-		installArgs = []string{"build"} // Cargo doesn't have a separate install command
+		return c("cargo", "fetch")
 	case pm.GoMod:
-		installArgs = []string{"mod", "download"}
+		// GOWORK=off: download this module's own requirements even when a
+		// go.work encloses it.
+		cmd := Command{Dir: dir, Name: "go", Args: []string{"mod", "download"}, Env: []string{"GOWORK=off"}}
+		return cmd, true
 	case pm.Maven:
-		installArgs = []string{"install"}
+		return c("mvn", "-q", "dependency:resolve")
 	case pm.Gradle:
-		installArgs = []string{"build"}
-	default:
-		return fmt.Errorf("unsupported package manager: %s", pmID)
+		return c("gradle", "-q", "dependencies")
 	}
-
-	// Execute the install command
-	cmd := exec.Command(meta.Binary, installArgs...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Stdin = os.Stdin
-
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("installation failed: %w", err)
-	}
-
-	fmt.Printf("[%s] ✓ Installed\n", project.Name)
-	return nil
+	return Command{}, false
 }

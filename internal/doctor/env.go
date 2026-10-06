@@ -114,7 +114,7 @@ func checkRuntime(check RuntimeCheck) RuntimeInfo {
 
 // getVersion executes a command and extracts the version.
 func getVersion(binary string, args []string, versionRe *regexp.Regexp) (string, bool) {
-	path, err := exec.LookPath(binary)
+	path, err := lookPath(binary)
 	if err != nil {
 		return "", false
 	}

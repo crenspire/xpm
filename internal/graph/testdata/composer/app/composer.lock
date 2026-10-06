@@ -1,0 +1,173 @@
+{
+    "_readme": [
+        "This file locks the dependencies of your project to a known state",
+        "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
+        "This file is @generated automatically"
+    ],
+    "content-hash": "d2a57dc1d883fd21fb9951699df71cc7",
+    "packages": [
+        {
+            "name": "monolog/monolog",
+            "version": "3.6.0",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/monolog/monolog.git",
+                "reference": "79555596806112d49d2c7e1e0c08a83d6982d56b"
+            },
+            "require": {
+                "php": ">=8.1",
+                "psr/log": "^2.0 || ^3.0"
+            },
+            "type": "library",
+            "description": "Sends your logs to files, sockets, inboxes, databases and various web services"
+        },
+        {
+            "name": "psr/container",
+            "version": "2.0.2",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/psr/container.git",
+                "reference": "dddf3c132f208619c30a777bf98dd5c33dd38c65"
+            },
+            "require": {
+                "php": ">=7.4.0"
+            },
+            "type": "library",
+            "description": "Common Container Interface (PHP FIG PSR-11)"
+        },
+        {
+            "name": "psr/log",
+            "version": "3.0.0",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/psr/log.git",
+                "reference": "a2a8a513696aed23d46e1c619ccdf08fab87a7d8"
+            },
+            "require": {
+                "php": ">=8.0.0"
+            },
+            "type": "library",
+            "description": "Common interface for logging libraries"
+        },
+        {
+            "name": "symfony/console",
+            "version": "v7.1.1",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/symfony/console.git",
+                "reference": "e9f4ddefd8755b39a02f592aa8f6937ae72ce24e"
+            },
+            "require": {
+                "php": ">=8.2",
+                "symfony/deprecation-contracts": "^2.5|^3",
+                "symfony/polyfill-mbstring": "~1.0",
+                "symfony/service-contracts": "^2.5|^3",
+                "symfony/string": "^6.4|^7.0"
+            },
+            "type": "library",
+            "description": "Eases the creation of beautiful and testable command line interfaces"
+        },
+        {
+            "name": "symfony/deprecation-contracts",
+            "version": "v3.5.0",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/symfony/deprecation-contracts.git",
+                "reference": "a05a1fa0381f19c7ed2f411df4369f890aad6362"
+            },
+            "require": {
+                "php": ">=8.1"
+            },
+            "type": "library",
+            "description": "A generic function and convention to trigger deprecation notices"
+        },
+        {
+            "name": "symfony/polyfill-ctype",
+            "version": "v1.30.0",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/symfony/polyfill-ctype.git",
+                "reference": "1e6ef509740ea94aa66bf8f0c50c1f17186130ba"
+            },
+            "require": {
+                "php": ">=7.1"
+            },
+            "type": "library",
+            "description": "Symfony polyfill for ctype functions"
+        },
+        {
+            "name": "symfony/polyfill-mbstring",
+            "version": "v1.30.0",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/symfony/polyfill-mbstring.git",
+                "reference": "ab62b92f55ecdd0d04be8d70bc2269797e0c8f24"
+            },
+            "require": {
+                "php": ">=7.1"
+            },
+            "type": "library",
+            "description": "Symfony polyfill for the Mbstring extension"
+        },
+        {
+            "name": "symfony/service-contracts",
+            "version": "v3.5.0",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/symfony/service-contracts.git",
+                "reference": "eb731eafdfd5dbd0960ba4544a9bd0b24a416083"
+            },
+            "require": {
+                "php": ">=8.1",
+                "psr/container": "^1.1|^2.0",
+                "symfony/deprecation-contracts": "^2.5|^3"
+            },
+            "type": "library",
+            "description": "Generic abstractions related to writing services"
+        },
+        {
+            "name": "symfony/string",
+            "version": "v7.1.1",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/symfony/string.git",
+                "reference": "5c4a9491cb5d299f81f71dc1c0dbfd143598cd64"
+            },
+            "require": {
+                "php": ">=8.2",
+                "symfony/polyfill-ctype": "~1.8",
+                "symfony/polyfill-mbstring": "~1.0"
+            },
+            "type": "library",
+            "description": "Provides an object-oriented API to strings and deals with bytes, UTF-8 code points and grapheme clusters in a unified way"
+        }
+    ],
+    "packages-dev": [
+        {
+            "name": "symfony/var-dumper",
+            "version": "v7.1.1",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/symfony/var-dumper.git",
+                "reference": "2db4171fafbd124c469997bd28bed2621e8b540b"
+            },
+            "require": {
+                "php": ">=8.2",
+                "symfony/polyfill-mbstring": "~1.0"
+            },
+            "type": "library",
+            "description": "Provides mechanisms for walking through any arbitrary PHP variable"
+        }
+    ],
+    "aliases": [],
+    "minimum-stability": "stable",
+    "stability-flags": [],
+    "prefer-stable": false,
+    "prefer-lowest": false,
+    "platform": {
+        "php": "^8.2",
+        "ext-json": "*"
+    },
+    "platform-dev": [],
+    "plugin-api-version": "2.6.0"
+}

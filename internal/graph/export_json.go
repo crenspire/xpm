@@ -29,16 +29,17 @@ type JSONEdge struct {
 	Type string `json:"type"`
 }
 
-// ToJSON converts the graph to JSON format.
+// ToJSON converts the graph to indented JSON: nodes sorted by ID, edges by
+// (From, To), roots in graph order. Empty lists are [] (never null).
 func ToJSON(graph *DepGraph) ([]byte, error) {
 	jsonGraph := JSONGraph{
 		Nodes: make([]JSONNode, 0, len(graph.Nodes)),
 		Edges: make([]JSONEdge, 0, len(graph.Edges)),
-		Roots: graph.Root,
+		Roots: append([]string{}, graph.Root...),
 	}
 
-	// Convert nodes
-	for _, node := range graph.Nodes {
+	for _, id := range sortedKeys(graph.Nodes) {
+		node := graph.Nodes[id]
 		jsonNode := JSONNode{
 			ID:        node.ID,
 			Name:      node.Name,
@@ -52,8 +53,9 @@ func ToJSON(graph *DepGraph) ([]byte, error) {
 		jsonGraph.Nodes = append(jsonGraph.Nodes, jsonNode)
 	}
 
-	// Convert edges
-	for _, edge := range graph.Edges {
+	edges := append([]*DepEdge(nil), graph.Edges...)
+	SortEdges(edges)
+	for _, edge := range edges {
 		jsonGraph.Edges = append(jsonGraph.Edges, JSONEdge{
 			From: edge.From,
 			To:   edge.To,
@@ -64,14 +66,14 @@ func ToJSON(graph *DepGraph) ([]byte, error) {
 	return json.MarshalIndent(jsonGraph, "", "  ")
 }
 
-// WriteJSON writes the graph as JSON to the writer.
+// WriteJSON writes the graph as JSON, followed by a newline, to the writer.
 func WriteJSON(graph *DepGraph, w io.Writer) error {
 	data, err := ToJSON(graph)
 	if err != nil {
 		return fmt.Errorf("failed to marshal graph: %w", err)
 	}
 
-	_, err = w.Write(data)
+	_, err = w.Write(append(data, '\n'))
 	if err != nil {
 		return fmt.Errorf("failed to write JSON: %w", err)
 	}
