@@ -1,180 +1,77 @@
 package workspace
 
 import (
-	"bufio"
+	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
+
+	"golang.org/x/mod/modfile"
 
 	"github.com/crenspire/xpm/internal/pm"
 )
 
-// DetectGoWorkspace detects Go workspaces (go.work).
+// DetectGoWorkspace detects the modules listed by go.work "use" directives
+// (single-line and block forms). Without a go.work it falls back to the
+// go.mod files below root (not root itself), skipping vendor/, testdata/,
+// hidden directories and the other skipDir names.
 func DetectGoWorkspace(root string) (*Workspace, error) {
-	goWorkPath := filepath.Join(root, "go.work")
-	if _, err := os.Stat(goWorkPath); err != nil {
-		// Fallback: scan for directories with go.mod files
+	goWork := filepath.Join(root, "go.work")
+	data, err := os.ReadFile(goWork)
+	if err != nil {
 		return detectGoModules(root)
 	}
-
-	// Parse go.work file
-	file, err := os.Open(goWorkPath)
+	wf, err := modfile.ParseWork(goWork, data, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("go.work: %w", err)
 	}
-	defer file.Close()
-
 	var projects []Project
-	scanner := bufio.NewScanner(file)
-
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		// Look for "use ./path" directives
-		if strings.HasPrefix(line, "use ") {
-			path := strings.TrimPrefix(line, "use ")
-			path = strings.TrimSpace(path)
-			// Remove quotes if present
-			path = strings.Trim(path, `"`)
-			path = strings.Trim(path, "'")
-
-			// Resolve path relative to root
-			projectPath := filepath.Join(root, path)
-			if !filepath.IsAbs(path) {
-				projectPath = filepath.Join(root, path)
-			}
-
-			// Check if go.mod exists
-			goModPath := filepath.Join(projectPath, "go.mod")
-			if _, err := os.Stat(goModPath); err != nil {
-				continue
-			}
-
-			// Read go.mod to get module name
-			moduleName := readGoModuleName(goModPath)
-			if moduleName == "" {
-				moduleName = filepath.Base(projectPath)
-			}
-
-			// Check for go.sum
-			goSumPath := filepath.Join(projectPath, "go.sum")
-			lockfile := ""
-			if _, err := os.Stat(goSumPath); err == nil {
-				lockfile = goSumPath
-			}
-
-			projects = append(projects, Project{
-				Name:      moduleName,
-				Path:      projectPath,
-				Ecosystem: "go",
-				Manifest:  goModPath,
-				Lockfile:  lockfile,
-				PM:        pm.GoMod,
-			})
+	for _, use := range wf.Use {
+		dir := filepath.FromSlash(use.Path)
+		if !filepath.IsAbs(dir) {
+			dir = filepath.Join(root, dir)
+		}
+		if p, ok := goProject(dir); ok {
+			projects = append(projects, p)
 		}
 	}
-
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-
 	if len(projects) == 0 {
 		return nil, nil
 	}
-
-	return &Workspace{
-		Root:      root,
-		Projects:  projects,
-		Ecosystem: "go",
-	}, nil
+	return &Workspace{Root: root, Projects: projects, Ecosystem: "go"}, nil
 }
 
-// detectGoModules scans for directories with go.mod files (fallback).
+// detectGoModules finds go.mod files below root; nested modules inside a
+// found module are not separate projects.
 func detectGoModules(root string) (*Workspace, error) {
 	var projects []Project
-
-	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil
+	walkDirs(root, func(dir string) bool {
+		p, ok := goProject(dir)
+		if ok {
+			projects = append(projects, p)
 		}
-
-		// Skip root
-		if path == root {
-			return nil
-		}
-
-		// Only check directories
-		if !info.IsDir() {
-			return nil
-		}
-
-		// Check for go.mod
-		goModPath := filepath.Join(path, "go.mod")
-		if _, err := os.Stat(goModPath); err != nil {
-			return nil
-		}
-
-		// Skip if already in projects (parent directory)
-		for _, p := range projects {
-			if strings.HasPrefix(path, p.Path+string(filepath.Separator)) {
-				return filepath.SkipDir
-			}
-		}
-
-		moduleName := readGoModuleName(goModPath)
-		if moduleName == "" {
-			moduleName = filepath.Base(path)
-		}
-
-		goSumPath := filepath.Join(path, "go.sum")
-		lockfile := ""
-		if _, err := os.Stat(goSumPath); err == nil {
-			lockfile = goSumPath
-		}
-
-		projects = append(projects, Project{
-			Name:      moduleName,
-			Path:      path,
-			Ecosystem: "go",
-			Manifest:  goModPath,
-			Lockfile:  lockfile,
-			PM:        pm.GoMod,
-		})
-
-		return filepath.SkipDir // Don't recurse into subdirectories
+		return ok
 	})
-
-	if err != nil {
-		return nil, err
-	}
-
 	if len(projects) == 0 {
 		return nil, nil
 	}
-
-	return &Workspace{
-		Root:      root,
-		Projects:  projects,
-		Ecosystem: "go",
-	}, nil
+	return &Workspace{Root: root, Projects: projects, Ecosystem: "go"}, nil
 }
 
-// readGoModuleName reads the module name from go.mod.
-func readGoModuleName(goModPath string) string {
-	file, err := os.Open(goModPath)
+// goProject describes the module in dir, named by its go.mod module path.
+func goProject(dir string) (Project, bool) {
+	manifest := filepath.Join(dir, "go.mod")
+	data, err := os.ReadFile(manifest)
 	if err != nil {
-		return ""
+		return Project{}, false
 	}
-	defer file.Close()
-
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if strings.HasPrefix(line, "module ") {
-			moduleName := strings.TrimPrefix(line, "module ")
-			moduleName = strings.TrimSpace(moduleName)
-			return moduleName
-		}
+	name := modfile.ModulePath(data)
+	if name == "" {
+		name = filepath.Base(dir)
 	}
-
-	return ""
+	lockfile := ""
+	if p := filepath.Join(dir, "go.sum"); isFile(p) {
+		lockfile = p
+	}
+	return Project{Name: name, Path: filepath.Clean(dir), Ecosystem: "go",
+		Manifest: manifest, Lockfile: lockfile, PM: pm.GoMod}, true
 }

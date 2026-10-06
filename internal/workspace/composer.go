@@ -8,143 +8,93 @@ import (
 	"github.com/crenspire/xpm/internal/pm"
 )
 
-// DetectComposerWorkspace detects PHP Composer multi-package layouts.
+// DetectComposerWorkspace detects PHP packages: "path" repositories in the
+// root composer.json (their url may be a glob, as Composer allows) and
+// composer.json projects in packages/*, modules/*, src/*.
 func DetectComposerWorkspace(root string) (*Workspace, error) {
 	var projects []Project
-
-	// Strategy 1: Check root composer.json for repositories with local paths
-	rootComposerPath := filepath.Join(root, "composer.json")
-	if _, err := os.Stat(rootComposerPath); err == nil {
-		if localProjects := detectComposerRepositories(root, rootComposerPath); len(localProjects) > 0 {
-			projects = append(projects, localProjects...)
+	add := func(dir string) {
+		if p := createComposerProject(dir, filepath.Join(dir, "composer.json")); p != nil {
+			projects = append(projects, *p)
 		}
 	}
-
-	// Strategy 2: Scan for common patterns
-	patterns := []string{
-		"packages/*/composer.json",
-		"modules/*/composer.json",
-		"src/*/composer.json",
+	for _, dir := range composerPathRepos(root) {
+		add(dir)
 	}
-
-	for _, pattern := range patterns {
-		globPattern := filepath.Join(root, pattern)
-		matches, err := filepath.Glob(globPattern)
-		if err != nil {
-			continue
-		}
-
-		for _, match := range matches {
-			projectDir := filepath.Dir(match)
-			if isComposerProjectInList(projects, projectDir) {
-				continue
-			}
-
-			project := createComposerProject(projectDir, match)
-			if project != nil {
-				projects = append(projects, *project)
-			}
-		}
+	for _, dir := range expandGlobs(root, []string{"packages/*", "modules/*", "src/*"}) {
+		add(dir)
 	}
-
 	if len(projects) == 0 {
 		return nil, nil
 	}
-
-	return &Workspace{
-		Root:      root,
-		Projects:  projects,
-		Ecosystem: "php",
-	}, nil
+	return &Workspace{Root: root, Projects: projects, Ecosystem: "php"}, nil
 }
 
-// detectComposerRepositories detects local repositories in composer.json.
-func detectComposerRepositories(root, composerPath string) []Project {
-	var projects []Project
-
-	data, err := os.ReadFile(composerPath)
+// composerPathRepos returns the directories named by the root composer.json's
+// {"type": "path", "url": ...} repositories.
+func composerPathRepos(root string) []string {
+	data, err := os.ReadFile(filepath.Join(root, "composer.json"))
 	if err != nil {
 		return nil
 	}
-
-	var config struct {
-		Repositories []struct {
-			Type    string                 `json:"type"`
-			URL     string                 `json:"url"`
-			Path    string                 `json:"path"`
-			Options map[string]interface{} `json:"options"`
-		} `json:"repositories"`
+	var cfg struct {
+		Repositories json.RawMessage `json:"repositories"`
 	}
-
-	if err := json.Unmarshal(data, &config); err != nil {
+	if json.Unmarshal(data, &cfg) != nil || len(cfg.Repositories) == 0 {
 		return nil
 	}
-
-	for _, repo := range config.Repositories {
-		// Check for path-based repositories
-		var repoPath string
-		if repo.Path != "" {
-			repoPath = repo.Path
-		} else if repo.Type == "path" && repo.URL != "" {
-			repoPath = repo.URL
-		} else if repo.Options != nil {
-			if path, ok := repo.Options["path"].(string); ok {
-				repoPath = path
-			}
+	type repo struct {
+		Type string `json:"type"`
+		URL  string `json:"url"`
+	}
+	// "repositories" is a list or an object keyed by name.
+	var list []repo
+	if json.Unmarshal(cfg.Repositories, &list) != nil {
+		var byName map[string]repo
+		if json.Unmarshal(cfg.Repositories, &byName) != nil {
+			return nil
 		}
-
-		if repoPath == "" {
-			continue
-		}
-
-		// Resolve path relative to root
-		projectPath := filepath.Join(root, repoPath)
-		if !filepath.IsAbs(repoPath) {
-			projectPath = filepath.Join(root, repoPath)
-		}
-
-		composerJSONPath := filepath.Join(projectPath, "composer.json")
-		if _, err := os.Stat(composerJSONPath); err != nil {
-			continue
-		}
-
-		project := createComposerProject(projectPath, composerJSONPath)
-		if project != nil {
-			projects = append(projects, *project)
+		for _, r := range byName {
+			list = append(list, r)
 		}
 	}
-
-	return projects
+	var dirs []string
+	for _, r := range list {
+		if r.Type != "path" || r.URL == "" {
+			continue
+		}
+		if filepath.IsAbs(r.URL) {
+			if isDir(r.URL) {
+				dirs = append(dirs, filepath.Clean(r.URL))
+			}
+			continue
+		}
+		dirs = append(dirs, expandGlobs(root, []string{r.URL})...)
+	}
+	return dirs
 }
 
-// createComposerProject creates a Project from a Composer project directory.
+// createComposerProject creates a Project from a composer.json, or returns
+// nil when there is none or it does not parse.
 func createComposerProject(projectDir, composerJSONPath string) *Project {
-	// Read composer.json to get package name
 	data, err := os.ReadFile(composerJSONPath)
 	if err != nil {
 		return nil
 	}
-
-	var config struct {
+	var cfg struct {
 		Name string `json:"name"`
 	}
-
-	if err := json.Unmarshal(data, &config); err != nil {
+	if err := json.Unmarshal(data, &cfg); err != nil {
 		return nil
 	}
-
-	name := config.Name
+	name := cfg.Name
 	if name == "" {
 		name = filepath.Base(projectDir)
 	}
-
-	// Check for composer.lock
-	composerLockPath := filepath.Join(projectDir, "composer.lock")
 	lockfile := ""
-	if _, err := os.Stat(composerLockPath); err == nil {
-		lockfile = composerLockPath
+	if p := filepath.Join(projectDir, "composer.lock"); isFile(p) {
+		lockfile = p
 	}
-
 	return &Project{
 		Name:      name,
 		Path:      projectDir,
@@ -153,14 +103,4 @@ func createComposerProject(projectDir, composerJSONPath string) *Project {
 		Lockfile:  lockfile,
 		PM:        pm.Composer,
 	}
-}
-
-// isComposerProjectInList checks if a project path is already in the list.
-func isComposerProjectInList(projects []Project, path string) bool {
-	for _, p := range projects {
-		if p.Path == path {
-			return true
-		}
-	}
-	return false
 }
