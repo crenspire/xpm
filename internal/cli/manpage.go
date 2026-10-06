@@ -81,7 +81,7 @@ func getManPageData(command string) manPageData {
 	data := manPageData{
 		Command: command,
 		Date:    "2024",
-		Version: Version,
+		Version: versionString(),
 	}
 
 	switch command {

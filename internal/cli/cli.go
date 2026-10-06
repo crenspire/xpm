@@ -9,6 +9,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"runtime/debug"
 	"strings"
 
 	"github.com/manifoldco/promptui"
@@ -25,6 +26,28 @@ import (
 //
 //	go build -ldflags "-X github.com/crenspire/xpm/internal/cli.Version=1.0.0"
 var Version = "0.0.1"
+
+// defaultVersion is Version's value when no -ldflags -X override is given.
+const defaultVersion = "0.0.1"
+
+// readBuildInfo is a seam for tests.
+var readBuildInfo = debug.ReadBuildInfo
+
+// versionString returns the version to report. A Version set by -ldflags
+// wins; otherwise the main module version recorded by the Go toolchain is
+// used (so `go install github.com/crenspire/xpm/cmd/xpm@v0.1.0` reports
+// 0.1.0), falling back to Version for local "(devel)" builds.
+func versionString() string {
+	if Version != defaultVersion {
+		return Version
+	}
+	if info, ok := readBuildInfo(); ok && info != nil {
+		if v := info.Main.Version; v != "" && v != "(devel)" {
+			return strings.TrimPrefix(v, "v")
+		}
+	}
+	return Version
+}
 
 // cfg holds the loaded configuration.
 var cfg config.Config
@@ -60,7 +83,7 @@ func printBanner() {
 	fmt.Printf("     Cross-ecosystem package manager")
 	fmt.Printf("%s\n", colorReset)
 	fmt.Printf("%s%s", colorGreen, colorBold)
-	fmt.Printf("              v%s\n", Version)
+	fmt.Printf("              v%s\n", versionString())
 	fmt.Print(colorReset)
 	fmt.Println()
 }
