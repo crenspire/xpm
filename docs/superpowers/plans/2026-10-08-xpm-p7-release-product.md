@@ -371,3 +371,8 @@ lodash@4.17.21 (node)
 - Spec coverage: goreleaser multi-arch + checksums + SBOM + cosign (guarded) + tap (configured, off) → Task 9; install.sh with checksum → Task 9; completions → Task 2; outdated → Tasks 3–5; audit → Tasks 4, 6, 7; add/rm → deferred (ruling); why → Task 8; install --workspace → Task 1; docs → Task 10.
 - The completion map is extended by Tasks 5, 7, 8; `TestCompletionFlagsKeysAreCommands` keeps it honest.
 - Tasks 5, 7, 8 each add a `commandTable` row, help, man page and dispatch; existing man tests enforce consistency.
+
+## Addendum (controller update, 2026-10-08)
+
+- Task 9 also adds a CI job to `.github/workflows/ci.yml`: `env-smoke`, matrix ubuntu-latest + macos-latest (not Windows), `timeout-minutes: 10`, `continue-on-error: false`: builds xpm (`go build -o "$RUNNER_TEMP/bin/xpm" ./cmd/xpm`), sets `HOME` to a fresh temp dir, runs `xpm env install node@20`, prepends `$HOME/.xpm/env/shims` to PATH and runs `node -v` (must print `v20.`), and `xpm env current`.
+- Task 10 records the measured shim overhead (5.1–5.6 ms vs the < 5 ms budget) in the roadmap budget table and README performance notes instead of adding a dedicated shim binary.
