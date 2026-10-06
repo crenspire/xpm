@@ -123,7 +123,14 @@ func cmdEnvInstall(m *env.Manager, args []string) int {
 	}
 	ctx, stop := interruptible()
 	defer stop()
-	if _, err := env.InstallRuntime(ctx, m, rt, spec); err != nil {
+	go func() { <-ctx.Done(); stop() }() // a second Ctrl-C kills the process
+	_, err = env.InstallRuntime(ctx, m, rt, spec)
+	var post *env.PostInstallError
+	if errors.As(err, &post) { // the version is installed; only recording it failed
+		fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+		err = nil
+	}
+	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			fmt.Fprintln(os.Stderr, "Cancelled; nothing was installed.")
 			return 130

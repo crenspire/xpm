@@ -136,6 +136,26 @@ func TestEnvInstallCancelledExits130(t *testing.T) {
 	}
 }
 
+func TestEnvInstallGlobalDefaultFailureIsAWarning(t *testing.T) {
+	_, root := envTest(t)
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "active.json"), []byte("{bad"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var code int
+	errOut := captureStderr(t, func() {
+		_ = captureStdout(t, func() { code = cmdEnv([]string{"install", "xpmclifake@1.0.0"}) })
+	})
+	if code != 0 || !strings.Contains(errOut, "warning: ") || !strings.Contains(errOut, "active.json") {
+		t.Fatalf("exit %d, stderr %q", code, errOut)
+	}
+	if _, err := os.Readlink(filepath.Join(root, "shims", "clifakebin")); err != nil {
+		t.Fatalf("not reshimmed: %v", err)
+	}
+}
+
 func TestEnvCurrentListsSortedWithSourceAndWarns(t *testing.T) {
 	proj, _ := envTest(t)
 	_ = captureStdout(t, func() { cmdEnv([]string{"install", "xpmclifake@1.0.0"}) })
