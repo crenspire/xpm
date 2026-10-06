@@ -488,14 +488,20 @@ func cmdInstall(args []string) int {
 
 	searchOpts := search.OptionsFromConfig(cfg)
 
-	results, err := search.SearchEverywhere(pkg, searchOpts)
+	rep, err := lookupReport(pkg, searchOpts)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "search error:", err)
 		return 1
 	}
+	results := rep.Results
 	if len(results) == 0 {
 		fmt.Println("No matches found for", pkg)
-		return 0
+		fmt.Print(formatAvailability(classify(rep, searchOpts)))
+		return 1
+	}
+	if st := classify(rep, searchOpts); len(st.Unavailable) > 0 {
+		fmt.Print(formatAvailability(registryStatus{Unavailable: st.Unavailable}))
+		fmt.Println()
 	}
 
 	// Detect lock files to influence package manager selection
@@ -504,11 +510,6 @@ func cmdInstall(args []string) int {
 
 	// Filter and enhance results based on lock file detection
 	results, autoSelected := filterResultsByLockFiles(results, lockFiles)
-
-	if len(results) == 0 {
-		fmt.Println("No matches found for", pkg)
-		return 0
-	}
 
 	order := preferOrderMap(cfg.Prefer)
 	sort.Slice(results, func(i, j int) bool {
@@ -674,39 +675,22 @@ func cmdWhich(args []string) int {
 	fmt.Printf("Searching for %q...\n\n", pkg)
 
 	searchOpts := search.OptionsFromConfig(cfg)
-
-	results, err := search.SearchEverywhere(pkg, searchOpts)
+	rep, err := lookupReport(pkg, searchOpts)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "search error:", err)
 		return 1
 	}
-	if len(results) == 0 {
-		fmt.Println("No matches found.")
-		return 0
-	}
-
-	foundBy := map[pm.ID]search.Result{}
-	for _, r := range results {
-		foundBy[r.Manager] = r
+	st := classify(rep, searchOpts)
+	if len(rep.Results) == 0 {
+		fmt.Printf("No matches found for %s.\n", pkg)
+		fmt.Print(formatAvailability(st))
+		return 1
 	}
 
 	fmt.Println("Found in:")
-	keys := make([]string, 0, len(foundBy))
-	for id := range foundBy {
-		keys = append(keys, string(id))
-	}
-	sort.Strings(keys)
-
-	// Check if npm was found (yarn/pnpm/bun share the same registry)
-	_, npmFound := foundBy[pm.Npm]
-	// Check if pip was found (poetry/pipenv use the same PyPI registry)
-	_, pipFound := foundBy[pm.Pip]
-
-	for _, k := range keys {
-		id := pm.ID(k)
-		r := foundBy[id]
-		line := fmt.Sprintf("- %s: %s", k, r.Name)
-		if v, ok := r.Extra["version"]; ok && v != "" {
+	for _, r := range rep.Results {
+		line := fmt.Sprintf("- %s: %s", r.Manager, r.Name)
+		if v := r.Extra["version"]; v != "" {
 			line += " @" + v
 		}
 		if r.Info != "" {
@@ -714,47 +698,20 @@ func cmdWhich(args []string) int {
 		}
 		fmt.Println(line)
 
-		switch id {
+		switch r.Manager {
 		case pm.Npm:
 			fmt.Println("  → Also available via: yarn, pnpm, bun")
 		case pm.Pip:
 			fmt.Println("  → Also available via: poetry, pipenv")
 		case pm.Maven:
-			fmt.Println("  → Add to pom.xml as dependency.")
+			fmt.Println("  → Add to pom.xml or build.gradle as a dependency.")
 		case pm.Cargo:
 			fmt.Println("  → Add to Cargo.toml under [dependencies].")
 		case pm.Composer:
 			fmt.Println("  → Add to composer.json or run `composer require ...`.")
 		}
 	}
-
-	// Collect registries where not found (excluding yarn/pnpm/bun if npm was found, poetry/pipenv if pip was found)
-	var notFound []string
-	for _, meta := range pm.AllMetas() {
-		if _, ok := foundBy[meta.ID]; !ok {
-			// Skip yarn/pnpm/bun if npm was found (they share the same registry)
-			if npmFound && (meta.ID == pm.Yarn || meta.ID == pm.Pnpm || meta.ID == pm.Bun) {
-				continue
-			}
-			// Skip poetry/pipenv if pip was found (they use the same PyPI registry)
-			if pipFound && (meta.ID == pm.Poetry || meta.ID == pm.Pipenv) {
-				continue
-			}
-			// Only show ecosystems that were actually searched
-			if search.Enabled(searchOpts, meta.ID) {
-				notFound = append(notFound, meta.Name)
-			}
-		}
-	}
-
-	if len(notFound) > 0 {
-		fmt.Println()
-		fmt.Println("Not found in:")
-		for _, name := range notFound {
-			fmt.Println("-", name)
-		}
-	}
-
+	fmt.Print(formatAvailability(st))
 	return 0
 }
 

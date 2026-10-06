@@ -12,9 +12,8 @@ import (
 // cmdSearch handles the search command.
 func cmdSearch(args []string) int {
 
-	// Check if TUI is enabled
-	if !cfg.SearchUI.Enabled {
-		// Fallback to non-interactive search
+	// The TUI needs a terminal; pipes and CI get plain output.
+	if !cfg.SearchUI.Enabled || !stdoutIsTerminal() {
 		return cmdSearchNonInteractive(args)
 	}
 
@@ -55,15 +54,17 @@ func cmdSearchNonInteractive(args []string) int {
 
 	searchOpts := search.OptionsFromConfig(cfg)
 
-	results, err := search.SearchEverywhereParallel(pkg, searchOpts)
+	rep, err := searchReport(pkg, searchOpts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return 1
 	}
-
+	results := rep.Results
+	st := classify(rep, searchOpts)
 	if len(results) == 0 {
 		fmt.Println("No results found.")
-		return 0
+		fmt.Print(formatAvailability(st))
+		return 1
 	}
 
 	// Print results
@@ -87,6 +88,7 @@ func cmdSearchNonInteractive(args []string) int {
 		fmt.Printf("%s: %s%s - %s\n", ecosystemName, result.Name, version, description)
 	}
 
+	fmt.Print(formatAvailability(registryStatus{Unavailable: st.Unavailable}))
 	return 0
 }
 

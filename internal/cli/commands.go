@@ -329,15 +329,17 @@ func cmdInfo(args []string) int {
 
 	searchOpts := search.OptionsFromConfig(cfg)
 
-	results, err := search.SearchEverywhere(pkg, searchOpts)
+	rep, err := lookupReport(pkg, searchOpts)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "search error:", err)
 		return 1
 	}
-
+	results := rep.Results
+	st := classify(rep, searchOpts)
 	if len(results) == 0 {
 		fmt.Printf("No package found matching %q\n", pkg)
-		return 0
+		fmt.Print(formatAvailability(st))
+		return 1
 	}
 
 	fmt.Printf("Package: %s\n", pkg)
@@ -377,6 +379,7 @@ func cmdInfo(args []string) int {
 		}
 	}
 
+	fmt.Print(formatAvailability(registryStatus{Unavailable: st.Unavailable}))
 	fmt.Println()
 	return 0
 }
