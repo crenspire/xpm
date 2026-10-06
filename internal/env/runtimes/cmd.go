@@ -15,3 +15,11 @@ var runCmd = func(ctx context.Context, name string, args, extraEnv []string) err
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }
+
+// cmdOutput runs a helper tool and returns its stdout (brew --prefix).
+var cmdOutput = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, name, args...).Output()
+}
+
+// lookPath finds helper tools on PATH.
+var lookPath = exec.LookPath
