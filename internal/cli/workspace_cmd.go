@@ -3,10 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
-	"strconv"
 
-	"github.com/crenspire/xpm/internal/config"
-	"github.com/crenspire/xpm/internal/graph"
 	"github.com/crenspire/xpm/internal/workspace"
 )
 
@@ -92,92 +89,5 @@ func cmdRunWorkspace(task string) int {
 		return 1
 	}
 	fmt.Println("\n✓ All workspace tasks completed")
-	return 0
-}
-
-// cmdGraphWorkspace generates a combined dependency graph for all workspace projects.
-func cmdGraphWorkspace(jsonFlag, svgFlag bool, depthFlag string, rest []string) int {
-	cwd, err := os.Getwd()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		return 1
-	}
-
-	workspaces, err := workspace.DetectWorkspaces(cwd)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error detecting workspaces: %v\n", err)
-		return 1
-	}
-
-	if len(workspaces) == 0 {
-		fmt.Println("No workspaces detected.")
-		return 1
-	}
-
-	// Extract graphs from all projects
-	var allGraphs []*graph.DepGraph
-	for _, ws := range workspaces {
-		for _, project := range ws.Projects {
-			// Extract graph for this project
-			g, err := graph.ExtractAll(project.Path, graph.ExtractOptions{Warn: func(msg string) { fmt.Fprintln(os.Stderr, "warning:", msg) }})
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "warning: failed to extract graph for %s: %v\n", project.Name, err)
-				continue
-			}
-			if g != nil {
-				allGraphs = append(allGraphs, g)
-			}
-		}
-	}
-
-	if len(allGraphs) == 0 {
-		fmt.Println("No dependency graphs found in workspaces.")
-		return 1
-	}
-
-	// Merge all graphs
-	merged := allGraphs[0]
-	for i := 1; i < len(allGraphs); i++ {
-		merged.Merge(allGraphs[i])
-	}
-
-	// Normalize merged graph
-	merged.Normalize()
-
-	// Load config
-	cfg := config.Load()
-
-	// Parse depth
-	maxDepth := cfg.Graph.Depth
-	if depthFlag != "" {
-		if d, err := strconv.Atoi(depthFlag); err == nil {
-			maxDepth = d
-		}
-	}
-
-	// Detect warnings
-	warnings := graph.DetectWarnings(merged)
-
-	// Output based on flags
-	if jsonFlag {
-		if err := graph.WriteJSON(merged, os.Stdout); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			return 1
-		}
-	} else if svgFlag {
-		if err := graph.WriteSVG(merged, os.Stdout); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			return 1
-		}
-	} else {
-		// Default: tree output
-		graph.PrintTree(merged, os.Stdout, graph.TreeOptions{ShowVersions: cfg.Graph.ShowVersions, ShowEcosystem: cfg.Graph.ShowEcosystem, MaxDepth: maxDepth})
-	}
-
-	// Print warnings
-	if len(warnings) > 0 {
-		graph.PrintWarnings(warnings, os.Stdout)
-	}
-
 	return 0
 }
