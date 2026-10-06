@@ -23,32 +23,39 @@ func (g *GoInstaller) Name() string {
 	return "go"
 }
 
-// ListRemote fetches available Go versions.
+// ListRemote fetches available stable Go versions (newest first).
 func (g *GoInstaller) ListRemote() ([]string, error) {
-	resp, err := downloadClient.Get(goDLURL + "/?mode=json&include=all")
+	data, err := fetchSmall(goDLURL + "/?mode=json&include=all")
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	return stableGoVersions(data)
+}
 
+// stableGoVersions parses the go.dev release feed and returns the stable
+// versions (without the "go" prefix) in feed order, de-duplicated. Betas and
+// release candidates are skipped.
+func stableGoVersions(releasesJSON []byte) ([]string, error) {
 	var releases []struct {
 		Version string `json:"version"`
+		Stable  bool   `json:"stable"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&releases); err != nil {
+	if err := json.Unmarshal(releasesJSON, &releases); err != nil {
 		return nil, err
 	}
 
 	var versions []string
 	seen := make(map[string]bool)
 	for _, release := range releases {
-		// Remove 'go' prefix
+		if !release.Stable {
+			continue
+		}
 		version := strings.TrimPrefix(release.Version, "go")
 		if !seen[version] {
 			versions = append(versions, version)
 			seen[version] = true
 		}
 	}
-
 	return versions, nil
 }
 
@@ -105,11 +112,7 @@ func (g *GoInstaller) Install(version string, dest string) error {
 	}
 
 	filename := fmt.Sprintf("go%s.%s-%s.tar.gz", version, goos, arch)
-	meta, err := fetchSmall(goDLURL + "/?mode=json&include=all")
-	if err != nil {
-		return fmt.Errorf("fetch Go release list: %w", err)
-	}
-	want, err := goChecksum(meta, filename)
+	want, err := goReleaseChecksum(filename)
 	if err != nil {
 		return err
 	}
@@ -148,4 +151,25 @@ func (g *GoInstaller) PostInstall(version, dest string) error {
 // BinaryPaths returns the paths to Go binaries.
 func (g *GoInstaller) BinaryPaths(version, dest string) []string {
 	return []string{"bin/go"}
+}
+
+// goReleaseChecksum looks the archive up in the small current-releases feed
+// first and only falls back to the full (include=all) feed when absent.
+// It fails closed: no checksum means an error.
+func goReleaseChecksum(filename string) (string, error) {
+	var lastErr error
+	for _, u := range []string{goDLURL + "/?mode=json", goDLURL + "/?mode=json&include=all"} {
+		meta, err := fetchSmall(u)
+		if err != nil {
+			lastErr = fmt.Errorf("fetch Go release list: %w", err)
+			continue
+		}
+		want, err := goChecksum(meta, filename)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		return want, nil
+	}
+	return "", lastErr
 }
