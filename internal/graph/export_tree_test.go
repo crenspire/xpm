@@ -88,6 +88,52 @@ func TestPrintTreeGolden(t *testing.T) {
 `,
 		},
 		{
+			name: "subtree cut deep is expanded again where it is shallower",
+			g:    treeGraph([]string{"app"}, "app>a", "a>x", "x>y", "y>z", "app>x"),
+			opts: TreeOptions{MaxDepth: 3},
+			want: `app
+├─ a
+│  └─ x
+│     └─ y
+└─ x
+   └─ y
+      └─ z
+`,
+		},
+		{
+			name: "subtree printed as deep as needed is marked",
+			g:    treeGraph([]string{"app"}, "app>x", "app>y", "x>p", "y>x", "p>q"),
+			opts: TreeOptions{MaxDepth: 3},
+			want: `app
+├─ x
+│  └─ p
+│     └─ q
+└─ y
+   └─ x (*)
+`,
+		},
+		{
+			name: "cycle cut by depth before it closes",
+			g:    treeGraph([]string{"app"}, "app>a", "a>b", "b>a"),
+			opts: TreeOptions{MaxDepth: 2},
+			want: `app
+└─ a
+   └─ b
+`,
+		},
+		{
+			name: "cycle within depth",
+			g:    treeGraph([]string{"app"}, "app>a", "a>b", "b>a", "app>b"),
+			opts: TreeOptions{MaxDepth: 3},
+			want: `app
+├─ a
+│  └─ b
+│     └─ a (cycle)
+└─ b
+   └─ a (*)
+`,
+		},
+		{
 			name: "multiple roots in root order",
 			g:    treeGraph([]string{"web", "api"}, "web>shared", "api>shared", "shared>leaf"),
 			opts: TreeOptions{ShowVersions: true, ShowEcosystem: true},

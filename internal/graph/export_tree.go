@@ -20,13 +20,16 @@ const (
 )
 
 // PrintTree prints the dependency tree of every root, in root order, with
-// children sorted by ID. A node whose subtree was already printed is shown
-// once more with " (*)" and not expanded again, so shared dependencies
-// (diamonds) print in O(nodes + edges) lines; a dependency that leads back to
-// one of its ancestors is shown with " (cycle)". If the graph has no roots,
-// nodes without parents are used as roots.
+// children sorted by ID. A node whose subtree was already printed at least
+// as deep as it could be printed here is shown once more with " (*)" and not
+// expanded again, so shared dependencies (diamonds) print in O(nodes + edges)
+// lines without a depth limit and O(nodes * MaxDepth) with one. A node first
+// met deep (and cut off by MaxDepth) is expanded again where it appears with
+// more depth left. A dependency that leads back to one of its ancestors is
+// shown with " (cycle)". If the graph has no roots, nodes without parents
+// are used as roots.
 func PrintTree(g *DepGraph, w io.Writer, opts TreeOptions) {
-	p := treePrinter{g: g, opts: opts, expanded: map[string]bool{}, onPath: map[string]bool{}}
+	p := treePrinter{g: g, opts: opts, expanded: map[string]int{}, onPath: map[string]bool{}}
 	for _, id := range treeRoots(g) {
 		p.visit(id, "", "", 0)
 	}
@@ -58,7 +61,7 @@ type treePrinter struct {
 	g        *DepGraph
 	opts     TreeOptions
 	sb       strings.Builder
-	expanded map[string]bool // children already printed somewhere above
+	expanded map[string]int  // levels below the node already printed above
 	onPath   map[string]bool // ancestors of the node being printed
 }
 
@@ -66,11 +69,13 @@ type treePrinter struct {
 // with prefix childPrefix-extended; depth is 0 for roots.
 func (p *treePrinter) visit(id, prefix, connector string, depth int) {
 	children := p.children(id)
+	remaining := p.remaining(depth)
+	printed, wasExpanded := p.expanded[id]
 	marker := ""
 	switch {
 	case p.onPath[id]:
 		marker = treeCycleMarker
-	case p.expanded[id] && len(children) > 0:
+	case remaining > 0 && wasExpanded && printed >= remaining && len(children) > 0:
 		marker = treeSeenMarker
 	}
 	p.sb.WriteString(prefix)
@@ -78,11 +83,13 @@ func (p *treePrinter) visit(id, prefix, connector string, depth int) {
 	p.sb.WriteString(formatNodeLabel(p.g.Nodes[id], p.opts.ShowVersions, p.opts.ShowEcosystem))
 	p.sb.WriteString(marker)
 	p.sb.WriteByte('\n')
-	if marker != "" || (p.opts.MaxDepth > 0 && depth >= p.opts.MaxDepth) {
+	if marker != "" || remaining == 0 {
 		return
 	}
 
-	p.expanded[id] = true
+	if remaining > printed {
+		p.expanded[id] = remaining
+	}
 	p.onPath[id] = true
 	childPrefix := prefix
 	switch connector {
@@ -99,6 +106,20 @@ func (p *treePrinter) visit(id, prefix, connector string, depth int) {
 		p.visit(child, childPrefix, conn, depth+1)
 	}
 	p.onPath[id] = false
+}
+
+// treeUnlimited is the remaining depth when MaxDepth is 0 (no limit).
+const treeUnlimited = int(^uint(0) >> 1)
+
+// remaining returns how many levels below a node at depth may be printed.
+func (p *treePrinter) remaining(depth int) int {
+	if p.opts.MaxDepth <= 0 {
+		return treeUnlimited
+	}
+	if depth >= p.opts.MaxDepth {
+		return 0
+	}
+	return p.opts.MaxDepth - depth
 }
 
 // children returns the sorted children of id that exist as nodes.
