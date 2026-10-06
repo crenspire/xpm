@@ -69,11 +69,13 @@ func TestNoMatchExitsOne(t *testing.T) {
 		"install": func() int { return cmdInstall([]string{"nope"}) },
 		"search":  func() int { return cmdSearch([]string{"nope"}) },
 	} {
-		var code int
-		out := captureStdout(t, func() { code = run() })
-		if code != 1 {
-			t.Errorf("%s: exit %d, want 1 for no matches\n%s", name, code, out)
-		}
+		t.Run(name, func(t *testing.T) {
+			var code int
+			out := captureStdout(t, func() { code = run() })
+			if code != 1 {
+				t.Errorf("exit %d, want 1 for no matches\n%s", code, out)
+			}
+		})
 	}
 }
 

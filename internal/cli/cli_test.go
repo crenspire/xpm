@@ -212,6 +212,7 @@ func TestUsageDoesNotPanic(t *testing.T) {
 
 // TestRunWithNoArgs verifies Run() returns error with no arguments.
 func TestRunWithNoArgs(t *testing.T) {
+	isolatedHome(t)
 	// Save original args
 	origArgs := os.Args
 	defer func() { os.Args = origArgs }()
@@ -232,6 +233,7 @@ func TestRunWithNoArgs(t *testing.T) {
 
 // TestRunVersion verifies Run() handles version command.
 func TestRunVersion(t *testing.T) {
+	isolatedHome(t)
 	// Save original args
 	origArgs := os.Args
 	defer func() { os.Args = origArgs }()
@@ -252,6 +254,7 @@ func TestRunVersion(t *testing.T) {
 
 // TestRunHelp verifies Run() handles help command.
 func TestRunHelp(t *testing.T) {
+	isolatedHome(t)
 	// Save original args
 	origArgs := os.Args
 	defer func() { os.Args = origArgs }()
@@ -272,6 +275,7 @@ func TestRunHelp(t *testing.T) {
 
 // TestRunUnknownCommand verifies Run() handles unknown commands.
 func TestRunUnknownCommand(t *testing.T) {
+	isolatedHome(t)
 	// Save original args
 	origArgs := os.Args
 	defer func() { os.Args = origArgs }()
@@ -296,6 +300,7 @@ func TestRunUnknownCommand(t *testing.T) {
 
 // TestVerboseFlag verifies verbose flag parsing.
 func TestVerboseFlag(t *testing.T) {
+	isolatedHome(t)
 	// Save original args
 	origArgs := os.Args
 	defer func() { os.Args = origArgs }()

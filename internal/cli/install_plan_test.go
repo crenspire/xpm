@@ -2,6 +2,7 @@ package cli
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -146,9 +147,11 @@ func TestIsGoModulePath(t *testing.T) {
 		"example.com":              false,
 		"lodash.merge":             false,
 	} {
-		if got := isGoModulePath(s); got != want {
-			t.Errorf("isGoModulePath(%q) = %v, want %v", s, got, want)
-		}
+		t.Run(s, func(t *testing.T) {
+			if got := isGoModulePath(s); got != want {
+				t.Errorf("isGoModulePath(%q) = %v, want %v", s, got, want)
+			}
+		})
 	}
 }
 
@@ -239,28 +242,28 @@ func TestEnsureManagerExplainsManualInstallAndPath(t *testing.T) {
 
 func TestEnsureManagerPrintsInstallHintWhenDeclinedOrNonInteractive(t *testing.T) {
 	for _, interactive := range []bool{true, false} {
-		withConfig(t, config.Config{AutoInstallPM: true, Interactive: interactive})
-		oldAsk := askYesNo
-		askYesNo = func(string) (bool, error) { return false, nil }
-		ran := 0
-		restoreRun := pm.SetCommandRunner(func(string, ...string) error { ran++; return nil })
-		restoreLook := pm.SetLookPath(func(string) (string, error) { return "", errors.New("not found") })
+		t.Run(fmt.Sprintf("interactive=%v", interactive), func(t *testing.T) {
+			withConfig(t, config.Config{AutoInstallPM: true, Interactive: interactive})
+			oldAsk := askYesNo
+			askYesNo = func(string) (bool, error) { return false, nil }
+			t.Cleanup(func() { askYesNo = oldAsk })
+			ran := 0
+			t.Cleanup(pm.SetCommandRunner(func(string, ...string) error { ran++; return nil }))
+			t.Cleanup(pm.SetLookPath(func(string) (string, error) { return "", errors.New("not found") }))
 
-		var err error
-		out := captureStdout(t, func() { err = ensureManager(pm.Pnpm) })
-		askYesNo = oldAsk
-		restoreRun()
-		restoreLook()
+			var err error
+			out := captureStdout(t, func() { err = ensureManager(pm.Pnpm) })
 
-		if err == nil {
-			t.Fatalf("interactive=%v: want an error", interactive)
-		}
-		if !strings.Contains(out, "npm install -g pnpm") {
-			t.Errorf("interactive=%v: output lacks the install hint:\n%s", interactive, out)
-		}
-		if ran != 0 {
-			t.Errorf("interactive=%v: ran %d commands; none may run", interactive, ran)
-		}
+			if err == nil {
+				t.Fatal("want an error")
+			}
+			if !strings.Contains(out, "To install it: npm install -g pnpm") {
+				t.Errorf("output lacks the install hint:\n%s", out)
+			}
+			if ran != 0 {
+				t.Errorf("ran %d commands; none may run", ran)
+			}
+		})
 	}
 }
 
