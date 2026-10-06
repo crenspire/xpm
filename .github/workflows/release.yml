@@ -36,7 +36,7 @@ jobs:
       - uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
-          version: '~> v2'
+          version: 'v2.18.2' # keep in sync with GORELEASER in the Makefile
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

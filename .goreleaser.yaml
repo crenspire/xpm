@@ -81,7 +81,7 @@ release:
 
 # Homebrew cask in crenspire/homebrew-tap (Casks/xpm.rb). goreleaser v2.10+
 # deprecates `brews` (and `goreleaser check` fails on it), so this is a cask:
-# `brew install crenspire/tap/xpm`. Upload is skipped unless
+# `brew install --cask crenspire/tap/xpm`. Upload is skipped unless
 # HOMEBREW_TAP_GITHUB_TOKEN is set (the workflow's GITHUB_TOKEN cannot push to
 # another repository).
 homebrew_casks:

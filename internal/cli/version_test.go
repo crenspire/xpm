@@ -43,3 +43,10 @@ func TestVersionStringFromBuildInfo(t *testing.T) {
 		})
 	}
 }
+
+func TestVersionStringStripsLeadingV(t *testing.T) {
+	withVersion(t, "v0.1.0", nil, false)
+	if got := versionString(); got != "0.1.0" {
+		t.Errorf("versionString() = %q, want 0.1.0", got)
+	}
+}

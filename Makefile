@@ -6,7 +6,9 @@ BINARY_NAME=xpm
 # Version can be set via: make build VERSION=1.0.0
 # Defaults to git tag, or 0.0.1 if no tags exist
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "0.0.1")
-LDFLAGS=-trimpath -ldflags "-s -w -X github.com/crenspire/xpm/internal/cli.Version=$(VERSION)"
+# Tags are v-prefixed (v0.1.0); the binary's banner adds its own "v"
+VERSION_NOV := $(patsubst v%,%,$(VERSION))
+LDFLAGS=-trimpath -ldflags "-s -w -X github.com/crenspire/xpm/internal/cli.Version=$(VERSION_NOV)"
 
 # Go variables
 GO=go

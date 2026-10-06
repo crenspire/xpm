@@ -66,7 +66,7 @@ xpm is young. The core commands are solid; the bigger subsystems are being rebui
 
 The first release (v0.1.0) has not been tagged yet. Until it is, the install script and the Homebrew cask have nothing to download, and `go install …@latest` installs a pseudo-version of the default branch rather than a release; use `go install …@develop` or build from source. See [docs/RELEASING.md](docs/RELEASING.md) for how a release is cut.
 
-Install script (Linux and macOS; verifies the archive's SHA-256 against the release's `checksums.txt` before installing anything):
+Install script (Linux and macOS; available once the first release is cut, since the URL below is served from the `main` branch, which is created then; verifies the archive's SHA-256 against the release's `checksums.txt` before installing anything):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/crenspire/xpm/main/scripts/install.sh | sh

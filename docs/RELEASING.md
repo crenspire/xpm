@@ -4,17 +4,29 @@ Releases are cut from `main` by pushing a `v*` tag. The tag triggers `.github/wo
 
 ## Prerequisites
 
-- CI is green on `develop` and on `main` (`.github/workflows/ci.yml`, including the `env-smoke` job).
+- CI is green on `develop` (`.github/workflows/ci.yml`, including the `env-smoke` job), and on `main` too once `main` exists (it does not before the first release; see step 1).
 - You have push rights to `crenspire/xpm` (branch `main` and tags).
 - The first release is `v0.1.0`; no tag exists before it, so the install script and the Homebrew cask have nothing to serve until it is pushed, and `go install ...@latest` installs a pseudo-version of the default branch rather than a release.
 
 ## Cutting a release
 
-1. Bring `main` up to date with `develop` (fast-forward, or open a PR from `develop` to `main` and merge it):
+1. Bring `main` up to date with `develop`. The repository's default branch is `develop`; `main` is the release branch.
+
+   First release only: `origin` has no `main` branch yet, so create it from `develop`:
 
    ```bash
+   git checkout develop && git pull --ff-only origin develop
+   git push origin develop:main
+   ```
+
+   Optionally protect `main` in the repository settings, and keep `develop` as the default branch.
+
+   Later releases: fast-forward `main` to `develop` (or open a PR from `develop` to `main` and merge it):
+
+   ```bash
+   git fetch origin                       # make sure origin/develop is current
    git checkout main && git pull --ff-only origin main
-   git merge --ff-only develop
+   git merge --ff-only origin/develop
    git push origin main
    ```
 
@@ -30,7 +42,7 @@ Releases are cut from `main` by pushing a `v*` tag. The tag triggers `.github/wo
 On a `v*` tag the release workflow:
 
 1. Runs `go test -race ./...` (the `test` job); the release job only starts if it passes.
-2. Runs GoReleaser (`.goreleaser.yaml`, pinned to v2.18.2 locally by the Makefile, `~> v2` in CI) which:
+2. Runs GoReleaser (`.goreleaser.yaml`, pinned to v2.18.2 both locally by the Makefile and in CI) which:
    - builds six targets: linux, darwin and windows on amd64 and arm64, with the version stamped into the binary;
    - packs `tar.gz` archives (`zip` on Windows) holding the binary, `README.md`, `LICENSE`, shell completions and man pages;
    - writes `checksums.txt` (SHA-256 of every archive);

@@ -25,7 +25,7 @@ import (
 // This can be overridden at build time using:
 //
 //	go build -ldflags "-X github.com/crenspire/xpm/internal/cli.Version=1.0.0"
-var Version = "0.0.1"
+var Version = defaultVersion
 
 // defaultVersion is Version's value when no -ldflags -X override is given.
 const defaultVersion = "0.0.1"
@@ -39,7 +39,7 @@ var readBuildInfo = debug.ReadBuildInfo
 // 0.1.0), falling back to Version for local "(devel)" builds.
 func versionString() string {
 	if Version != defaultVersion {
-		return Version
+		return strings.TrimPrefix(Version, "v")
 	}
 	if info, ok := readBuildInfo(); ok && info != nil {
 		if v := info.Main.Version; v != "" && v != "(devel)" {

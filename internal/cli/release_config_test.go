@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -38,5 +39,39 @@ func TestGoreleaserCaskListsEveryManPage(t *testing.T) {
 	sort.Strings(got)
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Errorf("homebrew_casks[0].manpages = %v\nwant (one per commandTable entry) %v", got, want)
+	}
+}
+
+func readRepoFile(t *testing.T, name string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("..", "..", name))
+	if err != nil {
+		t.Fatalf("read %s: %v", name, err)
+	}
+	return string(data)
+}
+
+// TestMakefileStampsVersionWithoutV keeps `git describe` tags (v0.1.0) from
+// reaching the binary as "v0.1.0" (the banner adds its own "v").
+func TestMakefileStampsVersionWithoutV(t *testing.T) {
+	mk := readRepoFile(t, "Makefile")
+	if !strings.Contains(mk, "VERSION_NOV := $(patsubst v%,%,$(VERSION))") {
+		t.Error("Makefile does not define VERSION_NOV by stripping a leading v from VERSION")
+	}
+	if !strings.Contains(mk, "internal/cli.Version=$(VERSION_NOV)") {
+		t.Error("Makefile LDFLAGS must stamp $(VERSION_NOV), not $(VERSION)")
+	}
+}
+
+// TestReleaseWorkflowPinsGoreleaserLikeMakefile keeps CI and local release
+// checks on the same GoReleaser version.
+func TestReleaseWorkflowPinsGoreleaserLikeMakefile(t *testing.T) {
+	m := regexp.MustCompile(`goreleaser/v2@(v[0-9.]+)`).FindStringSubmatch(readRepoFile(t, "Makefile"))
+	if m == nil {
+		t.Fatal("Makefile has no pinned goreleaser/v2@vX.Y.Z")
+	}
+	wf := readRepoFile(t, filepath.Join(".github", "workflows", "release.yml"))
+	if !strings.Contains(wf, "version: '"+m[1]+"'") {
+		t.Errorf("release.yml goreleaser-action version is not pinned to %s (Makefile)", m[1])
 	}
 }
