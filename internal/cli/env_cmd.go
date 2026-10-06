@@ -214,10 +214,16 @@ func cmdEnvRemove(manager *env.Manager, args []string) int {
 
 // cmdEnvSetupPath handles `xpm env setup-path`.
 func cmdEnvSetupPath(manager *env.Manager) int {
-	if err := env.UpdatePATH(manager); err != nil {
+	edit, err := env.SetupPATH(manager)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return 1
 	}
+	if !edit.Changed {
+		fmt.Printf("PATH already configured in %s\n", edit.File)
+		return 0
+	}
+	fmt.Printf("Added %s to PATH in %s\nRestart your shell or run: source %s\n", manager.GetShimsPath(), edit.File, edit.File)
 	return 0
 }
 
