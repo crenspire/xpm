@@ -16,14 +16,14 @@ BIN="$BIN_DIR/xpm"
 go build -trimpath -ldflags "-s -w" -o "$BIN" "$ROOT/cmd/xpm"
 cd "$WORK"
 
-# name | budget_ms | command
+# name | budget_ms | command (run by hyperfine's shell, so paths are quoted)
 BUDGETS=(
-  "help|10|$BIN help"
-  "version|10|$BIN --version"
-  "which-axios-cold|1500|env XPM_NO_CACHE=1 $BIN which axios"
-  "which-typescript-cold|1500|env XPM_NO_CACHE=1 $BIN which typescript"
-  "which-axios-warm|100|env XPM_CACHE_DIR=$CACHE $BIN which axios"
-  "search-axios-cold|1500|env XPM_NO_CACHE=1 $BIN search axios"
+  "help|10|\"$BIN\" help"
+  "version|10|\"$BIN\" --version"
+  "which-axios-cold|1500|env XPM_NO_CACHE=1 \"$BIN\" which axios"
+  "which-typescript-cold|1500|env XPM_NO_CACHE=1 \"$BIN\" which typescript"
+  "which-axios-warm|100|env XPM_CACHE_DIR=\"$CACHE\" \"$BIN\" which axios"
+  "search-axios-cold|1500|env XPM_NO_CACHE=1 \"$BIN\" search axios"
 )
 
 fail=0
@@ -33,7 +33,7 @@ for row in "${BUDGETS[@]}"; do
   # A command that exits non-zero (offline, registry error) makes hyperfine
   # fail; report that as a FAIL row instead of letting set -e end the run.
   if ! out=$(hyperfine --warmup 2 --runs 10 --style none --export-json "$WORK/$name.json" "$cmd" 2>&1); then
-    reason=$(printf '%s\n' "$out" | grep -v '^[[:space:]]*$' | tail -n 1)
+    reason=$(printf '%s\n' "$out" | grep -v '^[[:space:]]*$' | tail -n 1) || true
     printf "%-22s %10s %10s  %s\n" "$name" "-" "$budget" "FAIL (${reason:-hyperfine failed})"
     fail=1
     continue
