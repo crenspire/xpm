@@ -139,6 +139,7 @@ footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wr
     <a class="brand" href="#"><img src="logo-mark.svg" alt="">xpm</a>
     <div class="navlinks">
       <a href="#features">Features</a>
+      <a href="#deps">Dependencies</a>
       <a href="#speed">Speed</a>
       <a href="#status">Status</a>
       <a class="gh" href="https://github.com/crenspire/xpm">
@@ -196,7 +197,7 @@ Found in:
         <div class="card">
           <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></div>
           <h3>Respects your lockfile</h3>
-          <p>When you install, <code>yarn.lock</code> means yarn and <code>poetry.lock</code> means poetry, so xpm uses the tool your project already uses.</p>
+          <p>Inside a project, <code>yarn.lock</code> means yarn and <code>poetry.lock</code> means poetry, so xpm uses the tool your project already uses. <code>xpm ci</code> does a locked install and never deletes a lockfile.</p>
         </div>
         <div class="card">
           <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 3 14 9-14 9V3z"/></svg></div>
@@ -213,6 +214,37 @@ Found in:
           <h3>Doctor</h3>
           <p><code>xpm doctor</code> checks installed package managers, runtimes, lockfiles and project health in one report.</p>
         </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="deps">
+    <div class="wrap">
+      <h2>Know your dependencies</h2>
+      <p class="sub">Three read-only checks over the lockfiles you already have, across every ecosystem in the project. They never run a build tool, and they exit <code>1</code> when there is something to report, so they drop straight into CI.</p>
+      <div class="grid">
+        <div class="card">
+          <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg></div>
+          <h3>Outdated</h3>
+          <p><code>xpm outdated</code> compares every locked version with the registry's latest, in parallel, in one table for npm, PyPI, Packagist, crates.io, Maven Central and Go.</p>
+        </div>
+        <div class="card">
+          <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 4 6v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V6l-8-3z"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg></div>
+          <h3>Audit</h3>
+          <p><code>xpm audit</code> checks the locked versions against <a href="https://osv.dev">OSV.dev</a> and shows each vulnerability with its severity and the fixed versions. Only package names and versions are sent.</p>
+        </div>
+        <div class="card">
+          <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="12" cy="18" r="2"/><path d="M6 8v2a4 4 0 0 0 4 4h0M18 8v2a4 4 0 0 1-4 4h0M12 14v2"/></svg></div>
+          <h3>Why</h3>
+          <p><code>xpm why lodash</code> prints every dependency path from your project to a package, shortest first, so you know who pulled it in.</p>
+        </div>
+      </div>
+      <div class="term" style="margin-top:22px" role="img" aria-label="Terminal showing xpm outdated, audit and why commands">
+        <div class="bar"><i></i><i></i><i></i></div>
+<pre><span class="p">$</span> <span class="c">xpm outdated</span>        <span class="d"># direct dependencies with a newer release</span>
+<span class="p">$</span> <span class="c">xpm audit</span> --json    <span class="d"># known vulnerabilities, machine-readable</span>
+<span class="p">$</span> <span class="c">xpm why</span> lodash      <span class="d"># how lodash got into the tree</span>
+<span class="p">$</span> <span class="c">xpm outdated</span> -w     <span class="d"># every project in a monorepo</span></pre>
       </div>
     </div>
   </section>
@@ -257,7 +289,7 @@ Found in:
   <section id="ecosystems">
     <div class="wrap">
       <h2>Speaks every tool's language</h2>
-      <p class="sub">Same command, translated for each tool.</p>
+      <p class="sub">Same command, translated for the tool your project uses (run it inside a project of that ecosystem, or set <code>prefer</code>).</p>
       <div class="tablewrap">
         <table>
           <thead><tr><th>You type</th><th>Ecosystem</th><th>xpm runs</th></tr></thead>
@@ -290,15 +322,17 @@ Found in:
           <thead><tr><th>Area</th><th>Commands</th><th>Status</th></tr></thead>
           <tbody>
             <tr><td>Search &amp; lookup</td><td><code>which</code> <code>search</code> <code>info</code></td><td><span class="pill ok">stable</span></td></tr>
-            <tr><td>Install / update / remove</td><td><code>install</code> <code>update</code> <code>remove</code> <code>list</code></td><td><span class="pill ok">stable</span></td></tr>
+            <tr><td>Install / update / remove</td><td><code>install</code> <code>ci</code> <code>update</code> <code>remove</code> <code>list</code></td><td><span class="pill ok">stable</span> Go modules and Gradle included</td></tr>
             <tr><td>Project scripts</td><td><code>run</code></td><td><span class="pill ok">stable</span></td></tr>
             <tr><td>Diagnostics</td><td><code>doctor</code></td><td><span class="pill ok">stable</span></td></tr>
-            <tr><td>Runtime versions</td><td><code>env</code></td><td><span class="pill exp">experimental</span> Node &amp; Go verified</td></tr>
-            <tr><td>Graph · lockfile · workspaces · cache</td><td><code>graph</code> <code>lock</code> <code>workspaces</code> <code>cache</code></td><td><span class="pill exp">experimental</span></td></tr>
+            <tr><td>Dependency checks</td><td><code>outdated</code> <code>audit</code> <code>why</code></td><td><span class="pill ok">stable</span></td></tr>
+            <tr><td>Shell completions</td><td><code>completion</code></td><td><span class="pill ok">stable</span> bash, zsh, fish</td></tr>
+            <tr><td>Runtime versions</td><td><code>env</code></td><td><span class="pill exp">experimental</span> macOS &amp; Linux; node, go, python, java, bun, deno checksum-verified</td></tr>
+            <tr><td>Graph · lockfile · monorepos</td><td><code>graph</code> <code>lock</code> <code>workspaces</code></td><td><span class="pill exp">experimental</span></td></tr>
           </tbody>
         </table>
       </div>
-      <p class="cta" style="text-align:left">Track progress in the <a href="https://github.com/crenspire/xpm/blob/develop/docs/superpowers/plans/2026-10-06-xpm-roadmap.md">roadmap</a>.</p>
+      <p class="cta" style="text-align:left">Core commands are tested in CI on Linux, macOS and Windows; <code>xpm env</code> is not available on Windows. Track progress in the <a href="https://github.com/crenspire/xpm/blob/develop/docs/superpowers/plans/2026-10-06-xpm-roadmap.md">roadmap</a>.</p>
     </div>
   </section>
 </main>
