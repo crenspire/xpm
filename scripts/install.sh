@@ -2,25 +2,34 @@
 # Install xpm from a GitHub release, verifying the archive against the
 # release's checksums.txt before anything is installed.
 #
-#   curl -fsSL https://raw.githubusercontent.com/crenspire/xpm/main/scripts/install.sh | sh
-#   sh install.sh --version v0.1.0 --dir "$HOME/bin"
+#   curl -fsSL https://crenspire.github.io/xpm/install.sh | sh
+#   curl -fsSL https://crenspire.github.io/xpm/install.sh | sh -s -- --version v0.1.0 --dir "$HOME/bin"
+#
+# If no release has been published yet (or with --from-source), it builds
+# xpm with `go install` instead, which needs Go 1.22 or newer.
 #
 # Run `sh install.sh --help` for all options.
 set -eu
 
 usage() {
 	cat <<'EOF'
-Usage: install.sh [--version vX.Y.Z] [--dir DIR] [--help]
+Usage: install.sh [--version vX.Y.Z] [--dir DIR] [--from-source] [--help]
 
 Downloads the xpm release archive for this OS and CPU, checks its SHA-256
-against the release's checksums.txt and installs the xpm binary.
+against the release's checksums.txt and installs the xpm binary. When no
+release has been published yet, it builds xpm from source with `go install`
+(Go 1.22 or newer required).
 
 Options (each can also be set with an environment variable):
   --version vX.Y.Z  XPM_VERSION       Release to install (default: latest)
   --dir DIR         XPM_INSTALL_DIR   Install directory (default: /usr/local/bin
                                       if writable, else $HOME/.local/bin)
+  --from-source     XPM_FROM_SOURCE=1 Build with `go install` instead of
+                                      downloading a release archive
+                    XPM_RELEASES_URL  Releases page (default:
+                                      https://github.com/crenspire/xpm/releases)
                     XPM_DOWNLOAD_URL  Base download URL (default:
-                                      https://github.com/crenspire/xpm/releases/download)
+                                      $XPM_RELEASES_URL/download)
   -h, --help                          Show this help
 
 Supported: Linux and macOS on amd64 and arm64. On Windows, download the zip
@@ -33,9 +42,12 @@ err() {
 	exit 1
 }
 
+module=github.com/crenspire/xpm/cmd/xpm
 version="${XPM_VERSION:-}"
 dir="${XPM_INSTALL_DIR:-}"
-base="${XPM_DOWNLOAD_URL:-https://github.com/crenspire/xpm/releases/download}"
+from_source="${XPM_FROM_SOURCE:-}"
+releases="${XPM_RELEASES_URL:-https://github.com/crenspire/xpm/releases}"
+base="${XPM_DOWNLOAD_URL:-$releases/download}"
 
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -55,6 +67,10 @@ while [ $# -gt 0 ]; do
 		;;
 	--dir=*)
 		dir="${1#--dir=}"
+		shift
+		;;
+	--from-source)
+		from_source=1
 		shift
 		;;
 	-h | --help)
@@ -98,17 +114,6 @@ else
 	err "need sha256sum or shasum to verify the download"
 fi
 
-if [ -z "$version" ]; then
-	version=$(fetch https://api.github.com/repos/crenspire/xpm/releases/latest |
-		sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)
-	[ -n "$version" ] || err "could not determine the latest xpm release; set XPM_VERSION or pass --version"
-fi
-case "$version" in
-v*) tag="$version" ;;
-*) tag="v$version" ;;
-esac
-ver="${tag#v}"
-
 if [ -z "$dir" ]; then
 	if [ -d /usr/local/bin ] && [ -w /usr/local/bin ]; then
 		dir=/usr/local/bin
@@ -116,6 +121,60 @@ if [ -z "$dir" ]; then
 		dir="$HOME/.local/bin"
 	fi
 fi
+
+path_note() {
+	case ":${PATH}:" in
+	*":$1:"*) ;;
+	*) echo "Note: $1 is not in your PATH; add it, e.g. export PATH=\"$1:\$PATH\"" ;;
+	esac
+}
+
+# latest_tag prints the newest release tag, or nothing when there is none.
+# It follows the releases/latest redirect (no API rate limit) and falls back
+# to the GitHub API when only wget is available.
+latest_tag() {
+	if command -v curl >/dev/null 2>&1; then
+		final=$(curl -fsSL -o /dev/null -w '%{url_effective}' "$releases/latest" 2>/dev/null) || final=""
+		case "$final" in
+		*/tag/*) echo "${final##*/tag/}" ;;
+		esac
+	else
+		fetch https://api.github.com/repos/crenspire/xpm/releases/latest 2>/dev/null |
+			sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1
+	fi
+}
+
+# install_from_source builds xpm with `go install` into $dir.
+install_from_source() {
+	command -v go >/dev/null 2>&1 ||
+		err "$1, and Go is not installed. Install Go 1.22+ (https://go.dev/dl/) and re-run, or wait for a release"
+	gover=$(go env GOVERSION 2>/dev/null || true)
+	minor=$(echo "$gover" | sed -n 's/^go1\.\([0-9][0-9]*\).*/\1/p')
+	if [ -z "$minor" ] || [ "$minor" -lt 22 ]; then
+		err "$1, and building from source needs Go 1.22 or newer (found ${gover:-unknown})"
+	fi
+	ref="${version:-latest}"
+	echo "$1; building xpm from source with $gover (go install $module@$ref)..."
+	mkdir -p "$dir"
+	GOBIN="$dir" go install "$module@$ref" || err "go install $module@$ref failed"
+	echo "xpm ($ref, built from source) installed to $dir/xpm"
+	path_note "$dir"
+	exit 0
+}
+
+if [ -n "$from_source" ]; then
+	install_from_source "Building from source as requested"
+fi
+
+if [ -z "$version" ]; then
+	version=$(latest_tag)
+	[ -n "$version" ] || install_from_source "No xpm release has been published yet"
+fi
+case "$version" in
+v*) tag="$version" ;;
+*) tag="v$version" ;;
+esac
+ver="${tag#v}"
 
 archive="xpm_${ver}_${os}_${arch}.tar.gz"
 tmp=$(mktemp -d)
@@ -150,7 +209,4 @@ fi
 mv -f "$staged" "$dir/xpm" || err "could not move $staged to $dir/xpm"
 
 echo "xpm $tag installed to $dir/xpm"
-case ":${PATH}:" in
-*":$dir:"*) ;;
-*) echo "Note: $dir is not in your PATH; add it, e.g. export PATH=\"$dir:\$PATH\"" ;;
-esac
+path_note "$dir"

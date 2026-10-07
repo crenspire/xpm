@@ -3,7 +3,7 @@ name: Pages
 on:
   push:
     branches: [develop]
-    paths: ['site/**', '.github/workflows/pages.yml']
+    paths: ['site/**', 'scripts/install.sh', '.github/workflows/pages.yml']
   workflow_dispatch:
 
 permissions:
@@ -24,6 +24,10 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+      # Serve the installer at https://crenspire.github.io/xpm/install.sh
+      # straight from scripts/install.sh, so there is one source of truth.
+      - name: Add install.sh to the site
+        run: cp scripts/install.sh site/install.sh
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

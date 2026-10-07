@@ -64,15 +64,21 @@ xpm is young. The core commands are solid; the bigger subsystems are being rebui
 
 ## Install
 
-The first release (v0.1.0) has not been tagged yet. Until it is, the install script and the Homebrew cask have nothing to download, and `go install …@latest` installs a pseudo-version of the default branch rather than a release; use `go install …@develop` or build from source. See [docs/RELEASING.md](docs/RELEASING.md) for how a release is cut.
-
-Install script (Linux and macOS; available once the first release is cut, since the URL below is served from the `main` branch, which is created then; verifies the archive's SHA-256 against the release's `checksums.txt` before installing anything):
+Linux and macOS:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/crenspire/xpm/main/scripts/install.sh | sh
+curl -fsSL https://crenspire.github.io/xpm/install.sh | sh
 ```
 
-It installs the latest release into `/usr/local/bin` (or `~/.local/bin` if that is not writable). Set `XPM_VERSION=v0.1.0` to pin a release and `XPM_INSTALL_DIR=<dir>` to choose the directory (`--version` and `--dir` do the same; `sh install.sh --help` lists everything).
+The script picks the archive for your OS and CPU, verifies its SHA-256 against the release's `checksums.txt` before installing anything, and puts `xpm` in `/usr/local/bin` (or `~/.local/bin` if that is not writable). Options go after `sh -s --`:
+
+```bash
+curl -fsSL https://crenspire.github.io/xpm/install.sh | sh -s -- --version v0.1.0 --dir "$HOME/bin"
+```
+
+`--from-source` builds with `go install` instead of downloading a release, and `--help` lists everything (each option also has an environment variable: `XPM_VERSION`, `XPM_INSTALL_DIR`, `XPM_FROM_SOURCE=1`).
+
+No release has been tagged yet. Until v0.1.0 is published, the script builds xpm from the latest source with `go install`, which needs Go 1.22 or newer; without Go it stops and tells you so. See [docs/RELEASING.md](docs/RELEASING.md) for how a release is cut.
 
 Homebrew (macOS; a cask, available once the `crenspire/homebrew-tap` repository is published):
 

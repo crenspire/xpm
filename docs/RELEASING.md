@@ -6,7 +6,7 @@ Releases are cut from `main` by pushing a `v*` tag. The tag triggers `.github/wo
 
 - CI is green on `develop` (`.github/workflows/ci.yml`, including the `env-smoke` job), and on `main` too once `main` exists (it does not before the first release; see step 1).
 - You have push rights to `crenspire/xpm` (branch `main` and tags).
-- The first release is `v0.1.0`; no tag exists before it, so the install script and the Homebrew cask have nothing to serve until it is pushed, and `go install ...@latest` installs a pseudo-version of the default branch rather than a release.
+- The first release is `v0.1.0`. Before it exists, `curl -fsSL https://crenspire.github.io/xpm/install.sh | sh` falls back to building from source with `go install` (Go 1.22+), the Homebrew cask has nothing to serve, and `go install ...@latest` installs a pseudo-version of the default branch. Once the tag is published, the same curl command downloads the verified release archive; nothing else needs to change.
 
 ## Cutting a release
 
@@ -52,6 +52,12 @@ On a `v*` tag the release workflow:
 3. Best effort: signs `checksums.txt` with keyless cosign and uploads `checksums.txt.sig` and `checksums.txt.pem` to the release. A failure in this step does not fail the release.
 
 `go install github.com/crenspire/xpm/cmd/xpm@v0.1.0` works as soon as the tag is on GitHub and reports `0.1.0` from `xpm --version`.
+
+The install script is served by GitHub Pages at `https://crenspire.github.io/xpm/install.sh`: the Pages workflow copies `scripts/install.sh` into the site whenever it changes on `develop`. It finds the newest release through the `releases/latest` redirect, so it picks up a new tag immediately with no redeploy. Smoke-test after releasing:
+
+```bash
+curl -fsSL https://crenspire.github.io/xpm/install.sh | sh -s -- --dir "$(mktemp -d)"
+```
 
 ## Dry run
 
